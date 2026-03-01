@@ -1,0 +1,14 @@
+{
+  "name": "finapp",
+  "private": true,
+  "version": "0.1.0",
+  "description": "App de finanzas personales con IA",
+  "scripts": {
+    "dev": "pnpm --filter @finapp/web dev",
+    "build": "pnpm --filter @finapp/web build",
+    "preview": "pnpm --filter @finapp/web preview"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,41 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-slate-950 text-slate-100 antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Hide scrollbar but allow scrolling */
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl bg-slate-900 border border-slate-800 p-4;
+  }
+
+  .btn-primary {
+    @apply rounded-xl bg-primary-600 px-4 py-3 font-semibold text-white
+           active:bg-primary-700 transition-colors disabled:opacity-50;
+  }
+
+  .btn-secondary {
+    @apply rounded-xl bg-slate-800 px-4 py-3 font-semibold text-slate-200
+           active:bg-slate-700 transition-colors border border-slate-700;
+  }
+
+  .input {
+    @apply w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3
+           text-white placeholder-slate-500 focus:border-primary-500
+           focus:outline-none focus:ring-1 focus:ring-primary-500;
+  }
+}

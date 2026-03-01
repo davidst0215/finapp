@@ -1,0 +1,78 @@
+import { create } from 'zustand';
+import { supabase } from '@/lib/supabase';
+import type { Account, Category, Transaction } from '@/types/database';
+
+interface AppState {
+  // Data
+  accounts: Account[];
+  categories: Category[];
+  transactions: Transaction[];
+  // Loading states
+  loadingAccounts: boolean;
+  loadingCategories: boolean;
+  loadingTransactions: boolean;
+  // Actions
+  fetchAccounts: () => Promise<void>;
+  fetchCategories: () => Promise<void>;
+  fetchTransactions: (limit?: number) => Promise<void>;
+  addTransaction: (tx: Omit<Transaction, 'transaction_id' | 'created_at' | 'updated_at' | 'user_id'>) => Promise<Transaction | null>;
+  deleteTransaction: (id: string) => Promise<void>;
+}
+
+export const useAppStore = create<AppState>((set, get) => ({
+  accounts: [],
+  categories: [],
+  transactions: [],
+  loadingAccounts: false,
+  loadingCategories: false,
+  loadingTransactions: false,
+
+  fetchAccounts: async () => {
+    set({ loadingAccounts: true });
+    const { data } = await supabase
+      .from('accounts')
+      .select('*')
+      .eq('is_active', true)
+      .order('account_name');
+    set({ accounts: data ?? [], loadingAccounts: false });
+  },
+
+  fetchCategories: async () => {
+    set({ loadingCategories: true });
+    const { data } = await supabase
+      .from('categories')
+      .select('*')
+      .eq('is_active', true)
+      .order('category_name');
+    set({ categories: data ?? [], loadingCategories: false });
+  },
+
+  fetchTransactions: async (limit = 50) => {
+    set({ loadingTransactions: true });
+    const { data } = await supabase
+      .from('transactions')
+      .select('*, category:categories(*), account:accounts(*)')
+      .order('transaction_date', { ascending: false })
+      .limit(limit);
+    set({ transactions: (data as Transaction[]) ?? [], loadingTransactions: false });
+  },
+
+  addTransaction: async (tx) => {
+    const { data, error } = await supabase
+      .from('transactions')
+      .insert(tx)
+      .select('*, category:categories(*), account:accounts(*)')
+      .single();
+
+    if (error || !data) return null;
+
+    const typed = data as Transaction;
+    set({ transactions: [typed, ...get().transactions] });
+    return typed;
+  },
+
+  deleteTransaction: async (id) => {
+    await supabase.from('transactions').delete().eq('transaction_id', id);
+    set({ transactions: get().transactions.filter(t => t.transaction_id !== id) });
+  },
+}));
