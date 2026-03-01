@@ -1,5 +1,5 @@
 import { useAuthStore } from '@/stores/authStore';
-import { LogOut, PieChart, Target, Bell, MessageSquare, Settings, CreditCard } from 'lucide-react';
+import { LogOut, PieChart, Target, Bell, MessageSquare, Settings, CreditCard, BarChart3 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 const menuItems = [
@@ -7,7 +7,8 @@ const menuItems = [
   { to: '/goals', icon: Target, label: 'Metas de ahorro', desc: 'Alcanza tus objetivos financieros' },
   { to: '/recurring', icon: CreditCard, label: 'Recurrentes', desc: 'Suscripciones y pagos fijos' },
   { to: '/alerts', icon: Bell, label: 'Alertas', desc: 'Notificaciones y recordatorios' },
-  { to: '/ai-chat', icon: MessageSquare, label: 'Asistente IA', desc: 'Pregunta sobre tus finanzas', soon: true },
+  { to: '/ai-chat', icon: MessageSquare, label: 'Asistente IA', desc: 'Pregunta sobre tus finanzas' },
+  { to: '/reports', icon: BarChart3, label: 'Reportes', desc: 'Análisis con IA y gráficos completos' },
   { to: '/settings', icon: Settings, label: 'Configuración', desc: 'Cuenta y preferencias', soon: true },
 ];
 

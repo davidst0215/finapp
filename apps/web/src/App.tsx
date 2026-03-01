@@ -12,6 +12,8 @@ import { BudgetsPage } from '@/routes/Budgets';
 import { SavingsGoalsPage } from '@/routes/SavingsGoals';
 import { RecurringPage } from '@/routes/Recurring';
 import { AlertsPage } from '@/routes/Alerts';
+import { AiChatPage } from '@/routes/AiChat';
+import { ReportsPage } from '@/routes/Reports';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading, initialized } = useAuthStore();
@@ -55,6 +57,8 @@ export default function App() {
           <Route path="/goals" element={<SavingsGoalsPage />} />
           <Route path="/recurring" element={<RecurringPage />} />
           <Route path="/alerts" element={<AlertsPage />} />
+          <Route path="/ai-chat" element={<AiChatPage />} />
+          <Route path="/reports" element={<ReportsPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
