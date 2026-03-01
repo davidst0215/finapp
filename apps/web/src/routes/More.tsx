@@ -3,10 +3,10 @@ import { LogOut, PieChart, Target, Bell, MessageSquare, Settings, CreditCard } f
 import { Link } from 'react-router-dom';
 
 const menuItems = [
-  { to: '/budgets', icon: PieChart, label: 'Presupuestos', desc: 'Control de gastos por categoría', soon: true },
-  { to: '/goals', icon: Target, label: 'Metas de ahorro', desc: 'Alcanza tus objetivos financieros', soon: true },
-  { to: '/recurring', icon: CreditCard, label: 'Recurrentes', desc: 'Suscripciones y pagos fijos', soon: true },
-  { to: '/alerts', icon: Bell, label: 'Alertas', desc: 'Notificaciones y recordatorios', soon: true },
+  { to: '/budgets', icon: PieChart, label: 'Presupuestos', desc: 'Control de gastos por categoría' },
+  { to: '/goals', icon: Target, label: 'Metas de ahorro', desc: 'Alcanza tus objetivos financieros' },
+  { to: '/recurring', icon: CreditCard, label: 'Recurrentes', desc: 'Suscripciones y pagos fijos' },
+  { to: '/alerts', icon: Bell, label: 'Alertas', desc: 'Notificaciones y recordatorios' },
   { to: '/ai-chat', icon: MessageSquare, label: 'Asistente IA', desc: 'Pregunta sobre tus finanzas', soon: true },
   { to: '/settings', icon: Settings, label: 'Configuración', desc: 'Cuenta y preferencias', soon: true },
 ];
