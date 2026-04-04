@@ -130,8 +130,9 @@ Deno.serve(async (req: Request) => {
 
     return jsonResponse({ reply, tokens_used: tokensUsed });
   } catch (error) {
-    console.error("ai-chat error:", error);
-    return jsonResponse({ error: "Error interno del servidor. Intenta de nuevo." }, 500);
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error("ai-chat error:", msg);
+    return jsonResponse({ error: `Error: ${msg}` }, 500);
   }
 });
 

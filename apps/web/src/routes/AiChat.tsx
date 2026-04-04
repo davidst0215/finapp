@@ -73,22 +73,31 @@ export function AiChatPage() {
     setLoading(true);
 
     try {
-      const { data, error } = await supabase.functions.invoke('ai-chat', {
-        body: {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error('No hay sesión activa');
+
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+          'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+        },
+        body: JSON.stringify({
           message: msg,
           history: messages.slice(-10),
-        },
+        }),
       });
 
-      if (error) throw new Error(error.message);
-      if (data.error) throw new Error(data.error);
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error ?? `HTTP ${res.status}`);
 
       const assistantMsg: ChatMessage = { role: 'assistant', content: data.reply };
       setMessages(prev => [...prev, assistantMsg]);
     } catch (err) {
       const errorMsg: ChatMessage = {
         role: 'assistant',
-        content: `Error: ${err instanceof Error ? err.message : 'No se pudo conectar con el asistente'}. Verifica que la Edge Function esté desplegada.`,
+        content: `Error: ${err instanceof Error ? err.message : 'No se pudo conectar con el asistente'}`,
       };
       setMessages(prev => [...prev, errorMsg]);
     }
