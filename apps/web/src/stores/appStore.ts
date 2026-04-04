@@ -63,7 +63,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ loadingTransactions: true });
     const { data, error } = await supabase
       .from('transactions')
-      .select('*, category:categories(*), account:accounts(*)')
+      .select('*, category:categories(*), account:accounts!transactions_account_id_fkey(*)')
       .order('transaction_date', { ascending: false })
       .limit(limit);
     if (error) {
@@ -77,7 +77,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { data, error } = await supabase
       .from('transactions')
       .insert(tx)
-      .select('*, category:categories(*), account:accounts(*)')
+      .select('*, category:categories(*), account:accounts!transactions_account_id_fkey(*)')
       .single();
 
     if (error || !data) {
