@@ -2,8 +2,10 @@ import { useEffect, useState } from 'react';
 import { Plus, X, Check, Trash2, Calendar, RefreshCw } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAppStore } from '@/stores/appStore';
+import { useToastStore } from '@/stores/toastStore';
 import { formatCurrency, formatDate } from '@/lib/utils';
 import { cn } from '@/lib/utils';
+import { Spinner } from '@/components/ui/Spinner';
 import type { RecurringTransaction, Frequency, TransactionType } from '@/types/database';
 
 const frequencyLabels: Record<Frequency, string> = {
@@ -31,6 +33,7 @@ export function RecurringPage() {
   const [categoryId, setCategoryId] = useState('');
   const [accountId, setAccountId] = useState('');
   const [saving, setSaving] = useState(false);
+  const addToast = useToastStore(s => s.addToast);
 
   const fetchRecurrings = async () => {
     setLoading(true);
@@ -82,11 +85,13 @@ export function RecurringPage() {
     resetForm();
     setSaving(false);
     fetchRecurrings();
+    addToast('Pago recurrente creado');
   };
 
   const handleDelete = async (id: string) => {
     await supabase.from('recurring_transactions').update({ is_active: false }).eq('recurring_id', id);
     fetchRecurrings();
+    addToast('Pago recurrente eliminado');
   };
 
   const resetForm = () => {
@@ -246,7 +251,7 @@ export function RecurringPage() {
 
       {/* Lista */}
       {loading ? (
-        <div className="text-center py-10 text-slate-500">Cargando...</div>
+        <Spinner />
       ) : recurrings.length === 0 && !showForm ? (
         <div className="card text-center py-10">
           <RefreshCw size={28} className="mx-auto text-slate-700 mb-3" />

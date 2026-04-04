@@ -47,6 +47,10 @@ Deno.serve(async (req: Request) => {
     }
 
     const authHeader = req.headers.get("Authorization") ?? "";
+    if (!authHeader.startsWith("Bearer ")) {
+      return jsonResponse({ error: "Token de autorización inválido" }, 401);
+    }
+
     const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
     const supabase = createClient(supabaseUrl, supabaseKey, {
@@ -126,7 +130,13 @@ PRESUPUESTOS: ${JSON.stringify(budgets ?? [])}
 
     const data = await openaiResponse.json();
     const content = data.choices?.[0]?.message?.content?.trim() ?? "";
-    const analysis = JSON.parse(content);
+
+    let analysis;
+    try {
+      analysis = JSON.parse(content);
+    } catch {
+      return jsonResponse({ error: "No se pudo interpretar la respuesta del análisis. Intenta de nuevo." }, 502);
+    }
 
     return jsonResponse({
       analysis,
@@ -134,8 +144,8 @@ PRESUPUESTOS: ${JSON.stringify(budgets ?? [])}
       prev_month: { year: prevYear, month: prevMonth, ...prevSummary?.[0] },
     });
   } catch (error) {
-    const msg = error instanceof Error ? error.message : "Error desconocido";
-    return jsonResponse({ error: msg }, 500);
+    console.error("ai-analysis error:", error);
+    return jsonResponse({ error: "Error interno del servidor. Intenta de nuevo." }, 500);
   }
 });
 

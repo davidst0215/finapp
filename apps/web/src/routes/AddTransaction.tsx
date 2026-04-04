@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Mic, MicOff, Check } from 'lucide-react';
 import { useAppStore } from '@/stores/appStore';
+import { useToastStore } from '@/stores/toastStore';
 import type { TransactionType, InputMethod } from '@/types/database';
 import { cn } from '@/lib/utils';
 
@@ -14,6 +15,7 @@ const typeOptions: { value: TransactionType; label: string; color: string }[] = 
 export function AddTransactionPage() {
   const navigate = useNavigate();
   const { accounts, categories, fetchAccounts, fetchCategories, addTransaction } = useAppStore();
+  const addToast = useToastStore(s => s.addToast);
 
   const [type, setType] = useState<TransactionType>('expense');
   const [amount, setAmount] = useState('');
@@ -41,7 +43,7 @@ export function AddTransactionPage() {
 
   const handleVoice = () => {
     if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
-      alert('Tu navegador no soporta reconocimiento de voz. Usa Chrome.');
+      addToast('Tu navegador no soporta reconocimiento de voz. Usa Chrome.', 'warning');
       return;
     }
 
@@ -65,7 +67,6 @@ export function AddTransactionPage() {
   };
 
   const parseVoiceInput = (text: string) => {
-    // Parseo local básico (Fase 2 agregará OpenAI)
     const lower = text.toLowerCase();
 
     // Detectar monto
@@ -89,14 +90,18 @@ export function AddTransactionPage() {
   };
 
   const handleSubmit = async () => {
-    if (!amount || !accountId) return;
+    const parsedAmount = parseFloat(amount);
+    if (!parsedAmount || parsedAmount <= 0 || !accountId) {
+      addToast('Ingresa un monto válido y selecciona una cuenta', 'warning');
+      return;
+    }
 
     setSaving(true);
     const inputMethod: InputMethod = voiceText ? 'voice' : 'manual';
 
-    await addTransaction({
+    const result = await addTransaction({
       transaction_type: type,
-      amount: parseFloat(amount),
+      amount: parsedAmount,
       currency_code: 'PEN',
       description: description || null,
       notes: null,
@@ -112,7 +117,13 @@ export function AddTransactionPage() {
     });
 
     setSaving(false);
-    navigate('/transactions');
+
+    if (result) {
+      addToast(type === 'income' ? 'Ingreso registrado' : type === 'transfer' ? 'Transferencia registrada' : 'Gasto registrado');
+      navigate('/transactions');
+    } else {
+      addToast('Error al guardar el movimiento', 'error');
+    }
   };
 
   return (

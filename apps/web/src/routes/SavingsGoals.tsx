@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Plus, X, Check, Trash2, Target, TrendingUp } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import { formatCurrency, formatDate } from '@/lib/utils';
+import { useToastStore } from '@/stores/toastStore';
+import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
+import { Spinner } from '@/components/ui/Spinner';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import type { SavingsGoal } from '@/types/database';
 
 export function SavingsGoalsPage() {
@@ -17,6 +20,8 @@ export function SavingsGoalsPage() {
   const [targetDate, setTargetDate] = useState('');
   const [contributeAmount, setContributeAmount] = useState('');
   const [saving, setSaving] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const addToast = useToastStore(s => s.addToast);
 
   const fetchGoals = async () => {
     setLoading(true);
@@ -50,6 +55,7 @@ export function SavingsGoalsPage() {
     setShowForm(false);
     setSaving(false);
     fetchGoals();
+    addToast('Meta creada');
   };
 
   const handleContribute = async (goalId: string) => {
@@ -80,11 +86,14 @@ export function SavingsGoalsPage() {
     setShowContribute(null);
     setSaving(false);
     fetchGoals();
+    addToast(isCompleted ? 'Meta completada!' : 'Aporte registrado');
   };
 
   const handleDelete = async (goalId: string) => {
     await supabase.from('savings_goals').delete().eq('goal_id', goalId);
+    setConfirmDeleteId(null);
     fetchGoals();
+    addToast('Meta eliminada');
   };
 
   const activeGoals = goals.filter(g => !g.is_completed);
@@ -146,7 +155,7 @@ export function SavingsGoalsPage() {
 
       {/* Metas activas */}
       {loading ? (
-        <div className="text-center py-10 text-slate-500">Cargando...</div>
+        <Spinner />
       ) : activeGoals.length === 0 && !showForm ? (
         <div className="card text-center py-10">
           <Target size={28} className="mx-auto text-slate-700 mb-3" />
@@ -168,7 +177,7 @@ export function SavingsGoalsPage() {
                 <div className="flex items-center justify-between mb-2">
                   <p className="font-medium text-sm">{g.goal_name}</p>
                   <button
-                    onClick={() => handleDelete(g.goal_id)}
+                    onClick={() => setConfirmDeleteId(g.goal_id)}
                     className="text-slate-700 opacity-0 group-hover:opacity-100 transition-opacity p-1"
                   >
                     <Trash2 size={12} />
@@ -243,6 +252,14 @@ export function SavingsGoalsPage() {
       )}
 
       {/* Metas completadas */}
+      <ConfirmDialog
+        open={!!confirmDeleteId}
+        title="Eliminar meta"
+        message="¿Eliminar esta meta de ahorro? Se perderá todo el progreso registrado."
+        onConfirm={() => confirmDeleteId && handleDelete(confirmDeleteId)}
+        onCancel={() => setConfirmDeleteId(null)}
+      />
+
       {completedGoals.length > 0 && (
         <div>
           <h2 className="text-sm font-semibold text-slate-400 mb-2">Completadas</h2>

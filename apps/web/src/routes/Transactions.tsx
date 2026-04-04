@@ -2,14 +2,18 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Search, Filter, Trash2, Plus } from 'lucide-react';
 import { useAppStore } from '@/stores/appStore';
+import { useToastStore } from '@/stores/toastStore';
 import { formatCurrency, formatDateShort } from '@/lib/utils';
 import type { TransactionType } from '@/types/database';
 import { cn } from '@/lib/utils';
+import { Spinner } from '@/components/ui/Spinner';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 
 type FilterType = 'all' | TransactionType;
 
 export function TransactionsPage() {
   const { transactions, fetchTransactions, deleteTransaction, loadingTransactions } = useAppStore();
+  const addToast = useToastStore(s => s.addToast);
   const [filter, setFilter] = useState<FilterType>('all');
   const [search, setSearch] = useState('');
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -42,7 +46,10 @@ export function TransactionsPage() {
   const handleDelete = async (id: string) => {
     await deleteTransaction(id);
     setConfirmDelete(null);
+    addToast('Movimiento eliminado');
   };
+
+  const deletingTx = confirmDelete ? transactions.find(t => t.transaction_id === confirmDelete) : null;
 
   return (
     <div className="space-y-4">
@@ -83,7 +90,7 @@ export function TransactionsPage() {
 
       {/* Lista */}
       {loadingTransactions ? (
-        <div className="text-center py-10 text-slate-500">Cargando...</div>
+        <Spinner />
       ) : Object.keys(grouped).length === 0 ? (
         <div className="text-center py-10">
           <Filter size={32} className="mx-auto text-slate-700 mb-3" />
@@ -138,21 +145,12 @@ export function TransactionsPage() {
                           )}>
                             {tx.transaction_type === 'income' ? '+' : '-'}{formatCurrency(tx.amount)}
                           </p>
-                          {confirmDelete === tx.transaction_id ? (
-                            <button
-                              onClick={() => handleDelete(tx.transaction_id)}
-                              className="text-expense text-xs px-2 py-1 rounded bg-expense/10"
-                            >
-                              Confirmar
-                            </button>
-                          ) : (
-                            <button
-                              onClick={() => setConfirmDelete(tx.transaction_id)}
-                              className="text-slate-600 opacity-0 group-hover:opacity-100 transition-opacity p-1"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          )}
+                          <button
+                            onClick={() => setConfirmDelete(tx.transaction_id)}
+                            className="text-slate-600 opacity-0 group-hover:opacity-100 transition-opacity p-1"
+                          >
+                            <Trash2 size={14} />
+                          </button>
                         </div>
                       </div>
                     ))}
@@ -162,6 +160,17 @@ export function TransactionsPage() {
             })}
         </div>
       )}
+
+      <ConfirmDialog
+        open={!!confirmDelete}
+        title="Eliminar movimiento"
+        message={deletingTx
+          ? `¿Eliminar "${deletingTx.description ?? deletingTx.category?.category_name ?? 'movimiento'}" por ${formatCurrency(deletingTx.amount)}? Esta acción no se puede deshacer.`
+          : '¿Eliminar este movimiento?'
+        }
+        onConfirm={() => confirmDelete && handleDelete(confirmDelete)}
+        onCancel={() => setConfirmDelete(null)}
+      />
     </div>
   );
 }

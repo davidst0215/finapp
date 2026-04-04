@@ -37,9 +37,15 @@ Deno.serve(async (req: Request) => {
     if (!message) {
       return jsonResponse({ error: "Se requiere el campo 'message'" }, 400);
     }
+    if (typeof message !== "string" || message.length > 5000) {
+      return jsonResponse({ error: "Mensaje inválido o demasiado largo" }, 400);
+    }
 
     // Conectar a Supabase con el token del usuario
     const authHeader = req.headers.get("Authorization") ?? "";
+    if (!authHeader.startsWith("Bearer ")) {
+      return jsonResponse({ error: "Token de autorización inválido" }, 401);
+    }
     const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
     const supabase = createClient(supabaseUrl, supabaseKey, {
@@ -66,11 +72,13 @@ Deno.serve(async (req: Request) => {
       },
     ];
 
-    // Agregar historial (últimos 10 mensajes)
+    // Agregar historial (últimos 20 mensajes)
     if (history && Array.isArray(history)) {
-      const recent = history.slice(-10);
+      const recent = history.slice(-20);
       for (const h of recent) {
-        messages.push({ role: h.role, content: h.content });
+        if (h.role && h.content && typeof h.content === "string") {
+          messages.push({ role: h.role, content: h.content.slice(0, 2000) });
+        }
       }
     }
 
@@ -122,8 +130,8 @@ Deno.serve(async (req: Request) => {
 
     return jsonResponse({ reply, tokens_used: tokensUsed });
   } catch (error) {
-    const msg = error instanceof Error ? error.message : "Error desconocido";
-    return jsonResponse({ error: msg }, 500);
+    console.error("ai-chat error:", error);
+    return jsonResponse({ error: "Error interno del servidor. Intenta de nuevo." }, 500);
   }
 });
 

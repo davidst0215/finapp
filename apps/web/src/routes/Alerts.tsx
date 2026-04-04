@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Bell, BellOff, Check, AlertTriangle, CreditCard, Target, RefreshCw, TrendingDown } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
+import { Spinner } from '@/components/ui/Spinner';
 import type { Alert, AlertType } from '@/types/database';
 
 const alertConfig: Record<AlertType, { icon: typeof Bell; color: string; label: string }> = {
@@ -147,7 +148,7 @@ export function AlertsPage() {
       </div>
 
       {loading ? (
-        <div className="text-center py-10 text-slate-500">Cargando...</div>
+        <Spinner />
       ) : alerts.length === 0 ? (
         <div className="card text-center py-10">
           <BellOff size={28} className="mx-auto text-slate-700 mb-3" />

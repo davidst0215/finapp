@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Plus, CreditCard, Wallet, PiggyBank, TrendingUp, X, Check } from 'lucide-react';
 import { useAppStore } from '@/stores/appStore';
+import { useToastStore } from '@/stores/toastStore';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
+import { Spinner } from '@/components/ui/Spinner';
 import type { AccountType } from '@/types/database';
 
 const accountTypeConfig: Record<string, { icon: typeof Wallet; label: string; color: string }> = {
@@ -15,7 +17,8 @@ const accountTypeConfig: Record<string, { icon: typeof Wallet; label: string; co
 };
 
 export function AccountsPage() {
-  const { accounts, fetchAccounts } = useAppStore();
+  const { accounts, fetchAccounts, loadingAccounts } = useAppStore();
+  const addToast = useToastStore(s => s.addToast);
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
   const [type, setType] = useState<AccountType>('checking');
@@ -44,6 +47,7 @@ export function AccountsPage() {
     setShowForm(false);
     setSaving(false);
     fetchAccounts();
+    addToast('Cuenta creada');
   };
 
   const totalBalance = accounts.reduce((sum, acc) => {
@@ -141,7 +145,9 @@ export function AccountsPage() {
         })}
       </div>
 
-      {accounts.length === 0 && !showForm && (
+      {loadingAccounts ? (
+        <Spinner />
+      ) : accounts.length === 0 && !showForm ? (
         <div className="text-center py-10">
           <Wallet size={32} className="mx-auto text-slate-700 mb-3" />
           <p className="text-slate-500">No tienes cuentas configuradas</p>
@@ -149,7 +155,7 @@ export function AccountsPage() {
             Agregar tu primera cuenta
           </button>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

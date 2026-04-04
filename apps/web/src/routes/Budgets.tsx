@@ -2,8 +2,11 @@ import { useEffect, useState } from 'react';
 import { Plus, X, Check, Trash2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAppStore } from '@/stores/appStore';
+import { useToastStore } from '@/stores/toastStore';
 import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
+import { Spinner } from '@/components/ui/Spinner';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 
 interface BudgetStatus {
   budget_id: string;
@@ -24,6 +27,8 @@ export function BudgetsPage() {
   const [categoryId, setCategoryId] = useState('');
   const [amountLimit, setAmountLimit] = useState('');
   const [saving, setSaving] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const addToast = useToastStore(s => s.addToast);
 
   const fetchBudgets = async () => {
     setLoading(true);
@@ -58,11 +63,14 @@ export function BudgetsPage() {
     setShowForm(false);
     setSaving(false);
     fetchBudgets();
+    addToast('Presupuesto creado');
   };
 
   const handleDelete = async (budgetId: string) => {
     await supabase.from('budgets').delete().eq('budget_id', budgetId);
+    setConfirmDeleteId(null);
     fetchBudgets();
+    addToast('Presupuesto eliminado');
   };
 
   const totalLimit = budgets.reduce((s, b) => s + b.amount_limit, 0);
@@ -157,7 +165,7 @@ export function BudgetsPage() {
 
       {/* Lista de presupuestos */}
       {loading ? (
-        <div className="text-center py-10 text-slate-500">Cargando...</div>
+        <Spinner />
       ) : budgets.length === 0 && !showForm ? (
         <div className="card text-center py-10">
           <p className="text-slate-500 text-sm">No tienes presupuestos configurados</p>
@@ -187,7 +195,7 @@ export function BudgetsPage() {
                     </span>
                     <span className="text-xs text-slate-500">/ {formatCurrency(b.amount_limit)}</span>
                     <button
-                      onClick={() => handleDelete(b.budget_id)}
+                      onClick={() => setConfirmDeleteId(b.budget_id)}
                       className="text-slate-700 opacity-0 group-hover:opacity-100 transition-opacity p-1"
                     >
                       <Trash2 size={12} />
@@ -220,6 +228,14 @@ export function BudgetsPage() {
           })}
         </div>
       )}
+
+      <ConfirmDialog
+        open={!!confirmDeleteId}
+        title="Eliminar presupuesto"
+        message="¿Eliminar este presupuesto? Se perderá el seguimiento de gastos de esta categoría."
+        onConfirm={() => confirmDeleteId && handleDelete(confirmDeleteId)}
+        onCancel={() => setConfirmDeleteId(null)}
+      />
     </div>
   );
 }

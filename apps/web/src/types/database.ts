@@ -103,7 +103,7 @@ export interface Budget {
 }
 
 export interface SavingsGoal {
-  savings_goal_id: string;
+  goal_id: string;
   user_id: string;
   goal_name: string;
   target_amount: number;
@@ -115,6 +115,15 @@ export interface SavingsGoal {
   is_completed: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface SavingsContribution {
+  contribution_id: string;
+  goal_id: string;
+  transaction_id: string | null;
+  amount: number;
+  contribution_date: string;
+  created_at: string;
 }
 
 export interface Alert {
@@ -129,6 +138,16 @@ export interface Alert {
   triggered_at: string;
 }
 
+export interface AiChatHistory {
+  chat_id: string;
+  user_id: string;
+  role: string;
+  content: string;
+  tokens_used: number | null;
+  model_used: string | null;
+  created_at: string;
+}
+
 // Supabase Database type for client
 export interface Database {
   public: {
@@ -139,8 +158,10 @@ export interface Database {
       transactions: { Row: Transaction; Insert: Omit<Transaction, 'transaction_id' | 'created_at' | 'updated_at'>; Update: Partial<Transaction> };
       recurring_transactions: { Row: RecurringTransaction; Insert: Omit<RecurringTransaction, 'recurring_id' | 'created_at' | 'updated_at'>; Update: Partial<RecurringTransaction> };
       budgets: { Row: Budget; Insert: Omit<Budget, 'budget_id' | 'created_at' | 'updated_at'>; Update: Partial<Budget> };
-      savings_goals: { Row: SavingsGoal; Insert: Omit<SavingsGoal, 'savings_goal_id' | 'created_at' | 'updated_at'>; Update: Partial<SavingsGoal> };
+      savings_goals: { Row: SavingsGoal; Insert: Omit<SavingsGoal, 'goal_id' | 'created_at' | 'updated_at'>; Update: Partial<SavingsGoal> };
+      savings_contributions: { Row: SavingsContribution; Insert: Omit<SavingsContribution, 'contribution_id' | 'created_at'>; Update: Partial<SavingsContribution> };
       alerts: { Row: Alert; Insert: Omit<Alert, 'alert_id' | 'triggered_at'>; Update: Partial<Alert> };
+      ai_chat_history: { Row: AiChatHistory; Insert: Omit<AiChatHistory, 'chat_id' | 'created_at'>; Update: Partial<AiChatHistory> };
     };
     Functions: {
       fn_get_monthly_summary: {
@@ -149,7 +170,11 @@ export interface Database {
       };
       fn_get_budget_status: {
         Args: Record<string, never>;
-        Returns: { budget_id: string; category_name: string; amount_limit: number; amount_spent: number; percentage_used: number; remaining: number }[];
+        Returns: { budget_id: string; category_name: string; category_icon: string | null; category_color: string | null; amount_limit: number; amount_spent: number; percentage_used: number; remaining: number }[];
+      };
+      fn_get_spending_by_category: {
+        Args: { p_start_date: string; p_end_date: string };
+        Returns: { category_id: string; category_name: string; icon: string | null; color: string | null; total_amount: number; transaction_count: number; percentage: number }[];
       };
     };
   };

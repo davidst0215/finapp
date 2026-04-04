@@ -24,9 +24,9 @@ CREATE POLICY "users_update_own" ON users FOR UPDATE USING (user_id = auth.uid()
 -- Accounts
 CREATE POLICY "accounts_all_own" ON accounts FOR ALL USING (user_id = auth.uid());
 
--- Categories: ver sistema + propias, modificar solo propias
+-- Categories: ver sistema (sin dueño) + propias, modificar solo propias
 CREATE POLICY "categories_select" ON categories FOR SELECT
-    USING (user_id = auth.uid() OR is_system = TRUE);
+    USING (user_id = auth.uid() OR (is_system = TRUE AND user_id IS NULL));
 CREATE POLICY "categories_insert" ON categories FOR INSERT
     WITH CHECK (user_id = auth.uid());
 CREATE POLICY "categories_update" ON categories FOR UPDATE

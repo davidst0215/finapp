@@ -235,8 +235,8 @@ export function ReportsPage() {
       {/* Gráficos */}
       {loadingData ? (
         <div className="text-center py-6 text-slate-500">
-          <Loader2 size={20} className="animate-spin mx-auto mb-2" />
-          Cargando datos...
+          <Loader2 size={24} className="animate-spin mx-auto mb-2 text-primary-500" />
+          <p className="text-sm">Cargando datos...</p>
         </div>
       ) : (
         <>

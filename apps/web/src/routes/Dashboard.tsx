@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { useAppStore } from '@/stores/appStore';
 import { useAuthStore } from '@/stores/authStore';
 import { formatCurrency } from '@/lib/utils';
+import { Spinner } from '@/components/ui/Spinner';
 
 interface MonthlySummary {
   total_income: number;
@@ -17,7 +18,7 @@ interface MonthlySummary {
 
 export function DashboardPage() {
   const profile = useAuthStore(s => s.profile);
-  const { transactions, accounts, fetchTransactions, fetchAccounts } = useAppStore();
+  const { transactions, accounts, fetchTransactions, fetchAccounts, loadingTransactions } = useAppStore();
   const [summary, setSummary] = useState<MonthlySummary | null>(null);
 
   useEffect(() => {
@@ -117,7 +118,9 @@ export function DashboardPage() {
             Ver todos <ArrowRight size={14} />
           </Link>
         </div>
-        {transactions.length === 0 ? (
+        {loadingTransactions ? (
+          <Spinner />
+        ) : transactions.length === 0 ? (
           <div className="card text-center py-8">
             <p className="text-slate-500">No hay movimientos aún</p>
             <Link to="/add" className="text-primary-500 text-sm mt-2 inline-block">
