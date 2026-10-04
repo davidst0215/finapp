@@ -3,7 +3,8 @@ import { ArrowUp, Mic } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAppStore } from '@/stores/appStore';
 import { useAuthStore } from '@/stores/authStore';
-import { supabase } from '@/lib/supabase';
+import { supabase, functionUrl, calentarFunciones } from '@/lib/supabase';
+import { reproducirStream, type Reproduccion } from '@/lib/audioStream';
 import { cn } from '@/lib/utils';
 
 type OrbState = 'idle' | 'listening' | 'thinking' | 'speaking';
@@ -25,7 +26,11 @@ export function AddTransactionPage() {
   // Conversation memory (last 5 exchanges)
   const conversationRef = useRef<ConversationEntry[]>([]);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const reproduccionRef = useRef<Reproduccion | null>(null);
+  const vozAbortRef = useRef<AbortController | null>(null);
+  // Cada pedido es un turno. Lo que llega de un turno viejo (respuesta tardía, voz interrumpida)
+  // no toca el estado: si no, un turno anterior deja el orb en reposo en medio del siguiente.
+  const turnoRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isHoldingRef = useRef(false);
   const transcriptRef = useRef('');
@@ -34,6 +39,9 @@ export function AddTransactionPage() {
     fetchAccounts();
     fetchCategories();
   }, [fetchAccounts, fetchCategories]);
+
+  // Al abrir la pantalla o el teclado, despierta agente y voz para que el primer pedido no pague el arranque.
+  useEffect(() => { calentarFunciones('agent', 'tts'); }, [showInput]);
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -55,8 +63,68 @@ export function AddTransactionPage() {
     }
   }, [isFirstUse]);
 
+  // Corta la voz en curso: la descarga de /tts, el audio y la voz de respaldo del navegador.
+  const cortarVoz = useCallback(() => {
+    vozAbortRef.current?.abort();
+    vozAbortRef.current = null;
+    reproduccionRef.current?.detener();
+    reproduccionRef.current = null;
+    window.speechSynthesis?.cancel();
+  }, []);
+
+  // ── Voz (ElevenLabs, suena mientras llega) ──
+  const speak = useCallback(async (text: string, vigente: () => boolean): Promise<void> => {
+    setOrbState('speaking');
+    const abort = new AbortController();
+    vozAbortRef.current = abort;
+    let sono = false;
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error('Sin sesión');
+
+      const response = await fetch(functionUrl('tts'), {
+        method: 'POST',
+        signal: abort.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+          'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+        },
+        body: JSON.stringify({ text: text.slice(0, 400) }),
+      });
+      if (!response.ok) throw new Error('TTS failed');
+      if (!vigente()) return;
+
+      const reproduccion = reproducirStream(response, new Audio());
+      reproduccionRef.current = reproduccion;
+      sono = await reproduccion.fin;
+    } catch {
+      // Interrumpida o sin red: se decide abajo.
+    } finally {
+      if (vozAbortRef.current === abort) vozAbortRef.current = null;
+    }
+
+    // Si la voz de Wabid no llegó a sonar, la del navegador lee el mismo texto.
+    if (sono || !vigente() || !('speechSynthesis' in window)) return;
+    await new Promise<void>((ok) => {
+      // Algunos navegadores nunca disparan onend/onerror: el tope evita un orb "hablando" para siempre.
+      const tope = setTimeout(ok, text.length * 90 + 3000);
+      const listo = () => { clearTimeout(tope); ok(); };
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = 'es-PE';
+      u.onend = listo;
+      u.onerror = listo;
+      window.speechSynthesis.speak(u);
+    });
+  }, []);
+
   // ── Agent call with conversation memory ──
   const callAgent = useCallback(async (text: string) => {
+    const turno = ++turnoRef.current;
+    const vigente = () => turnoRef.current === turno;
+    cortarVoz();
     setOrbState('thinking');
     setSubtitle('');
 
@@ -65,6 +133,8 @@ export function AddTransactionPage() {
     if (conversationRef.current.length > 10) conversationRef.current = conversationRef.current.slice(-10);
 
     const timeout = setTimeout(() => {
+      if (!vigente()) return;
+      turnoRef.current++; // la respuesta que llegue tarde ya no habla
       setOrbState('idle');
       setSubtitle('No pude procesar, intenta de nuevo');
       setTimeout(() => setSubtitle(''), 4000);
@@ -84,6 +154,7 @@ export function AddTransactionPage() {
       });
 
       clearTimeout(timeout);
+      if (!vigente()) return; // David ya empezó otro turno o se venció el tiempo
 
       if (response.error) throw new Error(response.error.message);
       const data = response.data;
@@ -97,78 +168,35 @@ export function AddTransactionPage() {
 
       // Show subtitle and speak
       setSubtitle(message);
-      await speak(message);
+      await speak(message, vigente);
+      if (!vigente()) return;
 
-      // Clear subtitle after speaking (or after 6s for long text)
-      setTimeout(() => {
-        setSubtitle('');
-        setOrbState('idle');
-      }, Math.min(message.length * 60, 8000));
+      // Apenas termina la voz se puede volver a hablar; el subtítulo queda un momento para leerlo.
+      setOrbState('idle');
+      setTimeout(() => setSubtitle(s => (s === message ? '' : s)), 2500);
 
     } catch (err) {
       clearTimeout(timeout);
+      if (!vigente()) return;
       const errMsg = err instanceof Error ? err.message : 'Error';
       setSubtitle(errMsg);
       setOrbState('idle');
       setTimeout(() => setSubtitle(''), 4000);
     }
-  }, []);
-
-  // ── TTS (OpenAI nova) ──
-  const speak = useCallback(async (text: string): Promise<void> => {
-    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
-
-    setOrbState('speaking');
-
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/tts`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`,
-          'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
-        },
-        body: JSON.stringify({ text: text.slice(0, 400) }),
-      });
-
-      if (!response.ok) throw new Error('TTS failed');
-
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-
-      return new Promise((resolve) => {
-        const audio = new Audio(url);
-        audioRef.current = audio;
-        audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
-        audio.onerror = () => { URL.revokeObjectURL(url); resolve(); };
-        audio.play().catch(resolve);
-      });
-    } catch {
-      // Fallback browser TTS
-      if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-        const u = new SpeechSynthesisUtterance(text);
-        u.lang = 'es-PE';
-        u.rate = 1;
-        window.speechSynthesis.speak(u);
-      }
-    }
-  }, []);
+  }, [cortarVoz, speak]);
 
   // ── Hold-to-talk ──
   const startHold = useCallback(() => {
     if (orbState === 'speaking') {
-      // Interrupt: stop audio and go idle
-      if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
-      window.speechSynthesis?.cancel();
+      // Interrumpir: termina el turno y corta la voz, aunque la descarga de /tts siga en curso.
+      turnoRef.current++;
+      cortarVoz();
       setOrbState('idle');
       setSubtitle('');
       return;
     }
     if (orbState !== 'idle') return;
+    calentarFunciones('agent', 'tts');
 
     isHoldingRef.current = true;
     transcriptRef.current = '';
@@ -214,7 +242,7 @@ export function AddTransactionPage() {
 
     recognitionRef.current = recognition;
     recognition.start();
-  }, [orbState, callAgent]);
+  }, [orbState, callAgent, cortarVoz]);
 
   const endHold = useCallback(() => {
     isHoldingRef.current = false;

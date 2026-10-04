@@ -1,10 +1,11 @@
 import { comentario, conComentario } from "../prompt.ts";
 import { type AgentContext, type AgentModule, tool } from "../types.ts";
+import { type FiltroRecurrentes, type Recurrente, resumenRecurrentes } from "./recurrentes.ts";
 
 type Account = { account_id: string; account_name: string; current_balance: number; account_type: string };
 type Category = { category_id: string; category_name: string; category_type: string };
 type Goal = { goal_id: string; goal_name: string; target_amount: number; current_amount: number; target_date: string | null };
-type Data = { accounts: Account[]; categories: Category[]; goals: Goal[] };
+type Data = { accounts: Account[]; categories: Category[]; goals: Goal[]; recurring: Recurrente[]; paidIds: Set<string>; recurrentesOk: boolean };
 
 const MESES = ["", "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
 const FRECUENCIA: Record<string, string> = { daily: "diario", weekly: "semanal", biweekly: "quincenal", monthly: "mensual", quarterly: "trimestral", annual: "anual" };
@@ -23,6 +24,7 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
   const prevYear = month === 1 ? year - 1 : year;
   const monthStart = `${year}-${String(month).padStart(2, "0")}-01`;
   const monthEnd = new Date(year, month, 0).toISOString().slice(0, 10);
+  const nextMonthStart = month === 12 ? `${year + 1}-01-01` : `${year}-${String(month + 1).padStart(2, "0")}-01`;
 
   const [accountsRes, categoriesRes, goalsRes, summaryRes, prevSummaryRes, spendRes, prevSpendRes, budgetsRes, recentRes, recurringRes, paidRes] = await Promise.all([
     supabase.from("accounts").select("account_id, account_name, current_balance, account_type").eq("user_id", user.id).eq("is_active", true),
@@ -40,8 +42,9 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
       .eq("user_id", user.id).order("transaction_date", { ascending: false }).limit(10),
     supabase.from("recurring_transactions").select("recurring_id, description, amount, frequency, next_due_date")
       .eq("user_id", user.id).eq("is_active", true).order("next_due_date"),
+    // Pagos de este mes en hora de Lima: un pago a las 20:00 del 30 es del 30, no del 1 (UTC).
     supabase.from("transactions").select("recurring_id").eq("user_id", user.id).eq("is_recurring", true)
-      .gte("transaction_date", monthStart).lte("transaction_date", `${monthEnd}T23:59:59`),
+      .gte("transaction_date", `${monthStart}T00:00:00-05:00`).lt("transaction_date", `${nextMonthStart}T00:00:00-05:00`),
   ]);
 
   const accounts = (accountsRes.data ?? []) as Account[];
@@ -53,8 +56,10 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
   const prevCats = (prevSpendRes.data ?? []) as { category_name: string; total_amount: number }[];
   const budgets = (budgetsRes.data ?? []) as { category_name: string; amount_spent: number; amount_limit: number; percentage_used: number }[];
   const recent = recentRes.data ?? [];
-  const recurring = (recurringRes.data ?? []) as { recurring_id: string; description: string; amount: number; frequency: string; next_due_date: string }[];
-  const paidIds = new Set((paidRes.data ?? []).map((t: { recurring_id: string | null }) => t.recurring_id).filter(Boolean));
+  const recurring = (recurringRes.data ?? []) as Recurrente[];
+  const paidIds = new Set((paidRes.data ?? []).map((t: { recurring_id: string | null }) => t.recurring_id).filter((id): id is string => Boolean(id)));
+  // Con un error de lectura, "no tienes pagos fijos" sería falso e invitaría a duplicarlos.
+  const recurrentesOk = !recurringRes.error && !paidRes.error;
 
   const daysInMonth = new Date(year, month, 0).getDate();
   const day = limaNow.getDate();
@@ -117,7 +122,7 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
     }
   }
 
-  return { prompt: ctxLines.join("\n"), data: { accounts, categories, goals } };
+  return { prompt: ctxLines.join("\n"), data: { accounts, categories, goals, recurring, paidIds, recurrentesOk } };
 }
 
 const nextDueDate = (current: string, frequency: string): string => {
@@ -175,13 +180,12 @@ export const finanzas: AgentModule<Data> = {
     tool("pay_recurring", "Marca un pago recurrente como pagado: crea la transacción y avanza la próxima fecha. Usa cuando dice 'ya pagué Netflix', 'pagué el alquiler'.", {
       search_description: { type: "string", description: "Nombre del recurrente a marcar como pagado" },
     }, ["search_description"]),
-    tool("list_recurring", "Lista suscripciones y pagos recurrentes: mis suscripciones, qué pagos tengo, cuáles ya pagué, qué falta pagar.", {
-      filter: { type: "string", enum: ["all", "pending", "paid"], description: "all=todos, pending=sin pagar este mes, paid=ya pagados" },
-      answer: { type: "string", description: "Tu respuesta conversacional listando los recurrentes. Habla natural, sin listas." },
-    }, ["filter", "answer"]),
+    tool("list_recurring", "Lista suscripciones y pagos recurrentes: mis suscripciones, qué pagos tengo, cuáles ya pagué, qué falta pagar. El sistema arma la respuesta con los datos.", {
+      filter: { type: "string", enum: ["all", "pending", "paid"], description: "all=todos, pending=lo que falta pagar este mes, paid=ya pagados este mes" },
+    }, ["filter"]),
     tool("analyze_finances", "Analiza patrones financieros, proyecciones y comparaciones: ¿cómo voy?, ¿me alcanza?, ¿en qué gasto más?, ¿dónde puedo ahorrar?", {
       analysis_type: { type: "string", enum: ["projection", "comparison", "recommendations", "overview", "alert_check"] },
-      answer: { type: "string", description: "Tu análisis basado en los datos reales del contexto, en frases cortas para leer en voz (sin bullets). Montos en cifras S/ 0.00 y porcentajes reales." },
+      answer: { type: "string", description: "Respuesta FINAL que David escucha, con los números reales del contexto, en frases cortas (sin bullets). Montos en cifras S/ 0.00. Nunca un marcador ni 'déjame revisar': si no hay datos, dilo." },
     }, ["analysis_type", "answer"]),
   ],
   handlers: {
@@ -289,7 +293,11 @@ export const finanzas: AgentModule<Data> = {
       await supabase.from("recurring_transactions").update({ next_due_date: proximo }).eq("recurring_id", rec.recurring_id);
       return { action: "pay_recurring", message: `${rec.description} de S/ ${Number(rec.amount).toFixed(2)} marcado como pagado. Próximo pago: ${proximo}.` };
     },
-    list_recurring: async (args) => ({ action: "list_recurring", message: str(args.answer) }),
+    list_recurring: async (args, { limaNow }, { recurring, paidIds, recurrentesOk }) => {
+      if (!recurrentesOk) return err("No pude leer tus pagos fijos. Intenta de nuevo en un momento.");
+      const filtro = (["all", "pending", "paid"].includes(str(args.filter)) ? str(args.filter) : "pending") as FiltroRecurrentes;
+      return { action: "list_recurring", message: resumenRecurrentes(recurring, paidIds, limaNow.toISOString().slice(0, 10), filtro) };
+    },
     analyze_finances: async (args) => ({ action: "analyze_finances", message: str(args.answer) }),
   },
 };
