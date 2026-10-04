@@ -255,12 +255,12 @@ export function applyStatus(text: string, ref: TaskRef, status: TaskStatus, toda
   return { text: joinDoc(doc), line: idx, raw: next, changed: true };
 }
 
-/** Texto seguro para una línea de Tasks: sin saltos, sin emojis de metadata, sin '#', sin checkbox al inicio. */
+/** Texto seguro para una línea de Tasks: sin saltos, sin emojis de metadata, sin # que abra un tag, sin checkbox al inicio. */
 export function cleanText(s: unknown, max = 300): string {
   return String(s ?? "")
     .replace(/[\r\n]+/g, " ")
     .replace(RE_TASK_EMOJI, "")
-    .replace(/#/g, "")
+    .replace(/(^|\s)#+(?=[\w/-])/g, "$1") // solo el # que abre un tag; "PR #42" → "PR 42", "C#" se queda
     .replace(/^\s*(?:[-*]\s+)?(?:\[[ xX/?\-]\]\s*)?/, "")
     .replace(/\s{2,}/g, " ")
     .trim()

@@ -13,10 +13,13 @@ import type {
 
 export class VaultApiError extends Error {
   status: number;
-  constructor(message: string, status = 0) {
+  /** Mover: la tarea se copió al destino pero no se pudo quitar del origen (quedó duplicada). */
+  partial: boolean;
+  constructor(message: string, status = 0, partial = false) {
     super(message);
     this.name = 'VaultApiError';
     this.status = status;
+    this.partial = partial;
   }
 }
 
@@ -33,21 +36,37 @@ async function call<T>(body: Record<string, unknown>): Promise<T> {
     // Las respuestas no-2xx traen el motivo del servidor en el cuerpo: { error: "…" }.
     let message = error.message;
     let status = 0;
+    let partial = false;
     if (error instanceof FunctionsHttpError) {
       status = error.context.status;
       try {
-        const payload = (await error.context.json()) as { error?: unknown };
+        const payload = (await error.context.json()) as { error?: unknown; partial?: unknown };
         if (payload?.error) message = String(payload.error);
+        partial = payload?.partial === true;
       } catch {
         /* el cuerpo no era JSON: queda el mensaje genérico */
       }
     }
-    throw new VaultApiError(message, status);
+    throw new VaultApiError(message, status, partial);
   }
   if (data && typeof data === 'object' && 'error' in data && data.error) {
     throw new VaultApiError(String((data as { error: unknown }).error));
   }
   return data as T;
+}
+
+export interface SyncResponse {
+  ok: true;
+  skipped: boolean;
+  /** Quedan archivos por traer: volver a llamar para continuar (el vault es grande). */
+  partial: boolean;
+  added: number;
+  updated: number;
+  removed: number;
+  unchanged: number;
+  docs: number;
+  tasks: number;
+  syncedAt: string;
 }
 
 export const vaultApi = {
@@ -56,7 +75,7 @@ export const vaultApi = {
     call<TasksResponse>({ action: 'tasks', refresh: opts.refresh ?? false }),
 
   /** Sincroniza el índice con GitHub ahora mismo. */
-  sync: () => call<{ ok: true; changed: number; syncedAt: string }>({ action: 'sync', force: true }),
+  sync: () => call<SyncResponse>({ action: 'sync', force: true }),
 
   createTask: (input: CreateTaskInput) =>
     call<TaskMutationResponse>({ action: 'task.create', ...input }),

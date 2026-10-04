@@ -17,9 +17,8 @@ export interface SearchOutcome {
 }
 
 /**
- * Búsqueda en dos fases: primero las fuentes con sus fragmentos (rápido) y después la respuesta redactada,
- * que se inserta arriba cuando llega. Si la segunda falla, las fuentes se quedan y se muestra el motivo.
- * Cada búsqueda nueva invalida a la anterior: una respuesta que llega tarde se descarta.
+ * Búsqueda: primero las fuentes con sus fragmentos (rápido, sin modelo). La respuesta redactada es explícita
+ * (botón "Responder"): cada búsqueda no gasta una llamada al modelo. Una búsqueda nueva invalida a la anterior.
  */
 export function useSearch() {
   const [query, setQuery] = useState('');
@@ -75,7 +74,7 @@ export function useSearch() {
       recentsRef.current = next;
       setRecents(next);
       saveRecents(next);
-      setPhase('answering');
+      setPhase('done');
     } catch (e) {
       if (mine !== seq.current) return;
       setError(errorMessage(e));
@@ -83,8 +82,16 @@ export function useSearch() {
       return;
     }
 
+  }, []);
+
+  /** La respuesta redactada cuesta una llamada al modelo: solo se pide cuando David toca "Responder". */
+  const requestAnswer = useCallback(async () => {
+    const q = query.trim();
+    if (!q) return;
+    const mine = ++seq.current;
+    setPhase('answering');
     try {
-      const full = await vaultApi.search(q, { cliente: filter, answer: true });
+      const full = await vaultApi.search(q, { cliente, answer: true });
       if (mine !== seq.current) return;
       // Las fuentes ya están en pantalla (y quizá abiertas): solo se agrega la respuesta.
       setOutcome((cur) => cur && { ...cur, answer: full.answer, answerError: full.answer ? null : full.answerError });
@@ -93,7 +100,7 @@ export function useSearch() {
       setOutcome((cur) => cur && { ...cur, answerError: errorMessage(e) });
     }
     if (mine === seq.current) setPhase('done');
-  }, []);
+  }, [query, cliente]);
 
   const submit = useCallback((text?: string) => run(text ?? query, cliente), [run, query, cliente]);
 
@@ -134,6 +141,7 @@ export function useSearch() {
     error,
     recents,
     submit,
+    requestAnswer,
     selectCliente,
     clear,
     forgetRecents,

@@ -233,7 +233,7 @@ END $$;
 --   p_query    texto libre (sintaxis tipo buscador: "frase exacta", -excluir, a or b)
 --   p_cliente  filtra por cliente (sin distinguir mayúsculas); NULL = todos
 --   p_kinds    tipos a buscar; NULL = fichas y notas (los pendientes se consultan como tareas)
---   p_context  true = también devuelve fragmentos largos para que el modelo redacte la respuesta
+--   p_context  true = también devuelve fragmentos largos (solo de los 4 primeros) para que el modelo redacte la respuesta
 -- Si la búsqueda estricta (todas las palabras) no encuentra nada, se relaja a "cualquiera de las palabras".
 -- Las coincidencias del fragmento vienen entre ⟦ y ⟧.
 -- ------------------------------------------------------------
@@ -277,7 +277,8 @@ BEGIN
     RETURN QUERY
     WITH hits AS (
         SELECT d.path, d.kind, d.title, d.cliente, d.proyecto, d.padre, d.tags, d.links, d.content,
-               (ts_rank_cd(d.search, v_q, 33) * CASE WHEN d.kind = 'ficha' THEN 1.25 ELSE 1.0 END)::REAL AS rk
+               (ts_rank_cd(d.search, v_q, 33) * CASE WHEN d.kind = 'ficha' THEN 1.25 ELSE 1.0 END)::REAL AS rk,
+               row_number() OVER (ORDER BY ts_rank_cd(d.search, v_q, 33) * CASE WHEN d.kind = 'ficha' THEN 1.25 ELSE 1.0 END DESC, d.title) AS rn
         FROM vault_docs d
         WHERE d.user_id = auth.uid() AND d.kind = ANY (v_kinds) AND d.search @@ v_q
           AND (p_cliente IS NULL OR lower(d.cliente) = lower(p_cliente))
@@ -285,10 +286,10 @@ BEGIN
         LIMIT v_limit
     )
     SELECT h.path, h.kind, h.title, h.cliente, h.proyecto, h.padre, h.tags, h.links, h.rk,
-           ts_headline('public.vault_es', h.content, v_q,
+           ts_headline('public.vault_es', left(h.content, 20000), v_q,
                        'StartSel=⟦, StopSel=⟧, MaxFragments=1, MaxWords=32, MinWords=14'),
-           CASE WHEN p_context THEN
-               ts_headline('public.vault_es', h.content, v_q,
+           CASE WHEN p_context AND h.rn <= 4 THEN   -- el modelo solo recibe las 4 mejores
+               ts_headline('public.vault_es', left(h.content, 20000), v_q,
                            'StartSel=⟦, StopSel=⟧, MaxFragments=3, MaxWords=60, MinWords=25, FragmentDelimiter=" … "')
            END
     FROM hits h

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { vaultApi } from './api';
+import { vaultApi, VaultApiError } from './api';
 import { errorMessage } from './format';
 import type { CreateTaskInput, TaskRef, TasksResponse, TaskStatus, VaultTask } from './types';
 
@@ -10,6 +10,12 @@ export type ActionResult = { ok: true } | { ok: false; message: string };
 
 const OK: ActionResult = { ok: true };
 const failure = (e: unknown): ActionResult => ({ ok: false, message: errorMessage(e) });
+
+// Mover a medias: la tarea está en las dos carpetas. Se dice claro para que David la borre de una.
+const moveFailure = (e: unknown): ActionResult =>
+  e instanceof VaultApiError && e.partial
+    ? { ok: false, message: 'Quedó duplicada: se copió al destino pero no se quitó del origen. Revisa y borra una.' }
+    : failure(e);
 
 interface LoadOptions {
   /** Pide al servidor sincronizar con GitHub antes (él decide si pasó más de un minuto). */
@@ -86,7 +92,10 @@ export function useTasks() {
       inFlight.current += 1;
       setFetching(true);
       try {
-        if (force) await vaultApi.sync();
+        if (force) {
+          // Vault grande: la sincronización llega por tandas; se sigue hasta completar (tope de seguridad).
+          for (let i = 0; i < 6; i++) if (!(await vaultApi.sync()).partial) break;
+        }
         const res = await vaultApi.tasks({ refresh: force ? false : refresh });
         if (mine !== seq.current) return;
         commit(res);
@@ -183,7 +192,7 @@ export function useTasks() {
         return OK;
       } catch (e) {
         void load({ refresh: false, silent: true });
-        return failure(e);
+        return moveFailure(e);
       } finally {
         mark(task.id, false);
       }

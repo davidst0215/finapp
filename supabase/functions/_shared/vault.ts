@@ -61,6 +61,9 @@ export const github = (env: VaultEnv): GitHubApi => createGitHub({ token: env.to
 
 // --- Lectura del índice --------------------------------------------------------------------------
 const PAGE = 1000;
+/** Archivos por corrida de sync y por lote persistido (la primera sync de un vault grande llega en varias llamadas). */
+const MAX_PER_RUN = 150;
+const BATCH = 25;
 
 async function selectAll<T>(
   page: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
@@ -122,24 +125,6 @@ export async function indexWrites(db: SupabaseClient, userId: string, writes: Fi
   await applyBatch(db, userId, { docs, files });
 }
 
-/** Reparte en grupos acotados (filas y tamaño) para no mandar un cuerpo enorme a PostgREST. */
-function chunkDocs(docs: DocRow[], maxDocs = 40, maxChars = 600_000): DocRow[][] {
-  const out: DocRow[][] = [];
-  let cur: DocRow[] = [];
-  let size = 0;
-  for (const d of docs) {
-    if (cur.length && (cur.length >= maxDocs || size + d.content.length > maxChars)) {
-      out.push(cur);
-      cur = [];
-      size = 0;
-    }
-    cur.push(d);
-    size += d.content.length;
-  }
-  if (cur.length) out.push(cur);
-  return out;
-}
-
 async function mapPool<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
   let next = 0;
@@ -162,6 +147,8 @@ export type SyncResult = {
   docs: number;
   tasks: number;
   syncedAt: string;
+  /** Quedan archivos por traer (vault grande): volver a llamar a sync para continuar. */
+  partial: boolean;
 };
 
 /**
@@ -176,7 +163,7 @@ export async function syncIndex(
 ): Promise<SyncResult> {
   const state = await getSyncState(db, userId);
   const summary = (extra: Partial<SyncResult>): SyncResult => ({
-    skipped: false, added: 0, updated: 0, removed: 0, unchanged: 0,
+    skipped: false, partial: false, added: 0, updated: 0, removed: 0, unchanged: 0,
     docs: state?.docs ?? 0, tasks: state?.tasks ?? 0, syncedAt: state?.synced_at ?? new Date().toISOString(), ...extra,
   });
   if (!opts.force && state && opts.maxAgeMs !== undefined && Date.now() - Date.parse(state.synced_at) < opts.maxAgeMs) {
@@ -200,34 +187,38 @@ export async function syncIndex(
   );
   const plan = planSync(tree.entries, existing);
 
-  const fetched = await mapPool(plan.fetch, 6, async (e) => ({ entry: e, text: await gh.getBlob(e.sha) }));
-  const docs: DocRow[] = [];
-  const files = new Map<string, TaskRow[]>();
-  for (const { entry, text } of fetched) {
-    const r = rowsForFile(entry.path, text, entry.sha);
-    if (r.doc) docs.push(r.doc);
-    if (r.tasks) files.set(entry.path, r.tasks);
-  }
-
-  const groups = chunkDocs(docs);
-  if (!groups.length) groups.push([]);
-  for (let i = 0; i < groups.length; i++) {
-    const g = groups[i];
-    const last = i === groups.length - 1;
+  // Por tandas: se baja, se parsea y se persiste cada una antes de pedir la siguiente (memoria acotada), y una
+  // corrida procesa como máximo MAX_PER_RUN archivos. Si quedan, el sha del árbol NO se guarda y se devuelve
+  // partial: true; la siguiente llamada continúa donde quedó (lo ya indexado cuenta como sin cambios).
+  const todo = plan.fetch.slice(0, MAX_PER_RUN);
+  const partial = plan.fetch.length > todo.length;
+  let first = true;
+  for (let i = 0; i < Math.max(todo.length, 1); i += BATCH) {
+    const slice = todo.slice(i, i + BATCH);
+    const fetched = await mapPool(slice, 6, async (e) => ({ entry: e, text: await gh.getBlob(e.sha) }));
+    const docs: DocRow[] = [];
+    const files: { path: string; tasks: TaskRow[] }[] = [];
+    for (const { entry, text } of fetched) {
+      const r = rowsForFile(entry.path, text, entry.sha);
+      if (r.doc) docs.push(r.doc);
+      if (r.tasks) files.push({ path: entry.path, tasks: r.tasks });
+    }
+    const last = i + BATCH >= todo.length;
     await applyBatch(db, userId, {
-      docs: g,
-      files: g.flatMap((d) => (files.has(d.path) ? [{ path: d.path, tasks: files.get(d.path)! }] : [])),
-      remove: i === 0 ? plan.remove : undefined,
-      treeSha: last ? tree.sha : undefined,
+      docs,
+      files,
+      remove: first ? plan.remove : undefined,
+      treeSha: last && !partial ? tree.sha : undefined,
     });
+    first = false;
   }
 
   const fresh = await getSyncState(db, userId);
-  const added = plan.fetch.filter((e) => !existing.has(e.path)).length;
   return {
     skipped: false,
-    added,
-    updated: plan.fetch.length - added,
+    partial,
+    added: plan.fetch.slice(0, MAX_PER_RUN).filter((e) => !existing.has(e.path)).length,
+    updated: todo.length - plan.fetch.slice(0, MAX_PER_RUN).filter((e) => !existing.has(e.path)).length,
     removed: plan.remove.length,
     unchanged: plan.unchanged,
     docs: fresh?.docs ?? 0,

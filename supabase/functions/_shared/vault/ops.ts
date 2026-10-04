@@ -147,6 +147,18 @@ export async function opMoveTask(
   try {
     const source = await updateFile(repo, path, (cur) => {
       if (cur === null) return null;
+      // Releer y comparar: si el bloque cambió desde que se copió (alguien agregó una subtarea o detalle),
+      // quitarlo borraría líneas que no se copiaron. Mejor dejarla duplicada.
+      let ahora: string[];
+      try {
+        ahora = takeBlock(cur, args.ref).block;
+      } catch (e) {
+        if (e instanceof TaskNotFoundError) return null; // ya no está en el origen
+        throw e;
+      }
+      if (ahora.length !== block.length || ahora.some((l, i) => l !== block[i])) {
+        throw new Error("la tarea cambió en el origen mientras se movía");
+      }
       const d = dropBlock(cur, args.ref);
       return d.removed ? d.text : null;
     }, commit(`sacar tarea movida a ${args.toFolder}`, title));

@@ -11,7 +11,7 @@ import { fechaHablada, resolveDue } from "../../_shared/vault/fechas.ts";
 import { findTask } from "../../_shared/vault/match.ts";
 import { corto, hablado, preguntaCual, preguntaDonde, resumenGeneral, resumenTareas } from "../../_shared/vault/speech.ts";
 import { classify, INBOX_FOLDER, resolveFolder } from "../../_shared/vault/taxonomy.ts";
-import { isLevel, isStatus, type TaskStatus } from "../../_shared/vault/tasks.ts";
+import { cleanText, isLevel, isStatus, type TaskStatus } from "../../_shared/vault/tasks.ts";
 import type { TaskRow } from "../../_shared/vault/types.ts";
 import { buildTasksView, isOpen, toViewTask, type ViewTask } from "../../_shared/vault/view.ts";
 
@@ -118,7 +118,8 @@ const createTaskTool: Handler = async (args, ctx) => {
     note: str(args.note).trim() || undefined,
   }, hoy);
   const donde = folder === INBOX_FOLDER ? "el cajón" : hablado(classify(folder, env.config));
-  const base = `Listo, anoté «${corto(text, 60)}» en ${donde}${r.due ? ` para ${fechaHablada(r.due, hoy)}` : ""}.${aviso}`;
+  const guardado = r.task?.text ?? cleanText(text); // lo realmente guardado (sin # de tags ni emojis de metadata)
+  const base = `Listo, anoté «${corto(guardado, 60)}» en ${donde}${r.due ? ` para ${fechaHablada(r.due, hoy)}` : ""}.${aviso}`;
   return { action: "create_task", message: conComentario(base, args), data: r.task };
 };
 
@@ -144,7 +145,7 @@ const updateTask: Handler = async (args, ctx) => {
 
   // Si el índice está atrasado (David acaba de crearla en Norte), se sincroniza una vez y se reintenta.
   for (let intento = 0; intento < 2; intento++) {
-    if (intento === 1) await syncIndex(db, userId, env, { force: true });
+    if (intento === 1) await syncIndex(db, userId, env, { maxAgeMs: 30_000 }); // si acaba de sincronizar, no vuelve a pedir el árbol
     const found = findTask(search, candidatas(await loadTaskRows(db, userId)), env.config);
     if (found.kind === "many") {
       return { action: "clarify", message: preguntaCual(found.matches.map((m) => toViewTask(m.row, env.config, hoy))) };

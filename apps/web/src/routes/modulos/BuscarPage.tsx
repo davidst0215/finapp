@@ -44,6 +44,7 @@ export function BuscarPage() {
     error,
     recents,
     submit,
+    requestAnswer,
     selectCliente,
     clear,
     forgetRecents,
@@ -117,6 +118,11 @@ export function BuscarPage() {
               />
             ) : (
               <SourceList sources={outcome.sources} answerError={outcome.answerError} />
+            )}
+            {!outcome.answer && phase === 'done' && (
+              <button type="button" className="btn-secondary w-full min-h-[44px]" onClick={() => void requestAnswer()}>
+                Responder con estas fuentes
+              </button>
             )}
           </>
         )}

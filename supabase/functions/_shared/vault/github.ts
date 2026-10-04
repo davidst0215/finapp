@@ -52,12 +52,17 @@ export function utf8ToBase64(text: string): string {
   return btoa(bin);
 }
 
-export function base64ToUtf8(b64: string): string {
+/** `strict`: lanza si los bytes no son UTF-8 válido (ruta de escritura: nunca reescribir un archivo con � en su lugar). */
+export function base64ToUtf8(b64: string, strict = false): string {
   const bin = atob(b64.replace(/\s/g, ""));
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  // ignoreBOM: conservar el BOM si el archivo lo trae, para reescribirlo byte a byte igual.
-  return new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
+  try {
+    // ignoreBOM: conservar el BOM si el archivo lo trae, para reescribirlo byte a byte igual.
+    return new TextDecoder("utf-8", { ignoreBOM: true, fatal: strict }).decode(bytes);
+  } catch {
+    throw new GitHubError("archivo no UTF-8: no se modifica", 415);
+  }
 }
 
 const encodePath = (path: string) => path.split("/").map(encodeURIComponent).join("/");
@@ -117,9 +122,10 @@ export function createGitHub(cfg: GitHubConfig): GitHubApi {
     }
   }
 
-  async function getBlob(sha: string): Promise<string> {
+  // El índice tolera bytes raros (los muestra como �); la ruta de escritura (getFile) no.
+  async function getBlob(sha: string, strict = false): Promise<string> {
     const json = (await request("GET", `${repoUrl}/git/blobs/${encodeURIComponent(sha)}`)) as { content: string; encoding: string };
-    return json.encoding === "base64" ? base64ToUtf8(json.content) : json.content;
+    return json.encoding === "base64" ? base64ToUtf8(json.content, strict) : json.content;
   }
 
   return {
@@ -144,9 +150,9 @@ export function createGitHub(cfg: GitHubConfig): GitHubApi {
       const f = json as { content?: string; encoding?: string; sha: string; size?: number };
       // Los archivos de más de 1 MB no traen contenido en este endpoint: se lee el blob.
       if (f.encoding === "base64" && typeof f.content === "string" && (f.content.length > 0 || !f.size)) {
-        return { text: base64ToUtf8(f.content), sha: f.sha };
+        return { text: base64ToUtf8(f.content, true), sha: f.sha };
       }
-      return { text: await getBlob(f.sha), sha: f.sha };
+      return { text: await getBlob(f.sha, true), sha: f.sha };
     },
 
     async putFile(path, text, sha, message) {
