@@ -43,28 +43,20 @@ Deno.serve(async (req: Request) => {
     const { text } = await req.json();
     if (!text || typeof text !== "string" || text.length > 600) return jsonError("Texto inválido", 400);
 
-    // ElevenLabs arranca mientras se valida la sesión (~0.1 s menos de espera); si la sesión
-    // no es válida, se cancela antes de devolver nada.
-    const cancelar = new AbortController();
-    const voz = fetch(
+    // La sesión se confirma ANTES de pedir la voz: lo que cobra ElevenLabs no puede depender
+    // de que el gateway tenga verify_jwt activo.
+    const supabase = createClient(Deno.env.get("SUPABASE_URL") ?? "", Deno.env.get("SUPABASE_ANON_KEY") ?? "");
+    const { data: { user } } = await supabase.auth.getUser(token);
+    if (!user || user.id !== sub) return jsonError("No autorizado", 401);
+
+    const response = await fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream?output_format=mp3_44100_128`,
       {
         method: "POST",
-        signal: cancelar.signal,
         headers: { "Content-Type": "application/json", "xi-api-key": ELEVENLABS_API_KEY },
         body: JSON.stringify({ text: paraVoz(text), model_id: MODEL_ID, voice_settings: { speed: SPEED } }),
       },
     );
-    voz.catch(() => {}); // si se cancela, que el rechazo no quede sin manejar
-
-    const supabase = createClient(Deno.env.get("SUPABASE_URL") ?? "", Deno.env.get("SUPABASE_ANON_KEY") ?? "");
-    const { data: { user } } = await supabase.auth.getUser(token);
-    if (!user || user.id !== sub) {
-      cancelar.abort();
-      return jsonError("No autorizado", 401);
-    }
-
-    const response = await voz;
     if (!response.ok || !response.body) {
       console.error("tts elevenlabs:", response.status, (await response.text()).slice(0, 300));
       return jsonError("No pude generar la voz", 502);

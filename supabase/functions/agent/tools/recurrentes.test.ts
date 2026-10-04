@@ -35,11 +35,16 @@ test("pagados con total", () => {
   assert.equal(resumenRecurrentes(lista, new Set(), HOY, "paid"), "Todavía no registras pagos fijos este mes.");
 });
 
-test("todos: total fijo y pendientes", () => {
+test("todos: total mensual y pendientes", () => {
   assert.equal(
     resumenRecurrentes(lista, pagados, HOY, "all"),
-    "Tienes 4 pagos fijos por S/ 1128.00. Te faltan Spotify S/ 26.00 vencido desde el 3 de octubre y Netflix S/ 52.00 el 15 de octubre.",
+    "Tienes 4 pagos fijos por S/ 1128.00 al mes. Te faltan Spotify S/ 26.00 vencido desde el 3 de octubre y Netflix S/ 52.00 el 15 de octubre.",
   );
+});
+
+test("todos: con frecuencias mezcladas no suma un total engañoso", () => {
+  const mezcla = [...lista, { ...r("5", "SOAT", 120, "2027-03-01"), frequency: "annual" }];
+  assert.match(resumenRecurrentes(mezcla, pagados, HOY, "all"), /^Tienes 5 pagos fijos\. Te faltan/);
 });
 
 test("sin recurrentes sugiere cómo crear uno", () => {

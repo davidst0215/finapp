@@ -11,10 +11,13 @@ if (!supabaseUrl || !supabaseAnonKey) {
 // us-west-2: cada consulta cruzaba el continente (~0.7 s por pedido). Fijarlas junto a la base
 // deja auth y consultas en ~0.1 s. Solo el query param: un header propio exigiría tocar el CORS.
 const REGION = 'us-west-2';
+const ORIGEN = new URL(supabaseUrl).origin;
 
+// Solo las edge functions de este proyecto: el texto '/functions/v1/' dentro de un filtro de
+// PostgREST no debe recibir el parámetro (PostgREST lo tomaría como columna y daría 400).
 function conRegion(url: string): string {
-  if (!url.includes('/functions/v1/')) return url;
   const u = new URL(url);
+  if (u.origin !== ORIGEN || !u.pathname.startsWith('/functions/v1/')) return url;
   u.searchParams.set('forceFunctionRegion', REGION);
   return u.toString();
 }
@@ -22,11 +25,11 @@ function conRegion(url: string): string {
 /** URL de una edge function, en la región de la base. Para los fetch directos (voz, chat en streaming). */
 export const functionUrl = (name: string) => conRegion(`${supabaseUrl}/functions/v1/${name}`);
 
+// supabase-js llama con string; un Request (con su cuerpo en stream) pasa tal cual.
 const fetchRegional: typeof fetch = (input, init) => {
   if (typeof input === 'string') return fetch(conRegion(input), init);
   if (input instanceof URL) return fetch(conRegion(input.href), init);
-  const url = conRegion(input.url);
-  return fetch(url === input.url ? input : new Request(url, input), init);
+  return fetch(input, init);
 };
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, { global: { fetch: fetchRegional } });

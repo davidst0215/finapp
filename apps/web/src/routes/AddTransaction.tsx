@@ -27,6 +27,10 @@ export function AddTransactionPage() {
   const conversationRef = useRef<ConversationEntry[]>([]);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const reproduccionRef = useRef<Reproduccion | null>(null);
+  const vozAbortRef = useRef<AbortController | null>(null);
+  // Cada pedido es un turno. Lo que llega de un turno viejo (respuesta tardía, voz interrumpida)
+  // no toca el estado: si no, un turno anterior deja el orb en reposo en medio del siguiente.
+  const turnoRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isHoldingRef = useRef(false);
   const transcriptRef = useRef('');
@@ -59,8 +63,65 @@ export function AddTransactionPage() {
     }
   }, [isFirstUse]);
 
+  // Corta la voz en curso: la descarga de /tts, el audio y la voz de respaldo del navegador.
+  const cortarVoz = useCallback(() => {
+    vozAbortRef.current?.abort();
+    vozAbortRef.current = null;
+    reproduccionRef.current?.detener();
+    reproduccionRef.current = null;
+    window.speechSynthesis?.cancel();
+  }, []);
+
+  // ── Voz (ElevenLabs, suena mientras llega) ──
+  const speak = useCallback(async (text: string, vigente: () => boolean): Promise<void> => {
+    setOrbState('speaking');
+    const abort = new AbortController();
+    vozAbortRef.current = abort;
+    let sono = false;
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error('Sin sesión');
+
+      const response = await fetch(functionUrl('tts'), {
+        method: 'POST',
+        signal: abort.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+          'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+        },
+        body: JSON.stringify({ text: text.slice(0, 400) }),
+      });
+      if (!response.ok) throw new Error('TTS failed');
+      if (!vigente()) return;
+
+      const reproduccion = reproducirStream(response, new Audio());
+      reproduccionRef.current = reproduccion;
+      sono = await reproduccion.fin;
+    } catch {
+      // Interrumpida o sin red: se decide abajo.
+    } finally {
+      if (vozAbortRef.current === abort) vozAbortRef.current = null;
+    }
+
+    // Si la voz de Wabid no llegó a sonar, la del navegador lee el mismo texto.
+    if (sono || !vigente() || !('speechSynthesis' in window)) return;
+    await new Promise<void>((ok) => {
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = 'es-PE';
+      u.onend = () => ok();
+      u.onerror = () => ok();
+      window.speechSynthesis.speak(u);
+    });
+  }, []);
+
   // ── Agent call with conversation memory ──
   const callAgent = useCallback(async (text: string) => {
+    const turno = ++turnoRef.current;
+    const vigente = () => turnoRef.current === turno;
+    cortarVoz();
     setOrbState('thinking');
     setSubtitle('');
 
@@ -69,6 +130,8 @@ export function AddTransactionPage() {
     if (conversationRef.current.length > 10) conversationRef.current = conversationRef.current.slice(-10);
 
     const timeout = setTimeout(() => {
+      if (!vigente()) return;
+      turnoRef.current++; // la respuesta que llegue tarde ya no habla
       setOrbState('idle');
       setSubtitle('No pude procesar, intenta de nuevo');
       setTimeout(() => setSubtitle(''), 4000);
@@ -88,6 +151,7 @@ export function AddTransactionPage() {
       });
 
       clearTimeout(timeout);
+      if (!vigente()) return; // David ya empezó otro turno o se venció el tiempo
 
       if (response.error) throw new Error(response.error.message);
       const data = response.data;
@@ -101,7 +165,8 @@ export function AddTransactionPage() {
 
       // Show subtitle and speak
       setSubtitle(message);
-      await speak(message);
+      await speak(message, vigente);
+      if (!vigente()) return;
 
       // Apenas termina la voz se puede volver a hablar; el subtítulo queda un momento para leerlo.
       setOrbState('idle');
@@ -109,58 +174,20 @@ export function AddTransactionPage() {
 
     } catch (err) {
       clearTimeout(timeout);
+      if (!vigente()) return;
       const errMsg = err instanceof Error ? err.message : 'Error';
       setSubtitle(errMsg);
       setOrbState('idle');
       setTimeout(() => setSubtitle(''), 4000);
     }
-  }, []);
-
-  // ── Voz (ElevenLabs, suena mientras llega) ──
-  const speak = useCallback(async (text: string): Promise<void> => {
-    reproduccionRef.current?.detener();
-    reproduccionRef.current = null;
-
-    setOrbState('speaking');
-
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-
-      const response = await fetch(functionUrl('tts'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`,
-          'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
-        },
-        body: JSON.stringify({ text: text.slice(0, 400) }),
-      });
-
-      if (!response.ok) throw new Error('TTS failed');
-
-      const reproduccion = reproducirStream(response, new Audio());
-      reproduccionRef.current = reproduccion;
-      await reproduccion.fin;
-    } catch {
-      // Fallback browser TTS
-      if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-        const u = new SpeechSynthesisUtterance(text);
-        u.lang = 'es-PE';
-        u.rate = 1;
-        window.speechSynthesis.speak(u);
-      }
-    }
-  }, []);
+  }, [cortarVoz, speak]);
 
   // ── Hold-to-talk ──
   const startHold = useCallback(() => {
     if (orbState === 'speaking') {
-      // Interrupt: stop audio and go idle
-      reproduccionRef.current?.detener();
-      reproduccionRef.current = null;
-      window.speechSynthesis?.cancel();
+      // Interrumpir: termina el turno y corta la voz, aunque la descarga de /tts siga en curso.
+      turnoRef.current++;
+      cortarVoz();
       setOrbState('idle');
       setSubtitle('');
       return;
@@ -212,7 +239,7 @@ export function AddTransactionPage() {
 
     recognitionRef.current = recognition;
     recognition.start();
-  }, [orbState, callAgent]);
+  }, [orbState, callAgent, cortarVoz]);
 
   const endHold = useCallback(() => {
     isHoldingRef.current = false;

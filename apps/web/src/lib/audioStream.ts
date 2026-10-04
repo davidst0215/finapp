@@ -2,14 +2,19 @@
 // (ElevenLabs tarda ~1.5 s en el primer byte y ~0.7 s más en terminar).
 // Con MediaSource el audio arranca con los primeros fragmentos; si el navegador no lo soporta
 // (iPhone) o algo falla antes de sonar, se arma el archivo completo y se reproduce igual.
+// Toda espera tiene salida: si nada suena a tiempo, `fin` resuelve `false` y quien llama
+// decide el respaldo (la voz del navegador).
 
 export interface Reproduccion {
-  /** Se resuelve cuando el audio termina, falla o se detiene. */
-  fin: Promise<void>;
+  /** `true` si el audio sonó (completo o detenido por David); `false` si no llegó a sonar. */
+  fin: Promise<boolean>;
   detener: () => void;
 }
 
 const MIME = 'audio/mpeg';
+const MAX_ESPERA_SOURCEOPEN = 3000; // MediaSource que no abre: se pasa al archivo completo
+const MAX_ESPERA_SONIDO = 10000;    // nada suena en 10 s desde el pedido: se abandona
+const MAX_REPRODUCCION = 90000;     // tope duro (las respuestas son de segundos)
 
 export function puedeStreamear(): boolean {
   return typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported(MIME);
@@ -17,39 +22,56 @@ export function puedeStreamear(): boolean {
 
 export function reproducirStream(res: Response, audio: HTMLAudioElement): Reproduccion {
   let detenido = false;
+  let sono = false;
   let lector: ReadableStreamDefaultReader<Uint8Array> | null = null;
   const urls: string[] = [];
+  const marcarSonido = () => { sono = true; };
+  audio.addEventListener('playing', marcarSonido);
+
+  let abandonar: () => void = () => {};
+  const abandono = new Promise<void>((ok) => { abandonar = ok; });
 
   const detener = () => {
     detenido = true;
     audio.pause();
     lector?.cancel().catch(() => {});
+    abandonar();
   };
 
-  const fin = (async () => {
-    try {
-      if (!res.body || !puedeStreamear()) {
-        await sonar(audio, await res.blob(), urls, () => detenido);
-        return;
-      }
-      lector = res.body.getReader();
-      const recibidos: Uint8Array[] = [];
-      try {
-        await streamear(audio, lector, recibidos, urls, () => detenido);
-      } catch {
-        if (detenido) return;
-        // MediaSource falló: junta lo recibido más lo que falta y reproduce el archivo entero.
-        for (;;) {
-          const { done, value } = await lector.read();
-          if (done) break;
-          recibidos.push(value);
-        }
-        await sonar(audio, new Blob(recibidos as BlobPart[], { type: MIME }), urls, () => detenido);
-      }
-    } finally {
-      urls.forEach((u) => URL.revokeObjectURL(u));
+  const reproducir = async () => {
+    if (!res.body || !puedeStreamear()) {
+      await sonar(audio, await res.blob(), urls, () => detenido);
+      return;
     }
-  })().catch(() => {});
+    lector = res.body.getReader();
+    const recibidos: Uint8Array[] = [];
+    try {
+      await streamear(audio, lector, recibidos, urls, () => detenido);
+    } catch {
+      if (detenido || sono) return; // ya sonó algo: no repetir desde el inicio
+      // MediaSource falló antes de sonar: junta lo recibido más lo que falta y reproduce el archivo.
+      for (;;) {
+        const { done, value } = await lector.read();
+        if (done) break;
+        recibidos.push(value);
+      }
+      await sonar(audio, new Blob(recibidos as BlobPart[], { type: MIME }), urls, () => detenido);
+    }
+  };
+
+  const vigilancia = setTimeout(() => { if (!sono) detener(); }, MAX_ESPERA_SONIDO);
+  const tope = setTimeout(detener, MAX_REPRODUCCION);
+
+  const fin = Promise.race([reproducir().catch(() => {}), abandono])
+    .then(() => sono)
+    .finally(() => {
+      clearTimeout(vigilancia);
+      clearTimeout(tope);
+      audio.removeEventListener('playing', marcarSonido);
+      if (!audio.ended) audio.pause(); // nunca queda un <audio> esperando datos que no llegan
+      lector?.cancel().catch(() => {});
+      urls.forEach((u) => URL.revokeObjectURL(u));
+    });
 
   return { fin, detener };
 }
@@ -65,24 +87,28 @@ async function streamear(
   const url = URL.createObjectURL(ms);
   urls.push(url);
   audio.src = url;
-  await new Promise<void>((ok) => ms.addEventListener('sourceopen', () => ok(), { once: true }));
+  await new Promise<void>((ok, falla) => {
+    const t = setTimeout(() => falla(new Error('sourceopen')), MAX_ESPERA_SOURCEOPEN);
+    ms.addEventListener('sourceopen', () => { clearTimeout(t); ok(); }, { once: true });
+    audio.addEventListener('error', () => { clearTimeout(t); falla(new Error('src')); }, { once: true });
+  });
   const sb = ms.addSourceBuffer(MIME);
   const terminado = esperarFin(audio);
 
-  let sonando = false;
+  let pidioPlay = false;
   for (;;) {
     const { done, value } = await lector.read();
     if (done || detenido()) break;
     recibidos.push(value);
     await agregar(sb, value);
-    if (!sonando) {
-      sonando = true;
+    if (!pidioPlay) {
+      pidioPlay = true;
       // Si el navegador bloquea el play (sin interacción previa), no hay nada que esperar.
       audio.play().catch(() => audio.dispatchEvent(new Event('error')));
     }
   }
   if (ms.readyState === 'open' && !sb.updating) ms.endOfStream();
-  if (!sonando) return;
+  if (!pidioPlay) return;
   await terminado;
 }
 

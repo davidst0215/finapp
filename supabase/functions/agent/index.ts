@@ -20,6 +20,7 @@ if (OWNER.size !== DEFINITIONS.length) throw new Error("Dos módulos declaran un
 const RULES = MODULES.map((m) => m.rules).filter(Boolean).join("\n\n");
 // Prefijo idéntico en cada pedido: el proveedor lo reutiliza de su caché y el modelo arranca antes.
 const SISTEMA = `${PERSONA}\n\n${RULES}`;
+const MAX_TEXTO = 2000; // un dictado largo cabe de sobra; más es abuso o error
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
@@ -32,17 +33,17 @@ Deno.serve(async (req: Request) => {
     });
 
   try {
+    // Primero el token: la anon key (pública, va en el bundle) no trae `sub` y se corta antes de
+    // leer el cuerpo o revelar configuración. Ese `sub` sin verificar solo arranca las lecturas
+    // mientras getUser valida la sesión: PostgREST verifica la firma en cada consulta y RLS filtra.
+    const token = bearer(req);
+    const sub = jwtSub(token);
+    if (!sub) return json({ error: "No autorizado" }, 401);
     if (!llmConfigured()) return json({ error: "Modelo no configurado" }, 500);
 
     const { text, history } = await req.json();
     if (!text || typeof text !== "string") return json({ error: "Se requiere 'text'" }, 400);
-
-    const token = bearer(req);
-    // `sub` sin verificar solo sirve para arrancar las consultas mientras se valida la sesión:
-    // PostgREST verifica la firma en cada consulta y RLS filtra, así que no expone datos.
-    // La anon key no trae `sub` y se corta aquí.
-    const sub = jwtSub(token);
-    if (!sub) return json({ error: "No autorizado" }, 401);
+    if (text.length > MAX_TEXTO) return json({ error: "Mensaje demasiado largo" }, 413);
 
     const supabase = createClient(Deno.env.get("SUPABASE_URL") ?? "", Deno.env.get("SUPABASE_ANON_KEY") ?? "", {
       global: { headers: { Authorization: `Bearer ${token}` } },

@@ -47,7 +47,11 @@ export function resumenRecurrentes(lista: Recurrente[], pagados: Set<string>, ho
     if (pendientes.length === 0) return "No te falta pagar nada este mes.";
     return `Te ${pendientes.length === 1 ? "falta" : "faltan"} ${total(pendientes)}: ${enumerar(pendientes.map(pendiente))}.`;
   }
-  const base = `Tienes ${lista.length} ${lista.length === 1 ? "pago fijo" : "pagos fijos"} por ${total(lista)}.`;
+  // Sumar mensuales con anuales o semanales daría una cifra sin sentido: el total va solo si todos son mensuales.
+  const cuantos = `${lista.length} ${lista.length === 1 ? "pago fijo" : "pagos fijos"}`;
+  const base = lista.every((r) => r.frequency === "monthly")
+    ? `Tienes ${cuantos} por ${total(lista)} al mes.`
+    : `Tienes ${cuantos}.`;
   if (pendientes.length === 0) return `${base} Este mes no te falta ninguno.`;
   return `${base} Te ${pendientes.length === 1 ? "falta" : "faltan"} ${enumerar(pendientes.map(pendiente))}.`;
 }

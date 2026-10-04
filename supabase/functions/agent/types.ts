@@ -17,6 +17,9 @@ export type AgentContext = {
 // Cada módulo de Wabid aporta su contexto, sus reglas y sus tools.
 // `loadContext` corre en paralelo con los demás módulos; lo que devuelve en `data`
 // llega a sus handlers sin volver a consultar la base.
+// `loadContext` es SOLO LECTURA con `ctx.supabase` (RLS): corre mientras se valida la sesión y
+// en ese momento `ctx.user` solo trae `id`. Nada de escribir, avisar ni llamar APIs pagadas ahí:
+// eso va en los handlers, que corren con la sesión ya confirmada.
 export type AgentModule<D = unknown> = {
   id: string;
   rules?: string;
