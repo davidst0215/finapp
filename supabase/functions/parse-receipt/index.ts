@@ -1,6 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "jsr:@supabase/supabase-js@2";
 
+import { json, preflight, requireUser } from "../_shared/http.ts";
+import { bearer, jwtSub } from "../_shared/jwt.ts";
 import { LLM_BODY, LLM_URL, llmAuth, llmConfigured, parseModelJson } from "../_shared/llm.ts";
 
 const SYSTEM_PROMPT = `Eres un lector de boletas y recibos de compra en Perú.
@@ -27,162 +28,99 @@ Responde SOLO con JSON válido, sin markdown:
   "items_detected": number
 }`;
 
+// La web reduce la foto a ≤1600 px en JPEG (~300 KB); 4 MB de base64 es margen de sobra.
+const MAX_IMAGEN = 4 * 1024 * 1024;
+
 Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, {
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers":
-          "authorization, x-client-info, apikey, content-type",
-      },
-    });
-  }
+  const pre = preflight(req);
+  if (pre) return pre;
 
   try {
-    if (!llmConfigured()) {
-      return jsonResponse({ error: "Modelo no configurado" }, 500);
-    }
+    // La anon key (pública) se corta antes de leer la imagen.
+    if (!jwtSub(bearer(req))) return json({ error: "No autorizado" }, 401);
+    const auth = await requireUser(req);
+    if (auth instanceof Response) return auth;
+    const { user, db } = auth;
+    if (!llmConfigured()) return json({ error: "Modelo no configurado" }, 500);
 
     const { image } = await req.json();
-    if (!image || typeof image !== "string") {
-      return jsonResponse({ error: "Se requiere 'image' en base64" }, 400);
-    }
+    if (!image || typeof image !== "string") return json({ error: "Se requiere 'image' en base64" }, 400);
+    if (image.length > MAX_IMAGEN) return json({ error: "La foto es demasiado grande" }, 413);
 
-    // Auth
-    const authHeader = req.headers.get("Authorization") ?? "";
-    if (!authHeader.startsWith("Bearer ")) {
-      return jsonResponse({ error: "Token inválido" }, 401);
-    }
-    const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
-    const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-    const supabase = createClient(supabaseUrl, supabaseKey, {
-      global: { headers: { Authorization: authHeader } },
-    });
-
-    const {
-      data: { user },
-    } = await supabase.auth.getUser(authHeader.replace("Bearer ", ""));
-    if (!user) {
-      return jsonResponse({ error: "No autorizado" }, 401);
-    }
-
-    // Get categories for matching
-    const { data: categories } = await supabase
+    const { data: categories } = await db
       .from("categories")
       .select("category_id, category_name, category_type")
       .eq("is_active", true)
       .eq("category_type", "expense")
       .or(`user_id.eq.${user.id},user_id.is.null`);
 
-    const categoryList = (categories ?? [])
-      .map((c) => `- ${c.category_name}`)
-      .join("\n");
+    const categoryList = (categories ?? []).map((c) => `- ${c.category_name}`).join("\n");
 
-    // Determine image mime type
     let mimeType = "image/jpeg";
-    if (image.startsWith("/9j/")) mimeType = "image/jpeg";
-    else if (image.startsWith("iVBOR")) mimeType = "image/png";
+    if (image.startsWith("iVBOR")) mimeType = "image/png";
     else if (image.startsWith("R0lG")) mimeType = "image/gif";
+    else if (image.startsWith("UklGR")) mimeType = "image/webp";
 
-    // Leer la boleta con el modelo (visión)
-    const openaiResponse = await fetch(
-      LLM_URL,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: llmAuth(),
-        },
-        body: JSON.stringify({
-          ...LLM_BODY,
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            {
-              role: "system",
-              content: `CATEGORÍAS DISPONIBLES:\n${categoryList}`,
-            },
-            {
-              role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: "Lee esta boleta/recibo y extrae los datos.",
-                },
-                {
-                  type: "image_url",
-                  image_url: {
-                    url: `data:${mimeType};base64,${image}`,
-                    detail: "low",
-                  },
-                },
-              ],
-            },
-          ],
-          temperature: 0.1,
-          max_tokens: 300,
-        }),
-      }
-    );
+    const res = await fetch(LLM_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: llmAuth() },
+      body: JSON.stringify({
+        ...LLM_BODY,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "system", content: `CATEGORÍAS DISPONIBLES:\n${categoryList}` },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "Lee esta boleta/recibo y extrae los datos." },
+              // "high": con "low" algunos proveedores bajan la foto a ~512 px y el total se vuelve ilegible.
+              { type: "image_url", image_url: { url: `data:${mimeType};base64,${image}`, detail: "high" } },
+            ],
+          },
+        ],
+        temperature: 0.1,
+        max_tokens: 300,
+      }),
+    });
 
-    if (!openaiResponse.ok) {
-      const err = await openaiResponse.text();
-      return jsonResponse({ error: "Error del modelo", details: err }, 502);
+    if (!res.ok) {
+      console.error("parse-receipt modelo:", res.status, (await res.text()).slice(0, 300));
+      return json({ error: "No pude leer la boleta. Intenta de nuevo." }, 502);
     }
 
-    const data = await openaiResponse.json();
+    const data = await res.json();
     const raw = data.choices?.[0]?.message?.content?.trim() ?? "";
 
-    let parsed;
+    let parsed: Record<string, unknown>;
     try {
       parsed = parseModelJson(raw);
     } catch {
-      return jsonResponse(
-        { error: "No se pudo leer la boleta", raw },
-        500
-      );
+      return json({ error: "No se pudo leer la boleta" }, 500);
     }
 
-    if (!parsed.amount || parsed.amount <= 0) {
-      return jsonResponse(
-        { error: "No se detectó un monto válido en la boleta", parsed },
-        422
-      );
+    const amount = Number(parsed.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return json({ error: "No se detectó un monto válido en la boleta" }, 422);
     }
 
-    // Resolve category_id
-    let category_id: string | null = null;
-    if (parsed.category_name && categories) {
-      const match = categories.find(
-        (c) => c.category_name.toLowerCase() === parsed.category_name.toLowerCase()
-      );
-      if (match) category_id = match.category_id;
-    }
+    const categoryName = typeof parsed.category_name === "string" ? parsed.category_name : null;
+    const match = categoryName
+      ? (categories ?? []).find((c) => c.category_name.toLowerCase() === categoryName.toLowerCase())
+      : undefined;
 
-    return jsonResponse({
-      amount: parsed.amount,
+    return json({
+      amount,
       transaction_type: "expense",
-      description: parsed.description ?? "Boleta",
-      category_id,
-      category_name: parsed.category_name,
-      currency_code: parsed.currency_code ?? "PEN",
-      date: parsed.date,
-      confidence: parsed.confidence ?? 0.5,
-      items_detected: parsed.items_detected ?? 0,
+      description: typeof parsed.description === "string" && parsed.description.trim() ? parsed.description.trim().slice(0, 200) : "Boleta",
+      category_id: match?.category_id ?? null,
+      category_name: categoryName,
+      currency_code: parsed.currency_code === "USD" ? "USD" : "PEN",
+      date: typeof parsed.date === "string" ? parsed.date : null,
+      confidence: typeof parsed.confidence === "number" ? parsed.confidence : 0.5,
+      items_detected: typeof parsed.items_detected === "number" ? parsed.items_detected : 0,
     });
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.error("parse-receipt error:", msg);
-    return jsonResponse({ error: `Error: ${msg}` }, 500);
+    console.error("parse-receipt error:", error instanceof Error ? error.message : String(error));
+    return json({ error: "No pude leer la boleta. Intenta de nuevo." }, 500);
   }
 });
-
-function jsonResponse(data: unknown, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: {
-      "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-    },
-  });
-}
