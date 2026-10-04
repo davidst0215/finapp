@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { bearer, jwtSub } from "../_shared/jwt.ts";
 import { montosAVoz } from "../_shared/voz.ts";
 
 const ELEVENLABS_API_KEY = Deno.env.get("ELEVENLABS_API_KEY");
@@ -13,8 +14,8 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const jsonError = (error: string, status: number, details?: string) =>
-  new Response(JSON.stringify({ error, details }), {
+const jsonError = (error: string, status: number) =>
+  new Response(JSON.stringify({ error }), {
     status, headers: { "Content-Type": "application/json", ...corsHeaders },
   });
 
@@ -33,29 +34,45 @@ Deno.serve(async (req: Request) => {
   try {
     if (!ELEVENLABS_API_KEY || !VOICE_ID) return jsonError("Voz no configurada", 500);
 
-    // La anon key también es un JWT válido: el gateway la deja pasar. Exigir un usuario real
-    // evita que cualquiera con la key pública gaste los créditos de voz.
-    const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
-    const supabase = createClient(Deno.env.get("SUPABASE_URL") ?? "", Deno.env.get("SUPABASE_ANON_KEY") ?? "");
-    const { data: { user } } = await supabase.auth.getUser(token);
-    if (!user) return jsonError("No autorizado", 401);
+    // La anon key también es un JWT válido para el gateway: sin `sub` de usuario se corta aquí,
+    // así nadie con la key pública gasta créditos de voz.
+    const token = bearer(req);
+    const sub = jwtSub(token);
+    if (!sub) return jsonError("No autorizado", 401);
 
     const { text } = await req.json();
     if (!text || typeof text !== "string" || text.length > 600) return jsonError("Texto inválido", 400);
 
-    const response = await fetch(
+    // ElevenLabs arranca mientras se valida la sesión (~0.1 s menos de espera); si la sesión
+    // no es válida, se cancela antes de devolver nada.
+    const cancelar = new AbortController();
+    const voz = fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream?output_format=mp3_44100_128`,
       {
         method: "POST",
+        signal: cancelar.signal,
         headers: { "Content-Type": "application/json", "xi-api-key": ELEVENLABS_API_KEY },
         body: JSON.stringify({ text: paraVoz(text), model_id: MODEL_ID, voice_settings: { speed: SPEED } }),
       },
     );
+    voz.catch(() => {}); // si se cancela, que el rechazo no quede sin manejar
 
-    if (!response.ok || !response.body) return jsonError("Error TTS", 502, await response.text());
+    const supabase = createClient(Deno.env.get("SUPABASE_URL") ?? "", Deno.env.get("SUPABASE_ANON_KEY") ?? "");
+    const { data: { user } } = await supabase.auth.getUser(token);
+    if (!user || user.id !== sub) {
+      cancelar.abort();
+      return jsonError("No autorizado", 401);
+    }
+
+    const response = await voz;
+    if (!response.ok || !response.body) {
+      console.error("tts elevenlabs:", response.status, (await response.text()).slice(0, 300));
+      return jsonError("No pude generar la voz", 502);
+    }
 
     return new Response(response.body, { headers: { "Content-Type": "audio/mpeg", ...corsHeaders } });
   } catch (error) {
-    return jsonError(error instanceof Error ? error.message : String(error), 500);
+    console.error("tts error:", error instanceof Error ? error.message : String(error));
+    return jsonError("No pude generar la voz", 500);
   }
 });

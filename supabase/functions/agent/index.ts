@@ -1,26 +1,35 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "jsr:@supabase/supabase-js@2";
+import { createClient, type User } from "jsr:@supabase/supabase-js@2";
 import { llmConfigured, llmFetch } from "../_shared/llm.ts";
 import { PERSONA } from "./prompt.ts";
 import { MODULES } from "./registry.ts";
+import { bearer, jwtSub } from "../_shared/jwt.ts";
+import { Tiempos } from "./tiempos.ts";
 import type { AgentContext } from "./types.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Expose-Headers": "server-timing",
 };
-
-const json = (data: unknown, status = 200) =>
-  new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json", ...corsHeaders } });
 
 const DEFINITIONS = MODULES.flatMap((m) => m.definitions);
 const OWNER = new Map(MODULES.flatMap((m) => m.definitions.map((d) => [d.function.name, m] as const)));
 if (OWNER.size !== DEFINITIONS.length) throw new Error("Dos módulos declaran una tool con el mismo nombre");
 const RULES = MODULES.map((m) => m.rules).filter(Boolean).join("\n\n");
+// Prefijo idéntico en cada pedido: el proveedor lo reutiliza de su caché y el modelo arranca antes.
+const SISTEMA = `${PERSONA}\n\n${RULES}`;
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+
+  const t = new Tiempos();
+  const json = (data: unknown, status = 200) =>
+    new Response(JSON.stringify(data), {
+      status,
+      headers: { "Content-Type": "application/json", "Server-Timing": t.header(), ...corsHeaders },
+    });
 
   try {
     if (!llmConfigured()) return json({ error: "Modelo no configurado" }, 500);
@@ -28,39 +37,48 @@ Deno.serve(async (req: Request) => {
     const { text, history } = await req.json();
     if (!text || typeof text !== "string") return json({ error: "Se requiere 'text'" }, 400);
 
-    const authHeader = req.headers.get("Authorization") ?? "";
-    if (!authHeader.startsWith("Bearer ")) return json({ error: "No autorizado" }, 401);
+    const token = bearer(req);
+    // `sub` sin verificar solo sirve para arrancar las consultas mientras se valida la sesión:
+    // PostgREST verifica la firma en cada consulta y RLS filtra, así que no expone datos.
+    // La anon key no trae `sub` y se corta aquí.
+    const sub = jwtSub(token);
+    if (!sub) return json({ error: "No autorizado" }, 401);
 
-    // Cliente con el JWT del usuario: las consultas pasan por RLS.
-    const supabase = createClient(Deno.env.get("SUPABASE_URL") ?? "", Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "", {
-      global: { headers: { Authorization: authHeader } },
+    const supabase = createClient(Deno.env.get("SUPABASE_URL") ?? "", Deno.env.get("SUPABASE_ANON_KEY") ?? "", {
+      global: { headers: { Authorization: `Bearer ${token}` } },
     });
-    const { data: { user } } = await supabase.auth.getUser(authHeader.replace("Bearer ", ""));
-    if (!user) return json({ error: "No autorizado" }, 401);
-
     // Lima es UTC-5 todo el año; el runtime corre en UTC, así que los getters locales quedan en hora de Lima.
-    const ctx: AgentContext = { supabase, user, text, limaNow: new Date(Date.now() - 5 * 60 * 60 * 1000) };
+    const ctx: AgentContext = { supabase, user: { id: sub } as User, text, limaNow: new Date(Date.now() - 5 * 60 * 60 * 1000) };
 
-    const contexts = await Promise.all(MODULES.map(async (m) => {
-      if (!m.loadContext) return { id: m.id, prompt: "", data: undefined };
-      try {
-        return { id: m.id, ...(await m.loadContext(ctx)) };
-      } catch (e) {
-        // Un módulo caído no debe tumbar a los demás.
-        console.error(`contexto ${m.id}:`, e instanceof Error ? e.message : e);
-        return { id: m.id, prompt: `(${m.id}: sin datos por un error temporal)`, data: undefined };
-      }
-    }));
+    const [user, contexts] = await Promise.all([
+      t.medir("auth", supabase.auth.getUser(token).then((r) => r.data.user)),
+      t.medir("ctx", Promise.all(MODULES.map(async (m) => {
+        if (!m.loadContext) return { id: m.id, prompt: "", data: undefined };
+        try {
+          return { id: m.id, ...(await m.loadContext(ctx)) };
+        } catch (e) {
+          // Un módulo caído no debe tumbar a los demás.
+          console.error(`contexto ${m.id}:`, e instanceof Error ? e.message : e);
+          return { id: m.id, prompt: `(${m.id}: sin datos por un error temporal)`, data: undefined };
+        }
+      }))),
+    ]);
+    // El modelo (que cuesta) solo corre con una sesión real y vigente del mismo usuario.
+    if (!user || user.id !== sub) return json({ error: "No autorizado" }, 401);
+    ctx.user = user;
     const dataByModule = new Map(contexts.map((c) => [c.id, c.data]));
 
     const hoy = new Date().toLocaleString("es-PE", {
       timeZone: "America/Lima", weekday: "long", day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit",
     });
-    const contextMsg = [`HOY: ${hoy} (hora de Lima)`, ...contexts.map((c) => c.prompt).filter(Boolean)].join("\n\n");
+    // La hora va al final: lo que cambia cada minuto no debe romper el prefijo cacheado.
+    const contextMsg = [...contexts.map((c) => c.prompt).filter(Boolean), `HOY: ${hoy} (hora de Lima)`].join("\n\n");
 
-    const res = await llmFetch({
+    // OpenRouter manda los headers de inmediato y el cuerpo cuando el modelo termina:
+    // la fase incluye leer el cuerpo.
+    const llm = await t.medir("llm", llmFetch({
       messages: [
-        { role: "system", content: `${PERSONA}\n\n${RULES}` },
+        { role: "system", content: SISTEMA },
         { role: "system", content: contextMsg },
         ...(Array.isArray(history)
           ? history.slice(-8).map((h: { role: string; content: string }) => ({
@@ -74,22 +92,27 @@ Deno.serve(async (req: Request) => {
       tool_choice: "required",
       temperature: 0.15,
       max_tokens: 500,
-    });
+    }).then(async (r) => ({ ok: r.ok, status: r.status, cuerpo: await r.text() })));
 
-    if (!res.ok) return json({ error: "Error del modelo", details: await res.text() }, 502);
+    if (!llm.ok) {
+      console.error("agent modelo:", llm.status, llm.cuerpo.slice(0, 300));
+      return json({ error: "El modelo no respondió. Intenta de nuevo." }, 502);
+    }
 
-    const data = await res.json();
+    const data = JSON.parse(llm.cuerpo);
+    t.tokens(data.usage);
     const call = data.choices?.[0]?.message?.tool_calls?.[0];
     if (!call) return json({ error: "No se pudo interpretar" }, 500);
 
     const owner = OWNER.get(call.function.name);
     if (!owner) return json({ action: "unknown", message: "No entendí. Intenta de nuevo." });
     const args = JSON.parse(call.function.arguments || "{}");
-    const result = await owner.handlers[call.function.name](args, ctx, dataByModule.get(owner.id));
+    const result = await t.medir("tool", owner.handlers[call.function.name](args, ctx, dataByModule.get(owner.id)));
+    // Una línea por pedido, sin contenido de David: sirve para seguir el p50 en los logs.
+    console.log(JSON.stringify({ evt: "agent", tool: call.function.name, ...t.resumen() }));
     return json(result);
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.error("agent error:", msg);
-    return json({ error: `Error: ${msg}` }, 500);
+    console.error("agent error:", error instanceof Error ? error.message : String(error));
+    return json({ error: "Algo falló de mi lado. Intenta de nuevo." }, 500);
   }
 });

@@ -3,7 +3,8 @@ import { ArrowUp, Mic } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAppStore } from '@/stores/appStore';
 import { useAuthStore } from '@/stores/authStore';
-import { supabase } from '@/lib/supabase';
+import { supabase, functionUrl, calentarFunciones } from '@/lib/supabase';
+import { reproducirStream, type Reproduccion } from '@/lib/audioStream';
 import { cn } from '@/lib/utils';
 
 type OrbState = 'idle' | 'listening' | 'thinking' | 'speaking';
@@ -25,7 +26,7 @@ export function AddTransactionPage() {
   // Conversation memory (last 5 exchanges)
   const conversationRef = useRef<ConversationEntry[]>([]);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const reproduccionRef = useRef<Reproduccion | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isHoldingRef = useRef(false);
   const transcriptRef = useRef('');
@@ -34,6 +35,9 @@ export function AddTransactionPage() {
     fetchAccounts();
     fetchCategories();
   }, [fetchAccounts, fetchCategories]);
+
+  // Al abrir la pantalla o el teclado, despierta agente y voz para que el primer pedido no pague el arranque.
+  useEffect(() => { calentarFunciones('agent', 'tts'); }, [showInput]);
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -99,11 +103,9 @@ export function AddTransactionPage() {
       setSubtitle(message);
       await speak(message);
 
-      // Clear subtitle after speaking (or after 6s for long text)
-      setTimeout(() => {
-        setSubtitle('');
-        setOrbState('idle');
-      }, Math.min(message.length * 60, 8000));
+      // Apenas termina la voz se puede volver a hablar; el subtítulo queda un momento para leerlo.
+      setOrbState('idle');
+      setTimeout(() => setSubtitle(s => (s === message ? '' : s)), 2500);
 
     } catch (err) {
       clearTimeout(timeout);
@@ -114,9 +116,10 @@ export function AddTransactionPage() {
     }
   }, []);
 
-  // ── TTS (OpenAI nova) ──
+  // ── Voz (ElevenLabs, suena mientras llega) ──
   const speak = useCallback(async (text: string): Promise<void> => {
-    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
+    reproduccionRef.current?.detener();
+    reproduccionRef.current = null;
 
     setOrbState('speaking');
 
@@ -124,7 +127,7 @@ export function AddTransactionPage() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/tts`, {
+      const response = await fetch(functionUrl('tts'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -136,16 +139,9 @@ export function AddTransactionPage() {
 
       if (!response.ok) throw new Error('TTS failed');
 
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-
-      return new Promise((resolve) => {
-        const audio = new Audio(url);
-        audioRef.current = audio;
-        audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
-        audio.onerror = () => { URL.revokeObjectURL(url); resolve(); };
-        audio.play().catch(resolve);
-      });
+      const reproduccion = reproducirStream(response, new Audio());
+      reproduccionRef.current = reproduccion;
+      await reproduccion.fin;
     } catch {
       // Fallback browser TTS
       if ('speechSynthesis' in window) {
@@ -162,13 +158,15 @@ export function AddTransactionPage() {
   const startHold = useCallback(() => {
     if (orbState === 'speaking') {
       // Interrupt: stop audio and go idle
-      if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
+      reproduccionRef.current?.detener();
+      reproduccionRef.current = null;
       window.speechSynthesis?.cancel();
       setOrbState('idle');
       setSubtitle('');
       return;
     }
     if (orbState !== 'idle') return;
+    calentarFunciones('agent', 'tts');
 
     isHoldingRef.current = true;
     transcriptRef.current = '';
