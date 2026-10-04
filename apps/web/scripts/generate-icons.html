@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<body>
+<canvas id="c192" width="192" height="192"></canvas>
+<canvas id="c512" width="512" height="512"></canvas>
+<script>
+function draw(canvas) {
+  const ctx = canvas.getContext('2d');
+  const s = canvas.width;
+
+  // Background circle
+  const grad = ctx.createRadialGradient(s*0.5, s*0.4, 0, s*0.5, s*0.5, s*0.6);
+  grad.addColorStop(0, '#D4915A');
+  grad.addColorStop(0.6, '#B87A48');
+  grad.addColorStop(1, '#7A512E');
+
+  ctx.fillStyle = '#1C1011';
+  ctx.fillRect(0, 0, s, s);
+
+  ctx.beginPath();
+  ctx.arc(s/2, s/2, s*0.42, 0, Math.PI*2);
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Letter F
+  ctx.fillStyle = '#1C1011';
+  ctx.font = `bold ${s*0.45}px -apple-system, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('F', s/2 + s*0.02, s/2 + s*0.02);
+
+  // Download
+  const link = document.createElement('a');
+  link.download = `icon-${s}.png`;
+  link.href = canvas.toDataURL('image/png');
+  link.click();
+}
+
+draw(document.getElementById('c192'));
+setTimeout(() => draw(document.getElementById('c512')), 500);
+</script>
+<p>Icons generated! Save them to public/icons/</p>
+</body>
+</html>

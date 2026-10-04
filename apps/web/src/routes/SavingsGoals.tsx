@@ -105,7 +105,7 @@ export function SavingsGoalsPage() {
         <h1 className="text-xl font-bold">Metas de ahorro</h1>
         <button
           onClick={() => setShowForm(!showForm)}
-          className="w-9 h-9 rounded-full bg-primary-600 flex items-center justify-center"
+          className="w-9 h-9 rounded-full bg-primary-600 flex items-center justify-center text-slate-950"
         >
           {showForm ? <X size={18} /> : <Plus size={18} />}
         </button>
@@ -190,10 +190,10 @@ export function SavingsGoalsPage() {
                     <p className="text-xs text-slate-500">de {formatCurrency(g.target_amount)}</p>
                   </div>
                   <div className="text-right">
-                    <p className="text-lg font-bold text-white">{pct.toFixed(0)}%</p>
+                    <p className="text-lg font-bold text-slate-100">{pct.toFixed(0)}%</p>
                     {daysLeft !== null && (
                       <p className={cn('text-[10px]',
-                        daysLeft < 0 ? 'text-expense' : daysLeft < 30 ? 'text-yellow-400' : 'text-slate-500'
+                        daysLeft < 0 ? 'text-expense' : daysLeft < 30 ? 'text-slate-100 font-semibold' : 'text-slate-400'
                       )}>
                         {daysLeft < 0 ? 'Vencida' : `${daysLeft} días restantes`}
                       </p>

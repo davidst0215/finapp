@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { TrendingUp, TrendingDown, ArrowRight, Wallet } from 'lucide-react';
+import { TrendingUp, TrendingDown, ArrowRight, CalendarDays } from 'lucide-react';
+import { AccountCard } from '@/components/ui/AccountCard';
 import { supabase } from '@/lib/supabase';
 import { useAppStore } from '@/stores/appStore';
+import { CategoryIcon } from '@/components/ui/CategoryIcon';
 import { useAuthStore } from '@/stores/authStore';
 import { formatCurrency } from '@/lib/utils';
 import { Spinner } from '@/components/ui/Spinner';
@@ -53,12 +55,17 @@ export function DashboardPage() {
         <h1 className="text-xl font-bold">{profile?.display_name ?? 'Usuario'}</h1>
       </div>
 
-      {/* Balance total */}
-      <div className="card text-center">
-        <p className="text-slate-400 text-sm mb-1">Balance total</p>
-        <p className={`text-3xl font-bold ${totalBalance >= 0 ? 'text-income' : 'text-expense'}`}>
-          {formatCurrency(totalBalance)}
-        </p>
+      {/* Balance total + calendar link */}
+      <div className="card flex items-center justify-between">
+        <div>
+          <p className="text-slate-400 text-xs mb-0.5">Balance total</p>
+          <p className={`text-2xl font-bold ${totalBalance >= 0 ? 'text-income' : 'text-expense'}`}>
+            {formatCurrency(totalBalance)}
+          </p>
+        </div>
+        <Link to="/calendar" className="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center text-slate-400 active:bg-slate-700">
+          <CalendarDays size={18} />
+        </Link>
       </div>
 
       {/* Resumen mensual */}
@@ -90,21 +97,15 @@ export function DashboardPage() {
               Ver todas <ArrowRight size={14} />
             </Link>
           </div>
-          <div className="flex gap-3 overflow-x-auto no-scrollbar">
+          <div className="flex gap-3 overflow-x-auto no-scrollbar pb-1">
             {accounts.slice(0, 4).map(acc => (
-              <div
+              <AccountCard
                 key={acc.account_id}
-                className="card min-w-[160px] flex-shrink-0"
-                style={{ borderLeftColor: acc.color ?? '#3b82f6', borderLeftWidth: 3 }}
-              >
-                <div className="flex items-center gap-2 mb-2">
-                  <Wallet size={14} className="text-slate-400" />
-                  <span className="text-xs text-slate-400 truncate">{acc.account_name}</span>
-                </div>
-                <p className={`font-bold ${acc.account_type === 'credit_card' ? 'text-expense' : 'text-white'}`}>
-                  {formatCurrency(acc.current_balance)}
-                </p>
-              </div>
+                name={acc.account_name}
+                balance={acc.current_balance}
+                type={acc.account_type}
+                className="min-w-[220px] flex-shrink-0"
+              />
             ))}
           </div>
         </div>
@@ -123,7 +124,7 @@ export function DashboardPage() {
         ) : transactions.length === 0 ? (
           <div className="card text-center py-8">
             <p className="text-slate-500">No hay movimientos aún</p>
-            <Link to="/add" className="text-primary-500 text-sm mt-2 inline-block">
+            <Link to="/" className="text-primary-500 text-sm mt-2 inline-block">
               Registrar tu primer gasto
             </Link>
           </div>
@@ -132,19 +133,14 @@ export function DashboardPage() {
             {transactions.slice(0, 5).map(tx => (
               <div key={tx.transaction_id} className="card flex items-center justify-between py-3">
                 <div className="flex items-center gap-3 min-w-0">
-                  <div
-                    className="w-8 h-8 rounded-full flex items-center justify-center text-sm flex-shrink-0"
-                    style={{ backgroundColor: tx.category?.color ? `${tx.category.color}20` : '#1e293b' }}
-                  >
-                    {tx.category?.icon ?? '💰'}
-                  </div>
+                  <CategoryIcon name={tx.category?.category_name} emoji={tx.category?.icon} color={tx.category?.color} size={16} />
                   <div className="min-w-0">
                     <p className="text-sm font-medium truncate">{tx.description ?? tx.category?.category_name ?? 'Sin categoría'}</p>
                     <p className="text-xs text-slate-500">{tx.account?.account_name}</p>
                   </div>
                 </div>
                 <p className={`font-semibold text-sm flex-shrink-0 ${tx.transaction_type === 'income' ? 'text-income' : 'text-expense'}`}>
-                  {tx.transaction_type === 'income' ? '+' : '-'}{formatCurrency(tx.amount)}
+                  {tx.transaction_type === 'income' ? '+' : '-'}{formatCurrency(tx.amount, tx.currency_code)}
                 </p>
               </div>
             ))}

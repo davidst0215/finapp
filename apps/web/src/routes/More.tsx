@@ -1,61 +1,96 @@
+import { useState } from 'react';
 import { useAuthStore } from '@/stores/authStore';
-import { LogOut, PieChart, Target, Bell, MessageSquare, Settings, CreditCard, BarChart3 } from 'lucide-react';
+import { readTheme, setTheme, type ThemeMode } from '@/lib/theme';
+import { LogOut, Sun, Moon, SunMoon, Wallet, Target, PiggyBank, CreditCard, Bell, ChevronRight, CalendarDays, BarChart3 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-
-const menuItems = [
-  { to: '/budgets', icon: PieChart, label: 'Presupuestos', desc: 'Control de gastos por categoría' },
-  { to: '/goals', icon: Target, label: 'Metas de ahorro', desc: 'Alcanza tus objetivos financieros' },
-  { to: '/recurring', icon: CreditCard, label: 'Recurrentes', desc: 'Suscripciones y pagos fijos' },
-  { to: '/alerts', icon: Bell, label: 'Alertas', desc: 'Notificaciones y recordatorios' },
-  { to: '/ai-chat', icon: MessageSquare, label: 'Asistente IA', desc: 'Pregunta sobre tus finanzas' },
-  { to: '/reports', icon: BarChart3, label: 'Reportes', desc: 'Análisis con IA y gráficos completos' },
-  { to: '/settings', icon: Settings, label: 'Configuración', desc: 'Cuenta y preferencias', soon: true },
-];
+import { UserAvatar } from '@/components/ui/UserAvatar';
+import { GlassCard } from '@/components/ui/GlassCard';
 
 export function MorePage() {
-  const { profile, signOut } = useAuthStore();
+  const { profile, user, signOut } = useAuthStore();
+  const [theme, setThemeState] = useState<ThemeMode>(readTheme);
+  const chooseTheme = (mode: ThemeMode) => { setTheme(mode); setThemeState(mode); };
+  const avatarUrl = user?.user_metadata?.['avatar_url'] as string | undefined;
 
   return (
-    <div className="space-y-5">
-      <h1 className="text-xl font-bold">Más</h1>
-
-      {/* Perfil */}
-      <div className="card flex items-center gap-3">
-        <div className="w-12 h-12 rounded-full bg-primary-600 flex items-center justify-center text-lg font-bold">
-          {profile?.display_name?.charAt(0).toUpperCase() ?? 'U'}
+    <div className="space-y-6">
+      {/* Header */}
+      <GlassCard variant="accent" className="flex items-center gap-4 py-5">
+        <UserAvatar name={profile?.display_name} imageUrl={avatarUrl} size="lg" verified />
+        <div className="flex-1 min-w-0">
+          <p className="font-bold text-lg text-slate-100 truncate">{profile?.display_name}</p>
+          <p className="text-xs text-slate-500 mt-0.5">Plan gratuito</p>
         </div>
-        <div>
-          <p className="font-semibold">{profile?.display_name}</p>
-          <p className="text-xs text-slate-500">Plan gratuito</p>
-        </div>
-      </div>
+      </GlassCard>
 
-      {/* Menu */}
-      <div className="space-y-1.5">
-        {menuItems.map(({ to, icon: Icon, label, desc, soon }) => (
-          <Link
-            key={to}
-            to={soon ? '#' : to}
-            className="card flex items-center gap-3 py-3 active:bg-slate-800 transition-colors"
-          >
-            <Icon size={20} className="text-slate-400 flex-shrink-0" />
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium">{label}</p>
-              <p className="text-xs text-slate-500">{desc}</p>
+      {/* Quick actions — most used */}
+      <div className="grid grid-cols-4 gap-2">
+        {[
+          { to: '/accounts', icon: Wallet, label: 'Cuentas' },
+          { to: '/recurring', icon: CreditCard, label: 'Pagos' },
+          { to: '/calendar', icon: CalendarDays, label: 'Calendario' },
+          { to: '/alerts', icon: Bell, label: 'Alertas' },
+        ].map(({ to, icon: Icon, label }) => (
+          <Link key={to} to={to} className="flex flex-col items-center gap-1.5 py-3 rounded-xl active:bg-slate-800/30 transition-colors">
+            <div className="w-10 h-10 rounded-xl bg-slate-800/60 flex items-center justify-center">
+              <Icon size={18} className="text-primary-400" strokeWidth={1.5} />
             </div>
-            {soon && (
-              <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-500">Próximamente</span>
-            )}
+            <span className="text-[10px] text-slate-400 font-medium">{label}</span>
           </Link>
         ))}
       </div>
 
-      {/* Cerrar sesión */}
-      <button
-        onClick={signOut}
-        className="w-full flex items-center justify-center gap-2 py-3 text-expense text-sm font-medium"
-      >
-        <LogOut size={16} /> Cerrar sesión
+      {/* Planning */}
+      <div>
+        <p className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-2 px-1">
+          Planificación
+        </p>
+        <GlassCard className="p-0 divide-y divide-slate-800/40">
+          {[
+            { to: '/budgets', icon: Target, label: 'Presupuestos', desc: 'Límites mensuales por categoría' },
+            { to: '/goals', icon: PiggyBank, label: 'Metas de ahorro', desc: 'Objetivos y progreso' },
+            { to: '/reports', icon: BarChart3, label: 'Reportes', desc: 'Análisis y gráficos' },
+          ].map(({ to, icon: Icon, label, desc }) => (
+            <Link key={to} to={to}
+              className="flex items-center gap-3.5 px-4 py-3.5 active:bg-slate-800/30 transition-colors">
+              <div className="w-9 h-9 rounded-xl bg-slate-800/60 flex items-center justify-center flex-shrink-0">
+                <Icon size={17} className="text-primary-400" strokeWidth={1.6} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-slate-200">{label}</p>
+                <p className="text-[11px] text-slate-500">{desc}</p>
+              </div>
+              <ChevronRight size={15} className="text-slate-600 flex-shrink-0" />
+            </Link>
+          ))}
+        </GlassCard>
+      </div>
+
+      <div>
+        <p className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-2 px-1">
+          Apariencia
+        </p>
+        <div role="radiogroup" aria-label="Tema" className="flex gap-1 rounded-xl border border-slate-700 bg-slate-900 p-1">
+          {([
+            { mode: 'light', label: 'Claro', icon: Sun },
+            { mode: 'dark', label: 'Oscuro', icon: Moon },
+            { mode: 'auto', label: 'Automático', icon: SunMoon },
+          ] as const).map(({ mode, label, icon: Icon }) => (
+            <button key={mode} type="button" role="radio" aria-checked={theme === mode}
+              onClick={() => chooseTheme(mode)}
+              className={theme === mode
+                ? 'flex-1 flex items-center justify-center gap-1.5 rounded-lg py-2.5 text-sm font-semibold bg-primary-600 text-slate-950'
+                : 'flex-1 flex items-center justify-center gap-1.5 rounded-lg py-2.5 text-sm font-medium text-slate-400 active:bg-slate-800'}>
+              <Icon size={15} strokeWidth={1.8} /> {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Sign out */}
+      <button onClick={signOut}
+        className="w-full flex items-center justify-center gap-2 py-3 text-slate-500 text-sm active:text-expense transition-colors">
+        <LogOut size={15} /> Cerrar sesión
       </button>
     </div>
   );

@@ -101,7 +101,7 @@ export function ReportsPage() {
 
   const getScoreColor = (score: number) => {
     if (score >= 8) return 'text-income';
-    if (score >= 5) return 'text-yellow-400';
+    if (score >= 5) return 'text-slate-200';
     return 'text-expense';
   };
 
@@ -201,11 +201,11 @@ export function ReportsPage() {
             {analysis.alerts.length > 0 && (
               <div>
                 <p className="text-xs text-slate-400 font-medium mb-1.5 flex items-center gap-1">
-                  <AlertTriangle size={12} className="text-yellow-400" /> Alertas
+                  <AlertTriangle size={12} className="text-expense" /> Alertas
                 </p>
                 <div className="space-y-1">
                   {analysis.alerts.map((alert, i) => (
-                    <p key={i} className="text-xs text-yellow-300 pl-3 border-l-2 border-yellow-500">{alert}</p>
+                    <p key={i} className="text-xs text-slate-200">{alert}</p>
                   ))}
                 </div>
               </div>

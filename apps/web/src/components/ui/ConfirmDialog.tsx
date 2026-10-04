@@ -23,7 +23,7 @@ export function ConfirmDialog({ open, title, message, confirmLabel = 'Eliminar',
           <div className="w-10 h-10 rounded-full bg-expense/10 flex items-center justify-center flex-shrink-0">
             <AlertTriangle size={20} className="text-expense" />
           </div>
-          <h3 className="font-semibold text-white">{title}</h3>
+          <h3 className="font-semibold text-slate-100">{title}</h3>
         </div>
         <p className="text-sm text-slate-400 mb-5">{message}</p>
         <div className="flex gap-3">
@@ -35,7 +35,7 @@ export function ConfirmDialog({ open, title, message, confirmLabel = 'Eliminar',
           </button>
           <button
             onClick={onConfirm}
-            className="flex-1 py-2.5 rounded-xl bg-expense text-white text-sm font-medium active:bg-expense/80 transition-colors"
+            className="flex-1 py-2.5 rounded-xl bg-expense text-slate-950 text-sm font-medium active:bg-expense/80 transition-colors"
           >
             {confirmLabel}
           </button>

@@ -7,3 +7,7 @@ dist/
 .DS_Store
 .vscode/
 !.vscode/extensions.json
+
+# Supabase CLI y artefactos de build
+supabase/.temp/
+*.tsbuildinfo

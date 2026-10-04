@@ -2,13 +2,30 @@
 <html lang="es">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/png" href="/icons/icon-192.png" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <meta name="theme-color" content="#3b82f6" />
-    <meta name="description" content="Control total de tus finanzas personales" />
-    <title>FinApp</title>
+    <meta name="theme-color" content="#141417" />
+    <meta name="description" content="Wabid, tu asistente personal" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Comfortaa:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <title>Wabid</title>
+    <script>
+      // Aplica el tema antes del primer pintado (misma lógica que src/lib/theme.ts).
+      (function () {
+        try {
+          var m = localStorage.getItem('wabid-theme') || 'auto';
+          if (m === 'light' || (m === 'auto' && matchMedia('(prefers-color-scheme: light)').matches)) {
+            document.documentElement.classList.add('light');
+            document.querySelector('meta[name="theme-color"]').setAttribute('content', '#fafafa');
+          }
+        } catch (e) {}
+      })();
+    </script>
   </head>
-  <body class="bg-slate-950 text-white">
+  <body class="bg-slate-950 text-slate-100">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

@@ -1,7 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
-const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
+import { LLM_BODY, LLM_URL, llmAuth, llmConfigured, parseModelJson } from "../_shared/llm.ts";
 
 const ANALYSIS_PROMPT = `Eres un analista financiero personal. Recibes datos de dos meses del usuario y generas un análisis breve y accionable.
 
@@ -42,8 +42,8 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    if (!OPENAI_API_KEY) {
-      return jsonResponse({ error: "OpenAI API key not configured" }, 500);
+    if (!llmConfigured()) {
+      return jsonResponse({ error: "Modelo no configurado" }, 500);
     }
 
     const authHeader = req.headers.get("Authorization") ?? "";
@@ -106,14 +106,14 @@ Categorías: ${JSON.stringify(prevCategories ?? [])}
 PRESUPUESTOS: ${JSON.stringify(budgets ?? [])}
 `;
 
-    const openaiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+    const openaiResponse = await fetch(LLM_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        Authorization: llmAuth(),
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini",
+        ...LLM_BODY,
         messages: [
           { role: "system", content: ANALYSIS_PROMPT },
           { role: "user", content: context },
@@ -125,7 +125,7 @@ PRESUPUESTOS: ${JSON.stringify(budgets ?? [])}
 
     if (!openaiResponse.ok) {
       const err = await openaiResponse.text();
-      return jsonResponse({ error: "Error de OpenAI", details: err }, 502);
+      return jsonResponse({ error: "Error del modelo", details: err }, 502);
     }
 
     const data = await openaiResponse.json();
@@ -133,7 +133,7 @@ PRESUPUESTOS: ${JSON.stringify(budgets ?? [])}
 
     let analysis;
     try {
-      analysis = JSON.parse(content);
+      analysis = parseModelJson(content);
     } catch {
       return jsonResponse({ error: "No se pudo interpretar la respuesta del análisis. Intenta de nuevo." }, 502);
     }
