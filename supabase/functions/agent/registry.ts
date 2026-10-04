@@ -1,4 +1,5 @@
 import { finanzas } from "./tools/finanzas.ts";
+import { reuniones } from "./tools/reuniones.ts";
 import { type AgentModule, tool } from "./types.ts";
 
 // Respuestas generales: siempre disponible, sin contexto propio.
@@ -19,4 +20,5 @@ const general: AgentModule = {
 export const MODULES: AgentModule<any>[] = [
   general,
   finanzas,
+  reuniones,
 ];
