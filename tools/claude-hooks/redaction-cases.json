@@ -1,0 +1,332 @@
+{
+  "_comentario": "Casos dorados de redacción. Los usan dos implementaciones que deben dar EXACTAMENTE lo mismo: tools/claude-hooks/wabid-hook.mjs (en la laptop, antes de enviar) y supabase/functions/claude-events/redact.ts (en el servidor, antes de guardar). Las salidas se escribieron a mano; si cambias una regla, cambia aquí primero.",
+  "redact": [
+    {
+      "name": "llave de Anthropic en una variable de entorno",
+      "input": "export ANTHROPIC_API_KEY=sk-ant-api03-AbCdEf0123456789xyzXYZ",
+      "output": "export ANTHROPIC_API_KEY=[oculto]"
+    },
+    {
+      "name": "token de GitHub incrustado en la URL del clon",
+      "input": "git clone https://ghp_1234567890abcdefghijABCDEFGHIJ123456@github.com/foo/bar.git",
+      "output": "git clone https://[oculto]@github.com/foo/bar.git"
+    },
+    {
+      "name": "usuario y clave dentro de una URL de Postgres",
+      "input": "psql postgres://admin:S3cr3tPass@db.example.com:5432/app",
+      "output": "psql postgres://admin:[oculto]@db.example.com:5432/app"
+    },
+    {
+      "name": "DATABASE_URL con clave",
+      "input": "DATABASE_URL=postgresql://postgres:supersecret@db.abc.supabase.co:5432/postgres npm run seed",
+      "output": "DATABASE_URL=postgresql://postgres:[oculto]@db.abc.supabase.co:5432/postgres npm run seed"
+    },
+    {
+      "name": "cabecera Authorization Bearer en curl",
+      "input": "curl -H \"Authorization: Bearer abcdef1234567890XYZ\" https://api.example.com/me",
+      "output": "curl -H \"Authorization: Bearer [oculto]\" https://api.example.com/me"
+    },
+    {
+      "name": "Bearer en minúsculas conserva la forma original",
+      "input": "authorization: bearer abcdefghijklmn",
+      "output": "authorization: bearer [oculto]"
+    },
+    {
+      "name": "Authorization Basic",
+      "input": "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+      "output": "Authorization: Basic [oculto]"
+    },
+    {
+      "name": "JWT de Supabase en la cabecera apikey",
+      "input": "curl -H \"apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.abcDEF123_-xyz789\" https://x.supabase.co",
+      "output": "curl -H \"apikey: [oculto]\" https://x.supabase.co"
+    },
+    {
+      "name": "id de acceso de AWS",
+      "input": "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE aws s3 ls",
+      "output": "AWS_ACCESS_KEY_ID=[oculto] aws s3 ls"
+    },
+    {
+      "name": "PGPASSWORD antepuesto a un comando",
+      "input": "PGPASSWORD=hunter2hunter psql -h localhost",
+      "output": "PGPASSWORD=[oculto] psql -h localhost"
+    },
+    {
+      "name": "bandera --password con igual",
+      "input": "mysql -u root --password=topsecret123 -h db",
+      "output": "mysql -u root --password=[oculto] -h db"
+    },
+    {
+      "name": "bandera --token con espacio",
+      "input": "npm publish --token abc123def456",
+      "output": "npm publish --token [oculto]"
+    },
+    {
+      "name": "token personal de Supabase tras --token",
+      "input": "supabase login --token sbp_EJEMPLO_NO_REAL",
+      "output": "supabase login --token [oculto]"
+    },
+    {
+      "name": "clave en un JSON escrito con echo",
+      "input": "echo '{\"password\": \"hunter2hunter\", \"user\": \"david\"}' > cfg.json",
+      "output": "echo '{\"password\": [oculto], \"user\": \"david\"}' > cfg.json"
+    },
+    {
+      "name": "token en la query string se corta en el ampersand",
+      "input": "curl \"https://api.example.com/v1/items?token=abcd1234efgh&page=2\"",
+      "output": "curl \"https://api.example.com/v1/items?token=[oculto]&page=2\""
+    },
+    {
+      "name": "YAML con clave",
+      "input": "password: hunter2hunter",
+      "output": "password: [oculto]"
+    },
+    {
+      "name": "valor entre comillas con espacios",
+      "input": "export API_TOKEN=\"abc def ghi\"",
+      "output": "export API_TOKEN=[oculto]"
+    },
+    {
+      "name": "variable terminada en _KEY",
+      "input": "SUPABASE_SERVICE_ROLE_KEY=abcdef123456 npm run seed",
+      "output": "SUPABASE_SERVICE_ROLE_KEY=[oculto] npm run seed"
+    },
+    {
+      "name": "bloque de llave privada PEM completo",
+      "input": "echo \"-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAxyz\nabcdef\n-----END RSA PRIVATE KEY-----\" > key.pem",
+      "output": "echo \"[clave privada oculta]\" > key.pem"
+    },
+    {
+      "name": "bloque PEM cortado sin cierre",
+      "input": "cat <<EOF\n-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC",
+      "output": "cat <<EOF\n[clave privada oculta]"
+    },
+    {
+      "name": "token de bot de Slack",
+      "input": "SLACK=xoxb-123456789012-abcdefghijkl",
+      "output": "SLACK=[oculto]"
+    },
+    {
+      "name": "llave secreta de Stripe",
+      "input": "stripe listen --api-key sk_live_51HabcdEFGH1234567890zz",
+      "output": "stripe listen --api-key [oculto]"
+    },
+    {
+      "name": "llave de API de Google",
+      "input": "curl 'https://maps.googleapis.com/x?key=AIzaSyA-1234567890abcdefghijklmnopqrstu'",
+      "output": "curl 'https://maps.googleapis.com/x?key=[oculto]'"
+    },
+    {
+      "name": "llave de OpenAI con proyecto",
+      "input": "OPENAI=sk-proj-abcdefghijklmnopqrstuvwxyz0123456789",
+      "output": "OPENAI=[oculto]"
+    },
+    {
+      "name": "llave de ElevenLabs con prefijo sk_",
+      "input": "xi=sk_0123456789abcdef0123456789abcdef0123456789abcdef",
+      "output": "xi=[oculto]"
+    },
+    {
+      "name": "token de acceso de Meta (EAA...)",
+      "input": "curl 'https://graph.facebook.com/v20.0/me?access_token=EAAGm0PX4ZCpsBOZBabcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOP'",
+      "output": "curl 'https://graph.facebook.com/v20.0/me?access_token=[oculto]'"
+    },
+    {
+      "name": "token de dispositivo de Wabid",
+      "input": "node wabid-hook.mjs wbd.3f2b8c1e-5d4a-4e7b-9c0d-1a2b3c4d5e6f.ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq",
+      "output": "node wabid-hook.mjs [oculto]"
+    },
+    {
+      "name": "varios secretos en la misma línea",
+      "input": "A_KEY=aaaaaaaa1111 B_TOKEN=bbbbbbbb2222 --password=cccccccc3333",
+      "output": "A_KEY=[oculto] B_TOKEN=[oculto] --password=[oculto]"
+    },
+    {
+      "name": "mysql con -p pegado a la clave",
+      "input": "mysql -u root -pHunter2xyz",
+      "output": "mysql -u root -p[oculto]"
+    },
+    {
+      "name": "curl -u usuario:clave",
+      "input": "curl -u admin:S3cretPass https://api.test",
+      "output": "curl -u admin:[oculto] https://api.test"
+    },
+    {
+      "name": "sshpass -p",
+      "input": "sshpass -p hunter2 ssh david@host",
+      "output": "sshpass -p [oculto] ssh david@host"
+    },
+    {
+      "name": "echo clave | docker login --password-stdin",
+      "input": "echo hunter2 | docker login -u david --password-stdin",
+      "output": "echo [oculto] | docker login -u david --password-stdin"
+    },
+    {
+      "name": "Authorization con esquema token",
+      "input": "curl -H \"Authorization: token abcdef123\" https://api.github.com",
+      "output": "curl -H \"Authorization: token [oculto]\" https://api.github.com"
+    },
+    {
+      "name": "Authorization sin esquema",
+      "input": "Authorization: abcdef123456",
+      "output": "Authorization: [oculto]"
+    },
+    {
+      "name": "pg_dump con -p pegado",
+      "input": "pg_dump -h db -U david -pSecreto123 app",
+      "output": "pg_dump -h db -U david -p[oculto] app"
+    }
+  ],
+  "unchanged": [
+    {
+      "name": "git log",
+      "input": "git log --oneline -n 5"
+    },
+    {
+      "name": "build y test",
+      "input": "npm run build && npm test"
+    },
+    {
+      "name": "variable de Vercel sin secreto (maqueta)",
+      "input": "vercel env add VITE_SUPABASE_URL production"
+    },
+    {
+      "name": "mensaje de commit que nombra token",
+      "input": "git commit -m \"fix: auth token expiry handling\""
+    },
+    {
+      "name": "SHA de 40 hex",
+      "input": "git checkout 3f2b8c1e5d4a4e7b9c0d1a2b3c4d5e6f7a8b9c0d"
+    },
+    {
+      "name": "ruta de Windows",
+      "input": "cat C:\\Users\\Dsalg\\finapp\\apps\\web\\src\\App.tsx"
+    },
+    {
+      "name": "curl publico sin credenciales",
+      "input": "curl -s https://api.github.com/repos/davidst0215/finapp/pulls"
+    },
+    {
+      "name": "plural tokens no es la palabra token",
+      "input": "echo \"tokens: 100\""
+    },
+    {
+      "name": "UUID en una consulta",
+      "input": "SELECT * FROM users WHERE user_id = '3f2b8c1e-5d4a-4e7b-9c0d-1a2b3c4d5e6f'"
+    },
+    {
+      "name": "archivo con token en el nombre",
+      "input": "node scripts/rotate-token.js"
+    },
+    {
+      "name": "NODE_ENV",
+      "input": "export NODE_ENV=production"
+    },
+    {
+      "name": "grep de la palabra password",
+      "input": "grep -rn \"password\" src/"
+    },
+    {
+      "name": "valor demasiado corto para ser secreto",
+      "input": "password=ab"
+    },
+    {
+      "name": "scp sin esquema ni clave",
+      "input": "scp david@host:/srv/file.txt ."
+    },
+    {
+      "name": "mkdir -p",
+      "input": "mkdir -p build/out"
+    },
+    {
+      "name": "ssh -p con puerto",
+      "input": "ssh -p 2222 david@host"
+    },
+    {
+      "name": "ls -la",
+      "input": "ls -la src"
+    },
+    {
+      "name": "find -print0 no es una clave",
+      "input": "find . -name '*.log' -print0 | xargs -0 rm"
+    },
+    {
+      "name": "tar -pxf",
+      "input": "tar -pxzfile.tgz"
+    }
+  ],
+  "sanitize": [
+    {
+      "name": "normaliza saltos de línea de Windows",
+      "input": "a\r\nb\rc",
+      "output": "a\nb\nc"
+    },
+    {
+      "name": "marca el control bidireccional",
+      "input": "ls‮ gpj.sh",
+      "output": "ls[U+202E] gpj.sh"
+    },
+    {
+      "name": "marca NUL y campana",
+      "input": "x\u0000y\u0007z",
+      "output": "x[U+0000]y[U+0007]z"
+    },
+    {
+      "name": "tab y salto de línea se conservan",
+      "input": "tab\tok\nnl",
+      "output": "tab\tok\nnl"
+    },
+    {
+      "name": "marca el espacio de ancho cero",
+      "input": "zero​width",
+      "output": "zero[U+200B]width"
+    },
+    {
+      "name": "marca ESC y deja el resto visible",
+      "input": "esc\u001b[31mred",
+      "output": "esc[U+001B][31mred"
+    },
+    {
+      "name": "marca el separador de línea Unicode",
+      "input": "line sep",
+      "output": "line[U+2028]sep"
+    },
+    {
+      "name": "texto común con tildes no cambia",
+      "input": "Creó el archivo ñandú.txt",
+      "output": "Creó el archivo ñandú.txt"
+    }
+  ],
+  "clipMiddle": [
+    {
+      "name": "texto corto no se toca",
+      "args": {
+        "text": "hola",
+        "max": 10,
+        "head": 4,
+        "tail": 3
+      },
+      "output": "hola"
+    },
+    {
+      "name": "largo exacto al máximo no se toca",
+      "args": {
+        "text": "0123456789",
+        "max": 10,
+        "head": 4,
+        "tail": 3
+      },
+      "output": "0123456789"
+    },
+    {
+      "name": "recorta el medio y avisa cuántos caracteres se omitieron",
+      "args": {
+        "text": "abcdefghijklmnopqrstuvwxyz",
+        "max": 10,
+        "head": 4,
+        "tail": 3
+      },
+      "output": "abcd\n[... 19 caracteres omitidos ...]\nxyz"
+    }
+  ]
+}

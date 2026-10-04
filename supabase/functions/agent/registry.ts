@@ -1,5 +1,9 @@
+import { agenda } from "./tools/agenda.ts";
+import { correo } from "./tools/correo.ts";
 import { finanzas } from "./tools/finanzas.ts";
 import { reuniones } from "./tools/reuniones.ts";
+import { memoria } from "./tools/memoria.ts";
+import { tareas } from "./tools/tareas.ts";
 import { type AgentModule, tool } from "./types.ts";
 
 // Respuestas generales: siempre disponible, sin contexto propio.
@@ -19,6 +23,10 @@ const general: AgentModule = {
 // deno-lint-ignore no-explicit-any
 export const MODULES: AgentModule<any>[] = [
   general,
+  agenda,
+  correo,
   finanzas,
   reuniones,
+  tareas,
+  memoria,
 ];
