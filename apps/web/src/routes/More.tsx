@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useAuthStore } from '@/stores/authStore';
 import { readTheme, setTheme, type ThemeMode } from '@/lib/theme';
-import { LogOut, Sun, Moon, SunMoon, Wallet, Target, PiggyBank, CreditCard, Bell, ChevronRight, CalendarDays, BarChart3 } from 'lucide-react';
+import { LogOut, Sun, Moon, SunMoon, Wallet, Target, PiggyBank, CreditCard, Bell, ChevronRight, CalendarDays, BarChart3, Video, Mail, Search, Terminal, MessageSquare } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { UserAvatar } from '@/components/ui/UserAvatar';
 import { GlassCard } from '@/components/ui/GlassCard';
@@ -19,9 +19,38 @@ export function MorePage() {
         <UserAvatar name={profile?.display_name} imageUrl={avatarUrl} size="lg" verified />
         <div className="flex-1 min-w-0">
           <p className="font-bold text-lg text-slate-100 truncate">{profile?.display_name}</p>
-          <p className="text-xs text-slate-500 mt-0.5">Plan gratuito</p>
+          <p className="text-xs text-slate-500 mt-0.5 truncate">{user?.email}</p>
         </div>
       </GlassCard>
+
+      {/* Módulos del asistente */}
+      <div>
+        <p className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-2 px-1">
+          Asistente
+        </p>
+        <GlassCard className="p-0 divide-y divide-slate-800/40">
+          {[
+            { to: '/brief', icon: Sun, label: 'Brief del día', desc: 'Agenda, vencidas, pagos y esperas' },
+            { to: '/reuniones', icon: Video, label: 'Reuniones', desc: 'Fathom y lo que esperas de otros' },
+            { to: '/correo', icon: Mail, label: 'Correo', desc: 'Importantes y borradores para aprobar' },
+            { to: '/buscar', icon: Search, label: 'Buscar en proyectos', desc: 'Pregunta con la fuente citada' },
+            { to: '/claude', icon: Terminal, label: 'Claude Code', desc: 'Sesiones y permisos' },
+            { to: '/ai-chat', icon: MessageSquare, label: 'Chat con Wabid', desc: 'Conversación por texto' },
+          ].map(({ to, icon: Icon, label, desc }) => (
+            <Link key={to} to={to}
+              className="flex items-center gap-3.5 px-4 py-3.5 active:bg-slate-800/30 transition-colors">
+              <div className="w-9 h-9 rounded-xl bg-slate-800/60 flex items-center justify-center flex-shrink-0">
+                <Icon size={17} className="text-primary-400" strokeWidth={1.6} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-slate-200">{label}</p>
+                <p className="text-[11px] text-slate-500">{desc}</p>
+              </div>
+              <ChevronRight size={15} className="text-slate-500 flex-shrink-0" />
+            </Link>
+          ))}
+        </GlassCard>
+      </div>
 
       {/* Quick actions — most used */}
       <div className="grid grid-cols-4 gap-2">

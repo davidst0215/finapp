@@ -143,6 +143,18 @@
   animation: orbBreathe 2.4s cubic-bezier(0.45, 0, 0.55, 1) infinite;
 }
 
+.orb-mini {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 32% 28%, #ffffff, transparent 42%),
+    radial-gradient(circle at 72% 78%, #2a2a30, transparent 60%),
+    #6b6b70;
+  box-shadow: 0 0 0 1px rgb(var(--slate-700));
+}
+.orb-mini-on { box-shadow: 0 0 0 1px rgb(var(--slate-600)), 0 0 0 4px rgb(var(--halo) / 0.14); }
+
 @keyframes orbSpin {
   to { --orb-angle: 360deg; }
 }
