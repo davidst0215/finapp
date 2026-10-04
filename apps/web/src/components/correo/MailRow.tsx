@@ -111,7 +111,7 @@ function ReplyComposer({ item, onCancel, onSaved, onNeedsConnection }: {
     setBusy(true);
     setError(null);
     try {
-      const { draft } = await googleCall<{ draft: DraftItem }>('draft.create', { thread_id: item.thread_id, message_id: item.id, body: text.trim() });
+      const { draft } = await googleCall<{ draft: DraftItem }>('draft.create', { thread_id: item.thread_id, message_id: item.id, body: text.trim(), use_reply_to: true });
       onSaved(draft);
     } catch (err) {
       if (needsConnection(err)) onNeedsConnection();

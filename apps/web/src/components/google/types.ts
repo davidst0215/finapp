@@ -48,6 +48,9 @@ export type DraftItem = {
   thread_id: string;
   to: string;
   to_email: string;
+  cc: string;
+  bcc: string;
+  notice?: string;
   subject: string;
   body: string;
   snippet: string;

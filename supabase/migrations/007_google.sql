@@ -94,10 +94,11 @@ AS $$
 DECLARE
     v_secret_id UUID;
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM public.google_accounts a
-        WHERE a.account_id = p_account_id AND a.user_id = p_user_id
-    ) THEN
+    -- Bloquea la cuenta: dos escrituras simultáneas (renovación + reconexión) no crean dos secretos.
+    PERFORM 1 FROM public.google_accounts a
+    WHERE a.account_id = p_account_id AND a.user_id = p_user_id
+    FOR UPDATE;
+    IF NOT FOUND THEN
         RAISE EXCEPTION 'cuenta de Google no encontrada';
     END IF;
 

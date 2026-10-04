@@ -2,6 +2,7 @@
 // Lógica pura (sin Deno, sin red). Todo lo que viene de fuera se trata como no confiable:
 // los encabezados se limpian de saltos de línea (inyección de encabezados) antes de armarse.
 import { base64ToBytes, base64UrlToBytes, bytesToBase64, utf8ToBase64Url } from "./b64.ts";
+import { GoogleInputError } from "./errors.ts";
 import { bestMatches, norm } from "./text.ts";
 
 export type Address = { name: string; email: string };
@@ -68,7 +69,7 @@ export function decodeWords(value: string): string {
 
 // ---------------------------------------------------------------- direcciones
 
-function splitList(s: string): string[] {
+export function splitList(s: string): string[] {
   const out: string[] = [];
   let cur = "";
   let quoted = false;
@@ -312,6 +313,9 @@ export type ReplyTarget = {
   subject: string;
   in_reply_to: string;
   references: string;
+  /** Reply-To existe y su dominio no es el del remitente (posible desvío de la respuesta) */
+  reply_to_differs: boolean;
+  reply_to_email: string;
 };
 
 // Elige a quién y a qué mensaje se responde. `me` = correo de la cuenta conectada (no se responde a uno mismo).
@@ -319,6 +323,7 @@ export function replyTarget(
   thread: { id?: string; messages?: GMessage[] },
   me: string,
   preferMessageId?: string,
+  useReplyTo = false,
 ): ReplyTarget | null {
   const msgs = [...(thread.messages ?? [])].sort((a, b) => Number(a.internalDate ?? 0) - Number(b.internalDate ?? 0));
   if (msgs.length === 0) return null;
@@ -334,10 +339,14 @@ export function replyTarget(
   const h = target.payload?.headers;
   const candidates = mine(target)
     ? parseAddressList(header(h, "To"))
-    : [parseAddress(header(h, "Reply-To")) ?? parseAddress(header(h, "From"))].filter((a): a is Address => a !== null);
+    : [(useReplyTo ? parseAddress(header(h, "Reply-To")) : null) ?? parseAddress(header(h, "From"))].filter((a): a is Address => a !== null);
   const to = candidates.filter((a) => a.email.toLowerCase() !== me.toLowerCase());
   if (to.length === 0) return null;
 
+  const domain = (a: Address | null) => a?.email.split("@")[1]?.toLowerCase() ?? "";
+  const replyTo = parseAddress(header(h, "Reply-To"));
+  const from = parseAddress(header(h, "From"));
+  const differs = !mine(target) && replyTo !== null && domain(replyTo) !== domain(from);
   const messageId = cleanMsgId(header(h, "Message-ID"));
   return {
     message_id: target.id,
@@ -346,6 +355,8 @@ export function replyTarget(
     subject: replySubject(decodeWords(header(h, "Subject"))),
     in_reply_to: messageId,
     references: `${header(h, "References")} ${messageId}`.trim(),
+    reply_to_differs: differs,
+    reply_to_email: replyTo?.email ?? "",
   };
 }
 
@@ -357,6 +368,9 @@ export type DraftItem = {
   thread_id: string;
   to: string; // para mostrar: nombres
   to_email: string; // para confirmar: direcciones
+  cc: string; // direcciones en copia (visibles al confirmar el envío)
+  bcc: string; // direcciones en copia oculta
+  notice?: string; // aviso al crearlo (p. ej. Reply-To de otro dominio)
   subject: string;
   body: string;
   snippet: string;
@@ -384,6 +398,8 @@ export function mapDraft(d: GDraft): DraftItem | null {
     thread_id: m.threadId ?? "",
     to: to.map(displayName).join(", "),
     to_email: to.map((a) => a.email).join(", "),
+    cc: parseAddressList(header(h, "Cc")).map((a) => a.email).join(", "),
+    bcc: parseAddressList(header(h, "Bcc")).map((a) => a.email).join(", "),
     subject: sanitizeHeader(decodeWords(header(h, "Subject"))) || "(sin asunto)",
     body: textFromPayload(m.payload).slice(0, MAX_BODY_CHARS),
     snippet: decodeEntities(m.snippet ?? "").trim(),
@@ -395,10 +411,19 @@ export function mapDraft(d: GDraft): DraftItem | null {
 // Para editar: Gmail reemplaza el mensaje entero, así que se rearma con los mismos encabezados y el cuerpo nuevo.
 export function rebuildDraft(d: GDraft, body: string): { raw: string; threadId?: string } {
   const h = d.message?.payload?.headers;
+  const parse = (name: string) => {
+    const value = header(h, name);
+    const list = parseAddressList(value);
+    // Si una dirección no se pudo leer, reescribir el borrador la perdería en silencio: se aborta.
+    if (list.length !== splitList(value).length) {
+      throw new GoogleInputError(`No pude leer una dirección del campo ${name} del borrador. Edítalo en Gmail para no perder destinatarios.`, "direccion");
+    }
+    return list;
+  };
   const raw = buildRaw({
-    to: parseAddressList(header(h, "To")),
-    cc: parseAddressList(header(h, "Cc")),
-    bcc: parseAddressList(header(h, "Bcc")),
+    to: parse("To"),
+    cc: parse("Cc"),
+    bcc: parse("Bcc"),
     subject: decodeWords(header(h, "Subject")),
     body,
     inReplyTo: header(h, "In-Reply-To"),

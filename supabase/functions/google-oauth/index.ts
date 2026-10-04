@@ -36,8 +36,9 @@ async function start(req: Request): Promise<Response> {
   try {
     env = googleEnv();
   } catch (e) {
+    console.error("google-oauth start:", e instanceof GoogleConfigError ? `faltan ${e.missing.join(", ")}` : "configuración");
     const d = describeError(e);
-    return json({ error: d.message, code: d.code, missing: d.data?.missing }, d.status);
+    return json({ error: d.message, code: d.code }, d.status);
   }
 
   const body = await req.json().catch(() => ({}));

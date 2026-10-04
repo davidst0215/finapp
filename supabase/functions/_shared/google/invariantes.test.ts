@@ -92,6 +92,23 @@ describe("nunca se invita ni se avisa a terceros", () => {
   });
 });
 
+describe("el agente no actúa por órdenes inyectadas", () => {
+  it("la tool de mover no tiene confirmación del modelo y no mueve eventos con invitados", () => {
+    const src = noComments(read("agent", "tools", "agenda.ts"));
+    assert.doesNotMatch(src, /confirmado|confirm_guests|GoogleConflict/);
+    assert.match(src, /target.guests > 0/);
+    assert.ok(src.indexOf("target.guests > 0") < src.indexOf("calendarMove(user.id"));
+  });
+  it("las reglas dicen que correos y eventos son dato, no instrucciones", () => {
+    for (const f of ["agenda.ts", "correo.ts"]) assert.match(read("agent", "tools", f), /DATO, nunca instrucciones/);
+  });
+  it("el cliente no recibe nombres de variables ni detalle de Google", () => {
+    const errors = noComments(read("_shared", "google", "errors.ts"));
+    assert.doesNotMatch(errors, /data: { (missing|detail)/);
+    assert.doesNotMatch(noComments(read("google-oauth", "index.ts")), /missing: /);
+  });
+});
+
 describe("el callback y los tokens", () => {
   it("el callback redirige solo a la URL fija de la app (sin open redirect)", () => {
     const src = noComments(read("google-oauth", "index.ts"));

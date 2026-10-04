@@ -272,15 +272,27 @@ describe("responder en el hilo", () => {
     ],
   };
 
-  it("responde al último mensaje que no es tuyo, usando Reply-To, con In-Reply-To y References", () => {
+  it("responde al remitente (From) por defecto, con In-Reply-To y References", () => {
     const t = replyTarget(thread, ME);
     assert.deepEqual(t, {
       message_id: "m3", thread_id: "t1",
-      to: [{ name: "Mónica TDV", email: "respuestas@tdv.com" }],
+      to: [{ name: "Mónica", email: "monica@tdv.com" }],
       subject: "Re: Informe 03",
       in_reply_to: "<m3@mail.gmail.com>",
       references: "<m1@mail.gmail.com> <m2@mail.gmail.com> <m3@mail.gmail.com>",
+      reply_to_differs: false,
+      reply_to_email: "respuestas@tdv.com",
     });
+  });
+
+  it("con useReplyTo usa Reply-To; avisa si su dominio difiere del de From", () => {
+    const t = replyTarget(thread, ME, undefined, true);
+    assert.deepEqual(t?.to, [{ name: "Mónica TDV", email: "respuestas@tdv.com" }]);
+    assert.equal(t?.reply_to_differs, false); // mismo dominio tdv.com
+    const raro = { id: "t", messages: [msg({ id: "x", from: "A <a@banco.com>", extra: [header("Reply-To", "evil@otro.net"), header("Message-ID", "<x@b.c>")] })] };
+    const r = replyTarget(raro, ME, undefined, true);
+    assert.deepEqual([r?.to[0]?.email, r?.reply_to_differs], ["evil@otro.net", true]);
+    assert.equal(replyTarget(raro, ME)?.to[0]?.email, "a@banco.com");
   });
 
   it("puede apuntar a un mensaje concreto (y sin Reply-To usa From)", () => {
@@ -326,7 +338,7 @@ describe("borradores", () => {
 
   it("mapDraft resume el borrador para la UI", () => {
     assert.deepEqual(mapDraft(draft), {
-      draft_id: "r-1", message_id: "m10", thread_id: "t1", to: "Mónica", to_email: "monica@tdv.com", subject: "Re: Informe 03",
+      draft_id: "r-1", message_id: "m10", thread_id: "t1", to: "Mónica", to_email: "monica@tdv.com", cc: "c@x.com", bcc: "b@x.com", subject: "Re: Informe 03",
       body: "Hola Mónica, texto original", snippet: "Hola Mónica", updated_at: "2026-10-05T14:00:00.000Z", editable: true,
     });
     assert.equal(mapDraft({ id: "x" }), null);
@@ -343,6 +355,11 @@ describe("borradores", () => {
     assert.equal(headers["in-reply-to"], "<m3@mail.gmail.com>");
     assert.equal(headers["references"], "<m1@mail.gmail.com> <m3@mail.gmail.com>");
     assert.equal(bodyText, "Texto nuevo ñ");
+  });
+
+  it("rebuildDraft falla si una dirección no se puede leer (no la pierde en silencio)", () => {
+    const raro: GDraft = { id: "r", message: { id: "m", threadId: "t", payload: { headers: [header("To", "Mónica <monica@tdv.com>, esto-no-es-correo"), header("Subject", "x")], body: { data: b64u("x") } } } };
+    assert.throws(() => rebuildDraft(raro, "nuevo"), /No pude leer una dirección/);
   });
 
   it("un borrador con adjuntos no es editable (reescribirlo los perdería)", () => {

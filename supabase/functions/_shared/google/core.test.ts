@@ -360,8 +360,13 @@ describe("Gmail: borradores (nunca se envía solo)", () => {
   it("editar: conserva destinatarios e hilo, cambia el cuerpo y devuelve el message_id nuevo", async () => {
     const s = setup();
     const current = { id: "r-1", message: { id: "m-old", threadId: "t1", internalDate: "5000", payload: { mimeType: "text/plain", headers: [hdr("To", "Mónica <monica@tdv.com>"), hdr("Cc", "c@x.com"), hdr("Subject", "Re: Informe 03"), hdr("In-Reply-To", "<m1@mail.gmail.com>"), hdr("References", "<m1@mail.gmail.com>")], body: { data: utf8ToBase64Url("texto viejo") } } } };
-    s.on((c) => (c.method === "GET" && c.url.pathname.endsWith("/drafts/r-1") ? json(current) : undefined));
-    s.on((c) => (c.method === "PUT" && c.url.pathname.endsWith("/drafts/r-1") ? json({ id: "r-1", message: { id: "m-new", threadId: "t1" } }) : undefined));
+    let saved: any = null;
+    s.on((c) => (c.method === "GET" && c.url.pathname.endsWith("/drafts/r-1") ? json(saved ?? current) : undefined));
+    s.on((c) => {
+      if (c.method !== "PUT" || !c.url.pathname.endsWith("/drafts/r-1")) return undefined;
+      saved = { id: "r-1", message: { id: "m-new", threadId: "t1", internalDate: "6000", payload: { mimeType: "text/plain", headers: current.message.payload.headers, body: { data: utf8ToBase64Url(c.body.message.raw ? "texto nuevo" : "") } } } };
+      return json({ id: "r-1", message: { id: "m-new", threadId: "t1" } });
+    });
     const out = await draftUpdateBody(s.d, USER, { draft_id: "r-1", body: "texto nuevo" });
     assert.deepEqual([out.message_id, out.body, out.subject, out.to_email], ["m-new", "texto nuevo", "Re: Informe 03", "monica@tdv.com"]);
     const put = s.calls.find((c) => c.method === "PUT")!;

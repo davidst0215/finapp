@@ -5,7 +5,7 @@ import { canSend, countLabel, dotKind, gmailDraftsUrl, gmailThreadUrl, rowTitle,
 import type { DraftItem } from '../../src/components/google/types.ts';
 
 const draft = (id: string, over: Partial<DraftItem> = {}): DraftItem => ({
-  draft_id: id, message_id: `m-${id}`, thread_id: 't', to: 'Mónica', to_email: 'monica@tdv.com', subject: 'Re: Informe 03', body: 'hola', snippet: 'hola',
+  draft_id: id, message_id: `m-${id}`, thread_id: 't', to: 'Mónica', to_email: 'monica@tdv.com', cc: '', bcc: '', subject: 'Re: Informe 03', body: 'hola', snippet: 'hola',
   updated_at: '2026-10-05T14:00:00.000Z', editable: true, ...over,
 });
 

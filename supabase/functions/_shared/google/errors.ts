@@ -77,7 +77,7 @@ export class GoogleConflict extends Error {
 export class GoogleConfigError extends Error {
   missing: string[];
   constructor(missing: string[]) {
-    super(`Falta configurar: ${missing.join(", ")}`);
+    super("Falta configurar Google en el servidor.");
     this.name = "GoogleConfigError";
     this.missing = missing;
   }
@@ -108,7 +108,7 @@ export function describeError(e: unknown): Described {
   }
   if (e instanceof GoogleInputError) return { code: e.code, status: 400, message: e.message };
   if (e instanceof GoogleConflict) return { code: e.code, status: 409, message: e.message, data: e.data };
-  if (e instanceof GoogleConfigError) return { code: "config", status: 500, message: e.message, data: { missing: e.missing } };
+  if (e instanceof GoogleConfigError) return { code: "config", status: 500, message: "Falta configurar Google en el servidor." };
   if (e instanceof GoogleTokenError) {
     if (e.code === "invalid_client" || e.code === "unauthorized_client") {
       return { code: "config", status: 500, message: "Las credenciales de Google de Wabid no son válidas. Revisa GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET." };
@@ -137,7 +137,7 @@ export function describeError(e: unknown): Described {
     if (e.status >= 500) {
       return { code: "google", status: 502, message: "Google tuvo un problema. Intenta de nuevo en un momento." };
     }
-    return { code: "google", status: 502, message: "Google rechazó la solicitud.", data: { detail: e.message.slice(0, 200) } };
+    return { code: "google", status: 502, message: "Google rechazó la solicitud." };
   }
   return { code: "interno", status: 500, message: "Algo falló. Intenta de nuevo." };
 }

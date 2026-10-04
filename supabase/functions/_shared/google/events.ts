@@ -198,3 +198,11 @@ export function moveBody(current: CalEvent, mv: MoveEvent): { start: { dateTime:
     endLabel: end.hm,
   };
 }
+
+// Id de envío determinista (SHA-256 de lo pedido, con forma de UUID): si el agente repite el mismo pedido,
+// Calendar recibe el mismo id y devuelve el evento ya creado en vez de duplicarlo.
+export async function deterministicRequestId(...parts: (string | number)[]): Promise<string> {
+  const data = new TextEncoder().encode(parts.join(""));
+  const h = [...new Uint8Array(await crypto.subtle.digest("SHA-256", data))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+}

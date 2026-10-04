@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { GoogleInputError } from "./errors.ts";
 import {
-  compareEvents, findOverlaps, mapEvent, matchEvents, moveBody, normalizeMove, normalizeNewEvent, type CalEvent, type RawEvent,
+  compareEvents, deterministicRequestId, findOverlaps, mapEvent, matchEvents, moveBody, normalizeMove, normalizeNewEvent, type CalEvent, type RawEvent,
 } from "./events.ts";
 
 const raw = (over: Partial<RawEvent> = {}): RawEvent => ({
@@ -205,5 +205,15 @@ describe("mover", () => {
   it("los eventos de todo el día no se mueven desde Wabid", () => {
     const dia = ev({ start: { date: "2026-10-05" }, end: { date: "2026-10-06" } });
     assert.throws(() => moveBody(dia, normalizeMove({ event_id: "ev1", date: "2026-10-06", start_time: "16:00" })), GoogleInputError);
+  });
+});
+
+describe("id de envío determinista", () => {
+  it("mismo pedido → mismo id con forma de UUID; otro pedido → otro id", async () => {
+    const a = await deterministicRequestId("u1", "Reunión", "2026-10-06", "16:00", 60);
+    assert.match(a, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    assert.equal(a, await deterministicRequestId("u1", "Reunión", "2026-10-06", "16:00", 60));
+    assert.notEqual(a, await deterministicRequestId("u1", "Reunión", "2026-10-06", "17:00", 60));
+    assert.equal(normalizeNewEvent({ title: "x", date: "2026-10-06", start_time: "16:00", request_id: a }).event_id?.length, 32);
   });
 });

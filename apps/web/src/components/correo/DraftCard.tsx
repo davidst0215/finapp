@@ -160,7 +160,9 @@ export function DraftCard({ draft, account, canCompose, onChanged, onSent, onSta
       {(mode === 'confirm' || mode === 'sending') && (
         <div role="group" aria-labelledby={`${uid}-confirm`} className="space-y-3 rounded-xl border border-slate-500 p-3">
           <p id={`${uid}-confirm`} className="text-base text-slate-100">
-            Se enviará a <strong className="break-all font-bold">{draft.to_email}</strong> con el texto de arriba. No se puede deshacer.
+            Se enviará a <strong className="break-all font-bold">{draft.to_email}</strong>
+            {draft.cc && <> · Cc <strong className="break-all font-bold">{draft.cc}</strong></>}
+            {draft.bcc && <> · Cco <strong className="break-all font-bold">{draft.bcc}</strong></>} con el texto de arriba. No se puede deshacer.
           </p>
           <div className="flex gap-2">
             <button type="button" autoFocus onClick={() => setMode('view')} disabled={mode === 'sending'} className={cn(btnSecondary, 'flex-1')}>

@@ -27,6 +27,7 @@ export function diaHablado(key: string, today: string): string {
   return `el ${dia} ${d === 1 ? "primero" : d} de ${MESES[m - 1]}${anio}`;
 }
 
+const corto = (s: string, max = 60) => (s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s);
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const plural = (n: number, uno: string, varios: string) => `${n} ${n === 1 ? uno : varios}`;
 
@@ -43,7 +44,7 @@ export function resumenAgenda(events: CalEvent[], key: string, now: Date): strin
     return key === today ? "No tienes nada en la agenda hoy." : `No tienes nada en la agenda ${dia}.`;
   }
   const todos = [...vigentes].sort((a, b) => Number(b.all_day) - Number(a.all_day) || a.start_hm.localeCompare(b.start_hm));
-  const lista = todos.slice(0, 4).map((e) => (e.all_day ? `todo el día, ${e.title}` : `a ${horaHablada(e.start_hm)}, ${e.title}`));
+  const lista = todos.slice(0, 4).map((e) => (e.all_day ? `todo el día, ${corto(e.title)}` : `a ${horaHablada(e.start_hm)}, ${corto(e.title)}`));
   const resto = todos.length - lista.length;
   const intro = key === today
     ? `Te ${todos.length === 1 ? "queda" : "quedan"} ${plural(todos.length, "evento", "eventos")} hoy`
@@ -61,8 +62,8 @@ export function resumenCorreo(items: MailItem[]): string {
   const sinLeer = items.filter((m) => m.unread).length;
   const partes = [`Tienes ${plural(items.length, "correo importante", "correos importantes")}${sinLeer > 0 ? `, ${sinLeer} sin leer` : ""}.`];
   const alarma = items.find((m) => m.alarm);
-  if (alarma) partes.push(`Ojo: ${remitenteCorto(alarma)} avisa «${alarma.subject}».`);
+  if (alarma) partes.push(`Ojo: ${remitenteCorto(alarma)} avisa «${corto(alarma.subject)}».`);
   const resto = items.filter((m) => m !== alarma).slice(0, alarma ? 2 : 3);
-  if (resto.length) partes.push(resto.map((m) => `${remitenteCorto(m)}: ${m.subject}`).join("; ") + ".");
+  if (resto.length) partes.push(resto.map((m) => `${corto(remitenteCorto(m), 24)}: ${corto(m.subject)}`).join("; ") + ".");
   return partes.join(" ");
 }

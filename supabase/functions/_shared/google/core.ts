@@ -349,7 +349,7 @@ export async function draftCreateReply(d: Deps, userId: string, input: Record<st
 
   return await withGoogle(d, userId, ["gmail_read", "gmail_compose"], async (token, account) => {
     const thread = await gmailThreadMeta(d.fetch, token, threadId);
-    const target = replyTarget(thread, account.email, messageId);
+    const target = replyTarget(thread, account.email, messageId, input.use_reply_to === true);
     if (!target) throw new GoogleInputError("No pude saber a quién responder en ese hilo.");
     const raw = buildRaw({ to: target.to, subject: target.subject, body, inReplyTo: target.in_reply_to, references: target.references });
     const draft = await apiDraftCreate(d.fetch, token, raw, target.thread_id);
@@ -364,6 +364,11 @@ export async function draftCreateReply(d: Deps, userId: string, input: Record<st
       body,
       snippet: body.slice(0, 120),
       updated_at: new Date(d.now()).toISOString(),
+      cc: "",
+      bcc: "",
+      notice: target.reply_to_differs && input.use_reply_to === true
+        ? `La respuesta irá a ${target.to.map((a) => a.email).join(", ")}, un dominio distinto al del remitente. Revísalo antes de enviar.`
+        : undefined,
       editable: true,
     };
   });
@@ -383,15 +388,11 @@ export async function draftUpdateBody(d: Deps, userId: string, input: Record<str
       throw new GoogleConflict("adjuntos", "Este borrador tiene adjuntos. Edítalo en Gmail para no perderlos.");
     }
     const { raw, threadId } = rebuildDraft(current, body);
-    const updated = await apiDraftUpdate(d.fetch, token, draftId, raw, threadId);
-    return {
-      ...before,
-      draft_id: updated.id ?? before.draft_id,
-      message_id: updated.message?.id ?? before.message_id, // el mensaje cambia con cada edición
-      body,
-      snippet: body.slice(0, 120),
-      updated_at: new Date(d.now()).toISOString(),
-    };
+    await apiDraftUpdate(d.fetch, token, draftId, raw, threadId);
+    // Se vuelve a leer: destinatarios, copias y message_id salen de lo que quedó guardado en Gmail, no del borrador viejo.
+    const fresh = mapDraft(await draftGet(d.fetch, token, draftId, "full"));
+    if (!fresh) throw new Error("Gmail devolvió un borrador ilegible");
+    return fresh;
   });
 }
 

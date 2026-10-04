@@ -100,7 +100,7 @@ export function CorreoPage() {
     setDrafts((cur) => upsertDraft(cur ?? [], draft));
     setOpenId(null);
     setTab('borradores');
-    addToast('Borrador listo. Revísalo y envíalo cuando quieras.', 'success');
+    addToast(draft.notice ?? 'Borrador listo. Revísalo y envíalo cuando quieras.', draft.notice ? 'warning' : 'success');
   };
 
   const mailList = (items: MailItem[], empty: { title: string; hint: string }) =>
