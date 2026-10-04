@@ -1,6 +1,7 @@
 import { agenda } from "./tools/agenda.ts";
 import { correo } from "./tools/correo.ts";
 import { finanzas } from "./tools/finanzas.ts";
+import { reuniones } from "./tools/reuniones.ts";
 import { memoria } from "./tools/memoria.ts";
 import { tareas } from "./tools/tareas.ts";
 import { type AgentModule, tool } from "./types.ts";
@@ -25,6 +26,7 @@ export const MODULES: AgentModule<any>[] = [
   agenda,
   correo,
   finanzas,
+  reuniones,
   tareas,
   memoria,
 ];
