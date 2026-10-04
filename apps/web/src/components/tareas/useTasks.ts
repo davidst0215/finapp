@@ -96,9 +96,16 @@ export function useTasks() {
           // Vault grande: la sincronización llega por tandas; se sigue hasta completar (tope de seguridad).
           for (let i = 0; i < 6; i++) if (!(await vaultApi.sync()).partial) break;
         }
-        const res = await vaultApi.tasks({ refresh: force ? false : refresh });
+        let res = await vaultApi.tasks({ refresh: force ? false : refresh });
         if (mine !== seq.current) return;
-        commit(res);
+        commit(res); // lo ya indexado se ve mientras llega el resto
+        // Primera sync de un vault grande: por tandas, con el mismo tope de seguridad.
+        for (let i = 0; res.partial && i < 6; i++) {
+          if (!(await vaultApi.sync()).partial) i = 99;
+          res = await vaultApi.tasks({ refresh: false });
+          if (mine !== seq.current) return;
+          commit(res);
+        }
         setError(null);
         loadedAt.current = Date.now();
       } catch (e) {

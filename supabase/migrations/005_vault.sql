@@ -275,21 +275,24 @@ BEGIN
     END IF;
 
     RETURN QUERY
-    WITH hits AS (
+    WITH scored AS (   -- el ranking se calcula una sola vez por documento
         SELECT d.path, d.kind, d.title, d.cliente, d.proyecto, d.padre, d.tags, d.links, d.content,
-               (ts_rank_cd(d.search, v_q, 33) * CASE WHEN d.kind = 'ficha' THEN 1.25 ELSE 1.0 END)::REAL AS rk,
-               row_number() OVER (ORDER BY ts_rank_cd(d.search, v_q, 33) * CASE WHEN d.kind = 'ficha' THEN 1.25 ELSE 1.0 END DESC, d.title) AS rn
+               (ts_rank_cd(d.search, v_q, 33) * CASE WHEN d.kind = 'ficha' THEN 1.25 ELSE 1.0 END)::REAL AS rk
         FROM vault_docs d
         WHERE d.user_id = auth.uid() AND d.kind = ANY (v_kinds) AND d.search @@ v_q
           AND (p_cliente IS NULL OR lower(d.cliente) = lower(p_cliente))
-        ORDER BY rk DESC, d.title
+    ),
+    hits AS (
+        SELECT s.*, row_number() OVER (ORDER BY s.rk DESC, s.title) AS rn
+        FROM scored s
+        ORDER BY s.rk DESC, s.title
         LIMIT v_limit
     )
     SELECT h.path, h.kind, h.title, h.cliente, h.proyecto, h.padre, h.tags, h.links, h.rk,
-           ts_headline('public.vault_es', left(h.content, 20000), v_q,
+           ts_headline('public.vault_es', left(h.content, 60000), v_q,
                        'StartSel=⟦, StopSel=⟧, MaxFragments=1, MaxWords=32, MinWords=14'),
            CASE WHEN p_context AND h.rn <= 4 THEN   -- el modelo solo recibe las 4 mejores
-               ts_headline('public.vault_es', left(h.content, 20000), v_q,
+               ts_headline('public.vault_es', left(h.content, 60000), v_q,
                            'StartSel=⟦, StopSel=⟧, MaxFragments=3, MaxWords=60, MinWords=25, FragmentDelimiter=" … "')
            END
     FROM hits h

@@ -153,7 +153,13 @@ export async function opMoveTask(
       try {
         ahora = takeBlock(cur, args.ref).block;
       } catch (e) {
-        if (e instanceof TaskNotFoundError) return null; // ya no está en el origen
+        if (e instanceof TaskNotFoundError) {
+          // Sin la línea exacta: o la quitaron (listo), o la editaron (p. ej. cambió de estado). Si su texto
+          // sigue en el archivo, fue editada: se avisa en vez de dejar la copia duplicada en silencio.
+          const titulo = parseMeta(args.ref.raw.replace(/^\s*- \[.\]\s+/, "")).text;
+          if (titulo && cur.includes(titulo)) throw new Error("la tarea cambió en el origen mientras se movía");
+          return null; // ya no está en el origen
+        }
         throw e;
       }
       if (ahora.length !== block.length || ahora.some((l, i) => l !== block[i])) {

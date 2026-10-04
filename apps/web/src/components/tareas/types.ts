@@ -92,6 +92,8 @@ export interface TasksResponse {
   syncedAt: string | null;
   /** Si no se pudo sincronizar con GitHub: motivo corto. Lo mostrado es lo último indexado y puede estar desactualizado. */
   syncError?: string | null;
+  /** Vault grande: la sincronización va por tandas y faltan archivos. Llamar a sync hasta que deje de ser parcial. */
+  partial?: boolean;
 }
 
 export interface CreateTaskInput {

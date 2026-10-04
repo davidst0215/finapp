@@ -80,3 +80,29 @@ test("escritura: bytes no UTF-8 no se leen; el índice sí los tolera", async ()
   assert.match(await gh.getBlob("S"), /ho.la/);
   assert.throws(() => base64ToUtf8(malo, true), GitHubError);
 });
+
+test("cleanText: los tags del contrato no sobreviven en ninguna posición", () => {
+  for (const [entrada, texto] of [
+    ["Hablar con Ana (#conjunto)", "Hablar con Ana (conjunto)"],
+    ['Ver "#fathom" de ayer', 'Ver "fathom" de ayer'],
+    ["x#conjunto/ana y y#destino/vera", "xconjunto/ana y ydestino/vera"],
+  ] as const) {
+    assert.equal(cleanText(entrada), texto);
+    const [t] = parseTasks(buildTaskBlock({ text: entrada }).join("\n"));
+    assert.equal(t.shared, false, entrada);
+    assert.equal(t.source, null, entrada);
+    assert.equal(t.suggest, null, entrada);
+  }
+});
+
+test("mover: si la línea del origen fue editada (cambió de estado) se avisa en vez de dejar duplicada en silencio", async () => {
+  const repo = new Repo();
+  repo.set(P, TEXTO);
+  repo.beforePut = (path, put) => {
+    if (put === 2 && path === P) repo.set(P, "# P\n- [ ] uno\n- [x] dos ✅ 2026-10-05\n"); // David la completó en Norte
+  };
+  await assert.rejects(
+    opMoveTask(repo, { path: P, ref: { line: 2, raw: "- [ ] dos" }, toFolder: "acme-soporte", toLabel: "Soporte" }),
+    (e: unknown) => e instanceof PartialMoveError && /cambió en el origen/.test(e.message),
+  );
+});

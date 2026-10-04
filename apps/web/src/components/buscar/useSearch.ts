@@ -34,6 +34,8 @@ export function useSearch() {
   const [recents, setRecents] = useState<string[]>(loadRecents);
   const recentsRef = useRef(recents);
   const seq = useRef(0);
+  // La búsqueda que está en pantalla: la respuesta se pide para ESA, no para lo que haya ahora en el input.
+  const shown = useRef<{ q: string; cliente: string | null } | null>(null);
 
   // Antes de la primera búsqueda: los chips de cliente y el total indexado (search('') no busca nada).
   const boot = useCallback(async () => {
@@ -56,6 +58,7 @@ export function useSearch() {
     if (!q) return;
     const mine = ++seq.current;
     setQuery(q);
+    shown.current = { q, cliente: filter };
     setPhase('searching');
     setOutcome(null);
     setError(null);
@@ -86,12 +89,14 @@ export function useSearch() {
 
   /** La respuesta redactada cuesta una llamada al modelo: solo se pide cuando David toca "Responder". */
   const requestAnswer = useCallback(async () => {
-    const q = query.trim();
+    const last = shown.current;
+    if (!last) return;
+    const { q, cliente: filtro } = last;
     if (!q) return;
     const mine = ++seq.current;
     setPhase('answering');
     try {
-      const full = await vaultApi.search(q, { cliente, answer: true });
+      const full = await vaultApi.search(q, { cliente: filtro, answer: true });
       if (mine !== seq.current) return;
       // Las fuentes ya están en pantalla (y quizá abiertas): solo se agrega la respuesta.
       setOutcome((cur) => cur && { ...cur, answer: full.answer, answerError: full.answer ? null : full.answerError });
@@ -100,7 +105,7 @@ export function useSearch() {
       setOutcome((cur) => cur && { ...cur, answerError: errorMessage(e) });
     }
     if (mine === seq.current) setPhase('done');
-  }, [query, cliente]);
+  }, []);
 
   const submit = useCallback((text?: string) => run(text ?? query, cliente), [run, query, cliente]);
 
@@ -116,6 +121,7 @@ export function useSearch() {
   /** Borrar el texto vuelve al estado inicial y descarta lo que vaya en vuelo. */
   const clear = useCallback(() => {
     seq.current += 1;
+    shown.current = null;
     setQuery('');
     setPhase('idle');
     setOutcome(null);

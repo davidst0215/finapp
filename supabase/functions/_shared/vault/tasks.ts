@@ -260,6 +260,7 @@ export function cleanText(s: unknown, max = 300): string {
   return String(s ?? "")
     .replace(/[\r\n]+/g, " ")
     .replace(RE_TASK_EMOJI, "")
+    .replace(/#+(?=(?:conjunto|destino|fathom)\b)/giu, "") // tags del contrato en cualquier posición: (#conjunto), "#fathom", x#conjunto
     .replace(/(^|\s)#+(?=[\w/-])/g, "$1") // solo el # que abre un tag; "PR #42" → "PR 42", "C#" se queda
     .replace(/^\s*(?:[-*]\s+)?(?:\[[ xX/?\-]\]\s*)?/, "")
     .replace(/\s{2,}/g, " ")

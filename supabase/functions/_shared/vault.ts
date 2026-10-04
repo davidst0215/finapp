@@ -240,19 +240,20 @@ export async function tasksView(
   env: VaultEnv,
   hoy: string,
   opts: { refresh?: boolean } = {},
-): Promise<TasksView & { syncError: string | null }> {
+): Promise<TasksView & { syncError: string | null; partial: boolean }> {
   let syncError: string | null = null;
+  let partial = false; // vault grande: la primera sync llega por tandas; la UI sigue llamando a sync
   try {
     const state = await getSyncState(db, userId);
-    if (!state) await syncIndex(db, userId, env, { force: true });
-    else if (opts.refresh) await syncIndex(db, userId, env, { maxAgeMs: 60_000 });
+    if (!state) partial = (await syncIndex(db, userId, env, { force: true })).partial;
+    else if (opts.refresh) partial = (await syncIndex(db, userId, env, { maxAgeMs: 60_000 })).partial;
   } catch (e) {
     // Con GitHub caído se muestra lo indexado, avisando que puede estar desactualizado.
     syncError = e instanceof Error ? e.message : "No pude sincronizar con GitHub";
     if (e instanceof VaultError && e.status >= 500 && e.status !== 502) throw e;
   }
   const [rows, folders, state] = await Promise.all([loadTaskRows(db, userId), knownFolders(db, userId), getSyncState(db, userId)]);
-  return { ...buildTasksView(rows, env.config, folders, hoy, state?.synced_at ?? null), syncError };
+  return { ...buildTasksView(rows, env.config, folders, hoy, state?.synced_at ?? null), syncError, partial };
 }
 
 export type CreateInput = {
