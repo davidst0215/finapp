@@ -30,4 +30,5 @@ export type Brief = {
   secciones: Secciones;
   creado: string; // ISO
   origen: 'cron' | 'manual';
+  notificado?: boolean;
 };

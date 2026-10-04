@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS briefs (
     secciones  JSONB NOT NULL,                             -- agenda, tareas, dinero, esperas (datos exactos)
     origen     VARCHAR(10) NOT NULL DEFAULT 'cron' CHECK (origen IN ('cron', 'manual')),
     creado     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    notificado BOOLEAN NOT NULL DEFAULT FALSE,             -- el push de las 7:00 ya salió (el cron reintenta si es false)
     PRIMARY KEY (user_id, fecha)                           -- idempotencia: un brief por usuario y día
 );
 

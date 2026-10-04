@@ -4,10 +4,10 @@ import { SpokenCard } from '@/components/brief/SpokenCard';
 import { useBrief } from '@/components/brief/useBrief';
 import { ErrorCard, RowsSkeleton } from '@/components/google/Feedback';
 import { dayHeading, limaDateKey, limaHM, shortHM } from '@/components/google/lima';
-import { btnPrimary } from '@/components/google/ui';
+import { btnPrimary, focusRing } from '@/components/google/ui';
 
 export function BriefPage() {
-  const { brief, hoy, status, error, reload, generate, generating, generateError } = useBrief();
+  const { brief, preview, hoy, status, error, reload, generate, generating, generateError } = useBrief();
   const today = hoy ?? limaDateKey();
   const isToday = brief !== null && brief.fecha === today;
 
@@ -30,7 +30,7 @@ export function BriefPage() {
 
   const generateButton = (
     <div className="space-y-3">
-      <button type="button" onClick={() => void generate()} disabled={generating} className={`${btnPrimary} w-full`}>
+      <button type="button" onClick={() => void generate(false)} disabled={generating} className={`${btnPrimary} w-full`}>
         {generating && <Loader2 size={18} aria-hidden="true" className="motion-safe:animate-spin" />}
         {generating ? 'Armando tu brief' : 'Generar ahora'}
       </button>
@@ -42,7 +42,9 @@ export function BriefPage() {
     <div className="space-y-4">
       <header className="min-h-[44px]">
         <p className="text-sm text-slate-400">
-          {brief && isToday
+          {brief && isToday && preview
+            ? 'Vista previa · no se guardó'
+            : brief && isToday
             ? `${brief.origen === 'cron' ? 'Enviado' : 'Generado'} a las ${shortHM(limaHM(new Date(brief.creado)))}`
             : 'Resumen de las 7:00'}
         </p>
@@ -52,8 +54,20 @@ export function BriefPage() {
 
       {brief && isToday ? (
         <>
+          {preview && (
+            <p role="status" className="card text-base text-slate-300">
+              Esto es una vista previa: el brief se guarda desde las 7:00, o cuando todas las fuentes respondan.
+            </p>
+          )}
           <SpokenCard text={brief.texto} />
           <SectionCards s={brief.secciones} />
+          <div className="space-y-3">
+            <button type="button" onClick={() => void generate(true)} disabled={generating} className={`btn-secondary inline-flex min-h-[44px] w-full items-center justify-center gap-2 ${focusRing}`}>
+              {generating && <Loader2 size={18} aria-hidden="true" className="motion-safe:animate-spin" />}
+              {generating ? 'Actualizando' : 'Actualizar'}
+            </button>
+            {generateError && <ErrorCard message={generateError} />}
+          </div>
         </>
       ) : (
         <>

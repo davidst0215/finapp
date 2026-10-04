@@ -6,14 +6,14 @@ import { generarBrief } from "../../brief/generate.ts";
 import { type AgentModule, tool } from "../types.ts";
 
 const rules = `BRIEF DEL DÍA:
-- "qué tengo hoy", "mi día", "mi brief", "resumen del día" = get_brief.
-- "qué reuniones tengo", "mi agenda de <día>" = calendar_view, no get_brief.`;
+- "mi brief", "resumen del día", "cómo viene mi día" = get_brief.
+- "qué tengo hoy", "qué reuniones tengo", "mi agenda de <día>" = calendar_view, no get_brief.`;
 
 export const brief: AgentModule = {
   id: "brief",
   rules,
   definitions: [
-    tool("get_brief", "Dice el brief de hoy: agenda, tareas vencidas, pagos próximos, gastado del mes y esperas. Para 'dame mi brief', 'resumen del día' o '¿qué tengo hoy?' en general.", {}),
+    tool("get_brief", "Dice el brief de hoy: agenda, tareas vencidas, pagos próximos, gastado del mes y esperas. Para 'dame mi brief', 'resumen del día' o 'cómo viene mi día'.", {}),
   ],
   handlers: {
     get_brief: async (_args, { user }) => {

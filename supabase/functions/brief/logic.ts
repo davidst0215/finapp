@@ -42,6 +42,7 @@ export type FuentesBrief = {
 export const MAX_ITEMS = 5; // por lista en pantalla
 export const MIN_DIAS_ESPERA = 3; // "más de 3 días"
 export const VENTANA_PAGOS_DIAS = 7;
+export const MAX_VENCIDO_DIAS = 30; // un pago vencido hace más que esto es ruido (o un recurrente abandonado)
 export const MAX_HABLADO = 400; // /tts acepta 600; la web corta en 400
 const ABIERTA = new Set(["pending", "in-progress", "need-help"]);
 
@@ -138,8 +139,13 @@ export function buildSections(now: Date, f: FuentesBrief): Secciones {
   if (f.pagos.ok) {
     const pagados = new Set(f.pagos.data.pagados);
     const limite = addDays(hoy, VENTANA_PAGOS_DIAS);
+    const piso = addDays(hoy, -MAX_VENCIDO_DIAS);
+    const finMes = `${hoy.slice(0, 8)}${String(mes.diasDelMes).padStart(2, "0")}`;
     pagos = f.pagos.data.recurrentes
-      .filter((r) => !pagados.has(r.recurring_id) && r.next_due_date.slice(0, 10) <= limite)
+      // "Pagado este mes" solo vale si el recurrente sigue venciendo este mes: si ya avanzó al siguiente
+      // (Netflix pagado el 5-oct vence el 5-nov), el próximo pago sí cuenta cuando entra en la ventana.
+      .filter((r) => !(pagados.has(r.recurring_id) && r.next_due_date.slice(0, 10) <= finMes))
+      .filter((r) => r.next_due_date.slice(0, 10) <= limite && r.next_due_date.slice(0, 10) >= piso)
       .sort((a, b) => a.next_due_date.localeCompare(b.next_due_date))
       .slice(0, MAX_ITEMS)
       .map<PagoItem>((r) => ({
@@ -275,6 +281,44 @@ export function numerosPermitidos(s: Secciones): Set<string> {
   return ok;
 }
 
+const SOSPECHOSAS = /ignora|ignore|system|instrucciones/i;
+const palabras = (t: string) => t.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").split(/[^a-z0-9ñ]+/).filter(Boolean);
+
+/** Textos de terceros (títulos de eventos, tareas, pagos, personas) que viajan al modelo. */
+export function titulosDe(s: Secciones): string[] {
+  return [
+    ...s.agenda.eventos.map((e) => e.titulo),
+    ...s.tareas.vencidas.map((t) => t.texto),
+    ...s.tareas.hoy.map((t) => t.texto),
+    ...s.dinero.pagos.map((p) => p.descripcion),
+    ...s.esperas.items.flatMap((e) => [e.texto, e.con]),
+  ];
+}
+
+/** ¿Algún título parece una orden al modelo? Si sí, no se le deja redactar. */
+export const hayTituloSospechoso = (s: Secciones) => titulosDe(s).some((t) => SOSPECHOSAS.test(t));
+
+/** ¿El texto copia literal `n` palabras seguidas de algún título? */
+export function copiaFragmento(texto: string, titulos: string[], n = 6): boolean {
+  const hablado = ` ${palabras(texto).join(" ")} `;
+  for (const t of titulos) {
+    const w = palabras(t);
+    for (let i = 0; i + n <= w.length; i++) if (hablado.includes(` ${w.slice(i, i + n).join(" ")} `)) return true;
+  }
+  return false;
+}
+
+/** ¿Alguna fuente quedó en error? Un brief así no se guarda: el próximo intento lo completa. */
+export const tieneFuenteCaida = (s: Secciones) =>
+  [s.agenda, s.tareas, s.dinero, s.esperas].some((x) => x.estado === "error");
+
+/** Quién puede avisar: el cron siempre que falte; el botón/tool solo reintenta avisos del cron que fallaron. */
+export const debeAvisar = (b: { notificado: boolean; origen: "cron" | "manual" }, via: "cron" | "ui") =>
+  !b.notificado && (via === "cron" || b.origen === "cron");
+
+/** Antes de las 7:00 de Lima el día aún no empieza: el brief manual es solo una vista previa. */
+export const ANTES_DE_LAS_7 = (minutosLima: number) => minutosLima < 7 * 60;
+
 /** Limpia la salida del modelo y la acepta solo si no inventa cifras. Devuelve null si no sirve. */
 export function aceptarTextoModelo(salida: string, s: Secciones): string | null {
   const t = String(salida ?? "")
@@ -284,6 +328,7 @@ export function aceptarTextoModelo(salida: string, s: Secciones): string | null 
     .replace(/\s+/g, " ")
     .trim();
   if (t.length < 20 || /https?:\/\//i.test(t)) return null;
+  if (hayTituloSospechoso(s) || copiaFragmento(t, titulosDe(s))) return null;
   const permitidos = numerosPermitidos(s);
   for (const m of t.matchAll(NUM)) if (!permitidos.has(norm(m[0]))) return null;
   return acotar(t);

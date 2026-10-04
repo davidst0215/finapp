@@ -2,10 +2,13 @@
 // Corre con el cliente de servicio: nunca recibe un user_id del cliente (quien llama ya validó al dueño).
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { calendarEvents, describeError } from "../_shared/google.ts";
-import { addDays, limaDateKey } from "../_shared/google/time.ts";
+import { addDays, limaDateKey, limaParts } from "../_shared/google/time.ts";
 import { llmConfigured, llmFetch } from "../_shared/llm.ts";
+import { notify } from "../_shared/notify.ts";
 import {
   aceptarTextoModelo,
+  ANTES_DE_LAS_7,
+  debeAvisar,
   buildSections,
   datosParaModelo,
   type EventoCrudo,
@@ -16,14 +19,16 @@ import {
   SISTEMA_BRIEF,
   type TareaCruda,
   textoRespaldo,
+  tieneFuenteCaida,
+  MAX_VENCIDO_DIAS,
   VENTANA_PAGOS_DIAS,
   ventanaMes,
 } from "./logic.ts";
 
-export type Brief = { fecha: string; texto: string; secciones: Secciones; creado: string; origen: "cron" | "manual" };
+export type Brief = { fecha: string; texto: string; secciones: Secciones; creado: string; origen: "cron" | "manual"; notificado: boolean };
 export type Origen = Brief["origen"];
 
-const COLUMNAS = "fecha, texto, secciones, creado, origen";
+const COLUMNAS = "fecha, texto, secciones, creado, origen, notificado";
 const LLM_TIMEOUT_MS = 15_000;
 const PAGINA = 1000; // tope de filas por consulta de PostgREST
 
@@ -76,7 +81,8 @@ async function leerPagos(db: SupabaseClient, userId: string, hoy: string, desde:
   const [rec, pagos] = await Promise.all([
     db.from("recurring_transactions").select("recurring_id, description, amount, next_due_date")
       .eq("user_id", userId).eq("is_active", true).eq("transaction_type", "expense")
-      .lte("next_due_date", addDays(hoy, VENTANA_PAGOS_DIAS)).order("next_due_date"),
+      .lte("next_due_date", addDays(hoy, VENTANA_PAGOS_DIAS)).gte("next_due_date", addDays(hoy, -MAX_VENCIDO_DIAS))
+      .order("next_due_date"),
     db.from("transactions").select("recurring_id").eq("user_id", userId).eq("is_recurring", true)
       .gte("transaction_date", desde).lt("transaction_date", hasta),
   ]);
@@ -134,16 +140,24 @@ export async function briefDeHoy(db: SupabaseClient, userId: string, fecha = lim
   return (data as Brief | null) ?? null;
 }
 
+export type Resultado = {
+  brief: Brief;
+  /** true si quedó guardado (o ya lo estaba); false para una vista previa o un brief con una fuente caída. */
+  persistido: boolean;
+};
+
 /**
- * Devuelve el brief de hoy; si no existe lo arma y lo guarda. `creado` es true solo para quien lo creó,
- * así el cron avisa una sola vez aunque corra dos veces o compita con el botón de la web.
+ * Devuelve el brief de hoy; si no existe lo arma.
+ *  - Antes de las 7:00 de Lima, un pedido manual devuelve una vista previa SIN guardar (no congela el día).
+ *  - Si alguna fuente quedó en error tampoco se guarda: el próximo intento lo completa.
+ *  - `force` regenera y actualiza la fila de hoy (sin tocar origen, hora ni aviso).
  * `db` debe ser el cliente de servicio (la tabla solo la escribe el servicio).
  */
-export async function generarBrief(db: SupabaseClient, userId: string, origen: Origen): Promise<{ brief: Brief; creado: boolean }> {
+export async function generarBrief(db: SupabaseClient, userId: string, origen: Origen, opts: { force?: boolean } = {}): Promise<Resultado> {
   const ahora = new Date();
-  const fecha = limaDateKey(ahora);
+  const { dateKey: fecha, minutes } = limaParts(ahora);
   const existente = await briefDeHoy(db, userId, fecha);
-  if (existente) return { brief: existente, creado: false };
+  if (existente && !opts.force) return { brief: existente, persistido: true };
 
   const mes = ventanaMes(fecha);
   const [agenda, tareas, gasto, pagos] = await Promise.all([
@@ -155,15 +169,44 @@ export async function generarBrief(db: SupabaseClient, userId: string, origen: O
   const fuentes: FuentesBrief = { agenda, tareas, gasto, pagos };
   const secciones = buildSections(ahora, fuentes);
   const texto = (await redactar(secciones)) ?? textoRespaldo(secciones);
+  const nuevo: Brief = { fecha, texto, secciones, creado: ahora.toISOString(), origen, notificado: false };
+
+  const vistaPrevia = origen === "manual" && ANTES_DE_LAS_7(minutes);
+  if (vistaPrevia || tieneFuenteCaida(secciones)) return { brief: nuevo, persistido: false };
+
+  if (existente) {
+    const { data, error } = await db.from("briefs").update({ texto, secciones })
+      .eq("user_id", userId).eq("fecha", fecha).select(COLUMNAS);
+    if (error) throw new Error(`briefs: ${error.message}`);
+    return { brief: (data?.[0] as Brief | undefined) ?? { ...existente, texto, secciones }, persistido: true };
+  }
 
   const { data, error } = await db.from("briefs")
     .upsert({ user_id: userId, fecha, texto, secciones, origen }, { onConflict: "user_id,fecha", ignoreDuplicates: true })
     .select(COLUMNAS);
   if (error) throw new Error(`briefs: ${error.message}`);
-  if (data && data.length > 0) return { brief: data[0] as Brief, creado: true };
+  if (data && data.length > 0) return { brief: data[0] as Brief, persistido: true };
 
   // Otro pedido lo guardó mientras este armaba el suyo: se devuelve el que quedó.
   const ganador = await briefDeHoy(db, userId, fecha);
   if (!ganador) throw new Error("briefs: no quedó guardado");
-  return { brief: ganador, creado: false };
+  return { brief: ganador, persistido: true };
+}
+
+/**
+ * Avisa por push si corresponde y deja constancia en `notificado`. El reclamo es atómico
+ * (update ... where notificado = false): dos cron o un cron y un botón nunca avisan dos veces.
+ * Si el aviso no pudo registrarse, se libera el reclamo para que el siguiente intento lo reintente.
+ */
+export async function avisarSiFalta(db: SupabaseClient, userId: string, brief: Brief, via: "cron" | "ui"): Promise<boolean> {
+  if (!debeAvisar(brief, via)) return false;
+  const { data, error } = await db.from("briefs").update({ notificado: true })
+    .eq("user_id", userId).eq("fecha", brief.fecha).eq("notificado", false).select("fecha");
+  if (error || !data || data.length === 0) return false; // otro ya lo reclamó
+  const id = await notify(db, userId, { kind: "brief", title: brief.secciones.titulo, body: brief.texto, url: "/brief" });
+  if (id === null) {
+    await db.from("briefs").update({ notificado: false }).eq("user_id", userId).eq("fecha", brief.fecha);
+    return false;
+  }
+  return true;
 }

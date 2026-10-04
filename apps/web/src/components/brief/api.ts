@@ -16,8 +16,8 @@ async function readError(error: unknown): Promise<string> {
   return 'No pude contactar al servidor. Revisa tu conexión e inténtalo de nuevo.';
 }
 
-async function call<T>(action: 'latest' | 'generate'): Promise<T> {
-  const { data, error } = await supabase.functions.invoke('brief', { body: { action } });
+async function call<T>(action: 'latest' | 'generate', force = false): Promise<T> {
+  const { data, error } = await supabase.functions.invoke('brief', { body: force ? { action, force: true } : { action } });
   if (error) throw new Error(await readError(error));
   return data as T;
 }
@@ -25,6 +25,6 @@ async function call<T>(action: 'latest' | 'generate'): Promise<T> {
 export const briefApi = {
   /** Último brief guardado (puede ser de un día anterior) y la fecha de hoy en Lima. */
   latest: () => call<{ brief: Brief | null; hoy: string }>('latest'),
-  /** Arma el de hoy; si ya existía, devuelve ese. */
-  generate: () => call<{ brief: Brief; creado: boolean }>('generate'),
+  /** Arma el de hoy; si ya existía, devuelve ese. `force` lo regenera. `persistido: false` = vista previa (antes de las 7:00 o con una fuente caída). */
+  generate: (force = false) => call<{ brief: Brief; persistido: boolean }>('generate', force),
 };
