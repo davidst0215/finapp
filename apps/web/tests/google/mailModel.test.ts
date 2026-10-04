@@ -5,7 +5,7 @@ import { canSend, countLabel, dotKind, gmailDraftsUrl, gmailThreadUrl, rowTitle,
 import type { DraftItem } from '../../src/components/google/types.ts';
 
 const draft = (id: string, over: Partial<DraftItem> = {}): DraftItem => ({
-  draft_id: id, message_id: `m-${id}`, thread_id: 't', to: 'Mónica', to_email: 'monica@tdv.com', cc: '', bcc: '', subject: 'Re: Informe 03', body: 'hola', snippet: 'hola',
+  draft_id: id, message_id: `m-${id}`, thread_id: 't', to: 'Mónica', to_email: 'monica@tdv.com', cc: '', bcc: '', send_blocked: '', subject: 'Re: Informe 03', body: 'hola', snippet: 'hola',
   updated_at: '2026-10-05T14:00:00.000Z', editable: true, ...over,
 });
 
@@ -39,6 +39,10 @@ describe('enlaces y borradores', () => {
     assert.equal(canSend(draft('a')), true);
     assert.equal(canSend(draft('a', { to_email: '' })), false);
     assert.equal(canSend(draft('a', { to_email: '  ' })), false);
+  });
+
+  it('un borrador con direcciones ilegibles no se envía', () => {
+    assert.equal(canSend(draft('a', { send_blocked: 'No pude leer una dirección' })), false);
   });
 
   it('quita y reemplaza borradores sin tocar el resto', () => {

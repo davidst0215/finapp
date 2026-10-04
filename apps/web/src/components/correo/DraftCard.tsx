@@ -141,7 +141,7 @@ export function DraftCard({ draft, account, canCompose, onChanged, onSent, onSta
               para no perderlos.
             </p>
           )}
-          {draft.editable && !sendable && <p className="text-sm text-slate-400">Falta el destinatario. Complétalo en Gmail antes de enviar.</p>}
+          {draft.editable && !sendable && <p className="text-sm text-slate-400">{draft.send_blocked || 'Falta el destinatario. Complétalo en Gmail antes de enviar.'}</p>}
           {!canCompose && <p className="text-sm text-slate-400">Falta el permiso de borradores. Reconecta Google en Agenda.</p>}
         </>
       )}

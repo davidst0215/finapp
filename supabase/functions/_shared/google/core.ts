@@ -258,8 +258,15 @@ export async function calendarCreate(d: Deps, userId: string, input: Record<stri
       raw = await calendarInsert(d.fetch, token, { id: ev.event_id, title: ev.title, start: ev.start, end: ev.end, location: ev.location, description: ev.description });
     } catch (e) {
       // El mismo envío repetido (doble toque, reintento de red) cae en el mismo id: ya existe, se devuelve ese.
-      if (ev.event_id && e instanceof GoogleApiError && e.status === 409) raw = await calendarGet(d.fetch, token, ev.event_id);
-      else throw e;
+      if (ev.event_id && e instanceof GoogleApiError && e.status === 409) {
+        const existing = await calendarGet(d.fetch, token, ev.event_id);
+        // Calendar reserva los ids de eventos borrados (llegan como cancelled): si David lo borró, se crea de nuevo con id propio.
+        raw = existing.status === "cancelled"
+          ? await calendarInsert(d.fetch, token, { title: ev.title, start: ev.start, end: ev.end, location: ev.location, description: ev.description })
+          : existing;
+      } else {
+        throw e;
+      }
     }
     const event = mapEvent(raw);
     if (!event) throw new Error("Calendar devolvió un evento ilegible");
@@ -366,6 +373,7 @@ export async function draftCreateReply(d: Deps, userId: string, input: Record<st
       updated_at: new Date(d.now()).toISOString(),
       cc: "",
       bcc: "",
+      send_blocked: "",
       notice: target.reply_to_differs && input.use_reply_to === true
         ? `La respuesta irá a ${target.to.map((a) => a.email).join(", ")}, un dominio distinto al del remitente. Revísalo antes de enviar.`
         : undefined,
@@ -408,10 +416,12 @@ export async function draftSend(d: Deps, userId: string, input: Record<string, u
   const expected = input.expected_message_id;
 
   return await withGoogle(d, userId, ["gmail_compose"], async (token) => {
-    const current = await draftGet(d.fetch, token, draftId, "minimal");
+    const current = await draftGet(d.fetch, token, draftId, "full");
     if (current.message?.id !== expected) {
       throw new GoogleConflict("cambio", "El borrador cambió desde que lo revisaste. Ábrelo de nuevo antes de enviarlo.");
     }
+    const blocked = mapDraft(current)?.send_blocked;
+    if (blocked) throw new GoogleConflict("direccion", blocked);
     const sent = await draftSendRequest(d.fetch, token, draftId);
     return { sent: true as const, message_id: sent.id ?? "", thread_id: sent.threadId ?? "" };
   });

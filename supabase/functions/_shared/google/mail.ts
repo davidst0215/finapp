@@ -375,6 +375,7 @@ export type DraftItem = {
   body: string;
   snippet: string;
   updated_at: string;
+  send_blocked: string; // motivo por el que no se puede enviar desde Wabid ("" si se puede)
   editable: boolean; // false si tiene adjuntos: reescribirlo desde Wabid los perdería
 };
 
@@ -384,6 +385,15 @@ function hasAttachments(p: GPart | undefined): boolean {
   if (!p) return false;
   if (p.body?.attachmentId || (p.filename ?? "") !== "") return true;
   return (p.parts ?? []).some(hasAttachments);
+}
+
+// Si alguna dirección no se pudo leer, la lista que se mostraría al confirmar estaría incompleta: no se envía desde Wabid.
+function unreadableAddresses(h: GHeader[] | undefined): string {
+  for (const [name, label] of [["To", "Para"], ["Cc", "Cc"], ["Bcc", "Cco"]] as const) {
+    const v = header(h, name);
+    if (parseAddressList(v).length !== splitList(v).length) return `No pude leer una dirección del campo ${label}. Revísalo y envíalo desde Gmail.`;
+  }
+  return "";
 }
 
 export function mapDraft(d: GDraft): DraftItem | null {
@@ -404,6 +414,7 @@ export function mapDraft(d: GDraft): DraftItem | null {
     body: textFromPayload(m.payload).slice(0, MAX_BODY_CHARS),
     snippet: decodeEntities(m.snippet ?? "").trim(),
     updated_at: Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : new Date(0).toISOString(),
+    send_blocked: unreadableAddresses(h),
     editable: !hasAttachments(m.payload),
   };
 }

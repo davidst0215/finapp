@@ -221,6 +221,21 @@ describe("Calendar", () => {
     assert.equal(inserts[0]!.body.id, "6f1c2d3e4a5b4c6d8e7f0a1b2c3d4e5f");
   });
 
+  it("crear con un id que Calendar reserva por un evento borrado (cancelled) crea de nuevo con id propio", async () => {
+    const s = setup();
+    const id = "6f1c2d3e4a5b4c6d8e7f0a1b2c3d4e5f";
+    s.on((c) => (c.method === "GET" && c.url.pathname.endsWith("/events") ? json({ items: [] }) : undefined));
+    s.on((c) => (c.method === "POST" && c.body?.id === id ? gErr(409, "duplicate") : undefined));
+    s.on((c) => (c.method === "GET" && c.url.pathname.endsWith("/" + id) ? json({ id, status: "cancelled" }) : undefined));
+    s.on((c) => (c.method === "POST" && !c.body?.id ? json(ev("nuevo-id", { summary: c.body.summary })) : undefined));
+    const out = await calendarCreate(s.d, USER, { title: "Reunión", date: "2026-10-05", start_time: "09:00", request_id: USER });
+    assert.equal(out.event.id, "nuevo-id");
+    const posts = s.calls.filter((c) => c.method === "POST" && c.url.pathname.endsWith("/events"));
+    assert.equal(posts.length, 2);
+    assert.equal(posts[1]!.url.searchParams.get("sendUpdates"), "none");
+    assert.ok(!("attendees" in posts[1]!.body));
+  });
+
   it("crear con datos inválidos no toca la red", async () => {
     const s = setup();
     await assert.rejects(() => calendarCreate(s.d, USER, { title: "", date: "2026-10-05", start_time: "09:00" }), GoogleInputError);
@@ -434,6 +449,14 @@ describe("enviar: solo con confirmación explícita y el borrador que David vio"
     assert.deepEqual(sends(s)[0]!.body, { id: "r-1" });
     const gmail = s.calls.filter((c) => c.url.hostname === "gmail.googleapis.com").map((c) => `${c.method} ${c.url.pathname}`);
     assert.deepEqual(gmail, ["GET /gmail/v1/users/me/drafts/r-1", "POST /gmail/v1/users/me/drafts/send"]);
+  });
+
+  it("un borrador con una dirección ilegible no se envía", async () => {
+    const s = setup();
+    s.on((c) => (c.method === "GET" && c.url.pathname.endsWith("/drafts/r-1") ? json({ id: "r-1", message: { id: "m-vista", payload: { headers: [hdr("To", "a@x.com"), hdr("Bcc", "b@x.com, basura")] } } }) : undefined));
+    s.on((c) => (c.url.pathname.endsWith("/drafts/send") ? json({ id: "x" }) : undefined));
+    await assert.rejects(() => draftSend(s.d, USER, { draft_id: "r-1", expected_message_id: "m-vista", confirm: true }), (e: unknown) => e instanceof GoogleConflict && e.code === "direccion");
+    assert.equal(sends(s).length, 0);
   });
 
   it("necesita el permiso de redactar (gmail.compose)", async () => {

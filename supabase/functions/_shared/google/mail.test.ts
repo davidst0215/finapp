@@ -339,7 +339,7 @@ describe("borradores", () => {
   it("mapDraft resume el borrador para la UI", () => {
     assert.deepEqual(mapDraft(draft), {
       draft_id: "r-1", message_id: "m10", thread_id: "t1", to: "Mónica", to_email: "monica@tdv.com", cc: "c@x.com", bcc: "b@x.com", subject: "Re: Informe 03",
-      body: "Hola Mónica, texto original", snippet: "Hola Mónica", updated_at: "2026-10-05T14:00:00.000Z", editable: true,
+      body: "Hola Mónica, texto original", snippet: "Hola Mónica", updated_at: "2026-10-05T14:00:00.000Z", send_blocked: "", editable: true,
     });
     assert.equal(mapDraft({ id: "x" }), null);
   });
@@ -360,6 +360,11 @@ describe("borradores", () => {
   it("rebuildDraft falla si una dirección no se puede leer (no la pierde en silencio)", () => {
     const raro: GDraft = { id: "r", message: { id: "m", threadId: "t", payload: { headers: [header("To", "Mónica <monica@tdv.com>, esto-no-es-correo"), header("Subject", "x")], body: { data: b64u("x") } } } };
     assert.throws(() => rebuildDraft(raro, "nuevo"), /No pude leer una dirección/);
+  });
+
+  it("un borrador con una dirección ilegible queda bloqueado para enviar", () => {
+    const raro: GDraft = { id: "r", message: { id: "m", threadId: "t", payload: { headers: [header("To", "a@x.com"), header("Cc", "b@x.com, basura")] } } };
+    assert.match(mapDraft(raro)?.send_blocked ?? "", /Cc/);
   });
 
   it("un borrador con adjuntos no es editable (reescribirlo los perdería)", () => {

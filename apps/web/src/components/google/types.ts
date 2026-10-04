@@ -55,5 +55,6 @@ export type DraftItem = {
   body: string;
   snippet: string;
   updated_at: string;
+  send_blocked: string;
   editable: boolean;
 };

@@ -26,7 +26,7 @@ export const gmailThreadUrl = (email: string, threadId: string): string =>
 export const gmailDraftsUrl = (email: string): string => `https://mail.google.com/mail/?authuser=${encodeURIComponent(email)}#drafts`;
 
 /** ¿Se puede enviar? Hace falta al menos un destinatario. */
-export const canSend = (d: Pick<DraftItem, 'to_email'>): boolean => d.to_email.trim() !== '';
+export const canSend = (d: Pick<DraftItem, 'to_email'> & { send_blocked?: string }): boolean => d.to_email.trim() !== '' && !d.send_blocked;
 
 /** Quita un borrador de la lista por id. */
 export const withoutDraft = (list: DraftItem[], id: string): DraftItem[] => list.filter((d) => d.draft_id !== id);
