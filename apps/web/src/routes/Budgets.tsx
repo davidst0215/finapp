@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { Plus, X, Check, Trash2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAppStore } from '@/stores/appStore';
+import { CategoryIcon } from '@/components/ui/CategoryIcon';
+import { GlassCard } from '@/components/ui/GlassCard';
 import { useToastStore } from '@/stores/toastStore';
 import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
@@ -82,7 +84,7 @@ export function BudgetsPage() {
         <h1 className="text-xl font-bold">Presupuestos</h1>
         <button
           onClick={() => setShowForm(!showForm)}
-          className="w-9 h-9 rounded-full bg-primary-600 flex items-center justify-center"
+          className="w-9 h-9 rounded-full bg-primary-600 flex items-center justify-center text-slate-950"
         >
           {showForm ? <X size={18} /> : <Plus size={18} />}
         </button>
@@ -93,7 +95,7 @@ export function BudgetsPage() {
         <div className="card text-center">
           <p className="text-slate-400 text-xs mb-1">Gastado del presupuesto total</p>
           <p className="text-2xl font-bold">
-            <span className={totalSpent > totalLimit ? 'text-expense' : 'text-white'}>
+            <span className={totalSpent > totalLimit ? 'text-expense' : 'text-slate-100'}>
               {formatCurrency(totalSpent)}
             </span>
             <span className="text-slate-500 text-base"> / {formatCurrency(totalLimit)}</span>
@@ -101,7 +103,7 @@ export function BudgetsPage() {
           <div className="h-2 bg-slate-800 rounded-full overflow-hidden mt-3">
             <div
               className={cn('h-full rounded-full transition-all',
-                totalSpent > totalLimit ? 'bg-expense' : totalSpent / totalLimit > 0.8 ? 'bg-yellow-400' : 'bg-primary-500'
+                totalSpent > totalLimit ? 'bg-expense' : totalSpent / totalLimit > 0.8 ? 'bg-slate-200' : 'bg-slate-500'
               )}
               style={{ width: `${Math.min((totalSpent / totalLimit) * 100, 100)}%` }}
             />
@@ -124,11 +126,11 @@ export function BudgetsPage() {
                   className={cn(
                     'px-2 py-2 rounded-xl text-xs font-medium transition-all text-center',
                     categoryId === cat.category_id
-                      ? 'bg-primary-600 text-white'
+                      ? 'bg-primary-600 text-slate-950'
                       : 'bg-slate-800 text-slate-400'
                   )}
                 >
-                  <span className="block text-base mb-0.5">{cat.icon ?? '📋'}</span>
+                  <CategoryIcon name={cat.category_name} emoji={cat.icon} size={14} showBackground={false} className="mx-auto mb-0.5" />
                   {cat.category_name}
                 </button>
               ))}
@@ -181,15 +183,15 @@ export function BudgetsPage() {
             const isWarning = b.percentage_used >= 80 && !isOver;
 
             return (
-              <div key={b.budget_id} className="card group">
+              <GlassCard key={b.budget_id} variant={isOver ? 'alert' : isWarning ? 'accent' : 'default'} className="group">
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
-                    <span className="text-base">{b.category_icon}</span>
+                    <CategoryIcon name={b.category_name} size={14} showBackground={false} />
                     <span className="text-sm font-medium">{b.category_name}</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className={cn('text-sm font-bold',
-                      isOver ? 'text-expense' : isWarning ? 'text-yellow-400' : 'text-white'
+                      isOver ? 'text-expense' : isWarning ? 'text-slate-100 font-bold' : 'text-slate-100'
                     )}>
                       {formatCurrency(b.amount_spent)}
                     </span>
@@ -205,14 +207,14 @@ export function BudgetsPage() {
                 <div className="h-2.5 bg-slate-800 rounded-full overflow-hidden">
                   <div
                     className={cn('h-full rounded-full transition-all',
-                      isOver ? 'bg-expense' : isWarning ? 'bg-yellow-400' : 'bg-primary-500'
+                      isOver ? 'bg-expense' : isWarning ? 'bg-slate-200' : 'bg-slate-500'
                     )}
                     style={{ width: `${pct}%` }}
                   />
                 </div>
                 <div className="flex justify-between mt-1">
                   <span className={cn('text-[10px]',
-                    isOver ? 'text-expense' : isWarning ? 'text-yellow-400' : 'text-slate-500'
+                    isOver ? 'text-expense' : isWarning ? 'text-slate-200' : 'text-slate-400'
                   )}>
                     {isOver
                       ? `Excedido por ${formatCurrency(Math.abs(b.remaining))}`
@@ -223,7 +225,7 @@ export function BudgetsPage() {
                     Quedan {formatCurrency(Math.max(b.remaining, 0))}
                   </span>
                 </div>
-              </div>
+              </GlassCard>
             );
           })}
         </div>

@@ -10,13 +10,13 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['icons/*.png'],
       manifest: {
-        name: 'FinApp - Finanzas Personales',
-        short_name: 'FinApp',
-        description: 'Control total de tus finanzas personales',
+        name: 'Wabid',
+        short_name: 'Wabid',
+        description: 'Tu asistente personal',
         start_url: '/',
         display: 'standalone',
-        background_color: '#0f172a',
-        theme_color: '#3b82f6',
+        background_color: '#141417',
+        theme_color: '#141417',
         orientation: 'portrait',
         icons: [
           { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
@@ -25,14 +25,31 @@ export default defineConfig({
         ],
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
+        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
         runtimeCaching: [
+          {
+            urlPattern: /^https:\/\/.*supabase\.co\/rest\/v1\/(transactions|accounts|categories)/,
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'api-data',
+              expiration: { maxEntries: 100, maxAgeSeconds: 600 },
+              networkTimeoutSeconds: 5,
+            },
+          },
           {
             urlPattern: /^https:\/\/.*supabase\.co\/rest/,
             handler: 'NetworkFirst',
             options: {
-              cacheName: 'api-cache',
+              cacheName: 'api-other',
               expiration: { maxEntries: 50, maxAgeSeconds: 300 },
+            },
+          },
+          {
+            urlPattern: /^https:\/\/.*googleusercontent\.com/,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'avatar-cache',
+              expiration: { maxEntries: 20, maxAgeSeconds: 86400 },
             },
           },
         ],

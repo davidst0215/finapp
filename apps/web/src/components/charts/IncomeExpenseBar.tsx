@@ -28,24 +28,24 @@ export function IncomeExpenseBar({ data }: Props) {
           <BarChart data={data} barGap={2}>
             <XAxis
               dataKey="month"
-              tick={{ fill: '#64748b', fontSize: 11 }}
+              tick={{ fill: 'rgb(var(--slate-400))', fontSize: 12 }}
               axisLine={false}
               tickLine={false}
             />
             <YAxis hide />
             <Tooltip
               formatter={(value: number) => formatCurrency(value)}
-              contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '0.75rem', fontSize: '12px' }}
-              itemStyle={{ color: '#e2e8f0' }}
-              labelStyle={{ color: '#94a3b8' }}
+              contentStyle={{ backgroundColor: 'rgb(var(--slate-900))', border: '1px solid rgb(var(--slate-700))', borderRadius: '0.75rem', fontSize: '12px' }}
+              itemStyle={{ color: 'rgb(var(--slate-100))' }}
+              labelStyle={{ color: 'rgb(var(--slate-400))' }}
             />
             <Legend
               formatter={(value: string) => (
                 <span className="text-xs text-slate-400">{value === 'income' ? 'Ingresos' : 'Gastos'}</span>
               )}
             />
-            <Bar dataKey="income" fill="#10b981" radius={[4, 4, 0, 0]} maxBarSize={24} name="income" />
-            <Bar dataKey="expenses" fill="#ef4444" radius={[4, 4, 0, 0]} maxBarSize={24} name="expenses" />
+            <Bar dataKey="income" fill="rgb(var(--slate-100))" radius={[4, 4, 0, 0]} maxBarSize={24} name="income" />
+            <Bar dataKey="expenses" fill="rgb(var(--expense))" radius={[4, 4, 0, 0]} maxBarSize={24} name="expenses" />
           </BarChart>
         </ResponsiveContainer>
       </div>

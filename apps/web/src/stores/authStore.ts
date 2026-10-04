@@ -23,21 +23,28 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   initialized: false,
 
   initialize: async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    set({ session, user: session?.user ?? null, loading: false, initialized: true });
-
-    if (session?.user) {
-      await get().fetchProfile();
-    }
-
-    supabase.auth.onAuthStateChange(async (_event, session) => {
+    try {
+      // First get the current session
+      const { data: { session } } = await supabase.auth.getSession();
       set({ session, user: session?.user ?? null });
+
       if (session?.user) {
         await get().fetchProfile();
-      } else {
-        set({ profile: null });
       }
-    });
+
+      // Set up the listener for future changes
+      supabase.auth.onAuthStateChange(async (_event, session) => {
+        set({ session, user: session?.user ?? null });
+        if (session?.user) {
+          await get().fetchProfile();
+        } else {
+          set({ profile: null });
+        }
+      });
+    } finally {
+      // Always mark as initialized, even on error
+      set({ loading: false, initialized: true });
+    }
   },
 
   signInWithGoogle: async () => {
@@ -65,7 +72,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (data) {
       set({ profile: data });
     } else {
-      // Crear perfil si no existe (primer login)
       const { data: newProfile } = await supabase
         .from('users')
         .insert({

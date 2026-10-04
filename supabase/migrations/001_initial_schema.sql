@@ -34,7 +34,7 @@ CREATE TABLE currencies (
 -- TABLA: accounts
 -- ============================================================
 CREATE TABLE accounts (
-    account_id      UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    account_id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     account_name    VARCHAR(100) NOT NULL,
     account_type    VARCHAR(20) NOT NULL CHECK (account_type IN (
@@ -59,7 +59,7 @@ CREATE INDEX idx_accounts_user_id ON accounts(user_id);
 -- TABLA: categories
 -- ============================================================
 CREATE TABLE categories (
-    category_id     UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    category_id     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID REFERENCES users(user_id) ON DELETE CASCADE,
     parent_id       UUID REFERENCES categories(category_id),
     category_name   VARCHAR(100) NOT NULL,
@@ -78,7 +78,7 @@ CREATE INDEX idx_categories_type ON categories(category_type);
 -- TABLA: transactions
 -- ============================================================
 CREATE TABLE transactions (
-    transaction_id  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    transaction_id  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     account_id      UUID NOT NULL REFERENCES accounts(account_id),
     category_id     UUID REFERENCES categories(category_id),
@@ -112,7 +112,7 @@ CREATE INDEX idx_transactions_tags ON transactions USING GIN(tags);
 -- TABLA: recurring_transactions
 -- ============================================================
 CREATE TABLE recurring_transactions (
-    recurring_id    UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    recurring_id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     account_id      UUID NOT NULL REFERENCES accounts(account_id),
     category_id     UUID REFERENCES categories(category_id),
@@ -141,7 +141,7 @@ CREATE INDEX idx_recurring_active ON recurring_transactions(is_active) WHERE is_
 -- TABLA: budgets
 -- ============================================================
 CREATE TABLE budgets (
-    budget_id       UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    budget_id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     category_id     UUID NOT NULL REFERENCES categories(category_id),
     amount_limit    NUMERIC(18,2) NOT NULL CHECK (amount_limit > 0),
@@ -157,7 +157,7 @@ CREATE TABLE budgets (
 -- TABLA: savings_goals
 -- ============================================================
 CREATE TABLE savings_goals (
-    goal_id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    goal_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     goal_name       VARCHAR(200) NOT NULL,
     target_amount   NUMERIC(18,2) NOT NULL CHECK (target_amount > 0),
@@ -177,7 +177,7 @@ CREATE INDEX idx_savings_goals_user ON savings_goals(user_id);
 -- TABLA: savings_contributions
 -- ============================================================
 CREATE TABLE savings_contributions (
-    contribution_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    contribution_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     goal_id         UUID NOT NULL REFERENCES savings_goals(goal_id) ON DELETE CASCADE,
     transaction_id  UUID REFERENCES transactions(transaction_id),
     amount          NUMERIC(18,2) NOT NULL,
@@ -189,7 +189,7 @@ CREATE TABLE savings_contributions (
 -- TABLA: alerts
 -- ============================================================
 CREATE TABLE alerts (
-    alert_id        UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    alert_id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     alert_type      VARCHAR(30) NOT NULL CHECK (alert_type IN (
                         'budget_threshold', 'budget_exceeded',
@@ -211,7 +211,7 @@ CREATE INDEX idx_alerts_user_unread ON alerts(user_id, triggered_at DESC) WHERE 
 -- TABLA: ai_chat_history
 -- ============================================================
 CREATE TABLE ai_chat_history (
-    chat_id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    chat_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     role            VARCHAR(10) NOT NULL CHECK (role IN ('user', 'assistant')),
     content         TEXT NOT NULL,
@@ -226,7 +226,7 @@ CREATE INDEX idx_ai_chat_user_date ON ai_chat_history(user_id, created_at DESC);
 -- TABLA: trading_portfolio (fase futura)
 -- ============================================================
 CREATE TABLE trading_portfolio (
-    position_id     UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    position_id     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     symbol          VARCHAR(20) NOT NULL,
     asset_type      VARCHAR(20) NOT NULL CHECK (asset_type IN (

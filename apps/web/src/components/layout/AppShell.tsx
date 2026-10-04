@@ -1,11 +1,15 @@
 import { Outlet } from 'react-router-dom';
-import { BottomNav } from './BottomNav';
+import { FloatingNav } from './FloatingNav';
 import { ToastContainer } from '@/components/ui/Toast';
 import { useAppStore } from '@/stores/appStore';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
+import { useNotifications } from '@/hooks/useNotifications';
+import { useOfflineSync } from '@/hooks/useOfflineSync';
 
 export function AppShell() {
   const { error, clearError, fetchAccounts, fetchCategories, fetchTransactions } = useAppStore();
+  useNotifications();
+  useOfflineSync();
 
   const handleRetry = () => {
     clearError();
@@ -25,10 +29,10 @@ export function AppShell() {
           </button>
         </div>
       )}
-      <main className="pb-20 px-4 pt-4">
+      <main className="pb-6 px-4 pt-4">
         <Outlet />
       </main>
-      <BottomNav />
+      <FloatingNav />
       <ToastContainer />
     </div>
   );

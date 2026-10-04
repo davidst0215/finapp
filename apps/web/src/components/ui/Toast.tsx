@@ -12,7 +12,7 @@ const iconMap: Record<ToastType, typeof CheckCircle2> = {
 const colorMap: Record<ToastType, string> = {
   success: 'bg-income/10 border-income/30 text-income',
   error: 'bg-expense/10 border-expense/30 text-expense',
-  warning: 'bg-yellow-400/10 border-yellow-400/30 text-yellow-400',
+  warning: 'bg-slate-800 border-slate-500 text-slate-100',
   info: 'bg-primary-400/10 border-primary-400/30 text-primary-400',
 };
 

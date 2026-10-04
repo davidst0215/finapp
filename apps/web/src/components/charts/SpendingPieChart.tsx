@@ -16,7 +16,8 @@ interface Props {
   totalExpenses: number;
 }
 
-const DEFAULT_COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316'];
+// Rampa de grises (DESIGN.md): la etiqueta distingue la categoría, no el color.
+const DEFAULT_COLORS = ['rgb(var(--slate-100))', 'rgb(var(--slate-200))', 'rgb(var(--slate-400))', 'rgb(var(--slate-500))', 'rgb(var(--slate-300))', 'rgb(var(--slate-600))', 'rgb(var(--slate-700))', 'rgb(var(--slate-800))'];
 
 export function SpendingPieChart({ data, totalExpenses }: Props) {
   if (data.length === 0) {
@@ -44,13 +45,13 @@ export function SpendingPieChart({ data, totalExpenses }: Props) {
               paddingAngle={2}
             >
               {data.map((entry, i) => (
-                <Cell key={entry.category_id} fill={entry.color ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length]} />
+                <Cell key={entry.category_id} fill={DEFAULT_COLORS[i % DEFAULT_COLORS.length]} stroke="rgb(var(--slate-900))" strokeWidth={2} />
               ))}
             </Pie>
             <Tooltip
               formatter={(value: number) => formatCurrency(value)}
-              contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '0.75rem', fontSize: '12px' }}
-              itemStyle={{ color: '#e2e8f0' }}
+              contentStyle={{ backgroundColor: 'rgb(var(--slate-900))', border: '1px solid rgb(var(--slate-700))', borderRadius: '0.75rem', fontSize: '12px' }}
+              itemStyle={{ color: 'rgb(var(--slate-100))' }}
             />
           </PieChart>
         </ResponsiveContainer>
@@ -61,9 +62,9 @@ export function SpendingPieChart({ data, totalExpenses }: Props) {
           <div key={cat.category_id} className="flex items-center gap-2 text-xs">
             <div
               className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-              style={{ backgroundColor: cat.color ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length] }}
+              style={{ backgroundColor: DEFAULT_COLORS[i % DEFAULT_COLORS.length] }}
             />
-            <span className="text-slate-400 truncate">{cat.icon} {cat.category_name}</span>
+            <span className="text-slate-400 truncate">{cat.category_name}</span>
             <span className="text-slate-500 ml-auto">{cat.percentage.toFixed(0)}%</span>
           </div>
         ))}

@@ -1,260 +1,417 @@
-import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Mic, MicOff, Check } from 'lucide-react';
+import { useEffect, useState, useRef, useCallback } from 'react';
+import { ArrowUp, Mic } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { useAppStore } from '@/stores/appStore';
-import { useToastStore } from '@/stores/toastStore';
-import type { TransactionType, InputMethod } from '@/types/database';
+import { useAuthStore } from '@/stores/authStore';
+import { supabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
 
-const typeOptions: { value: TransactionType; label: string; color: string }[] = [
-  { value: 'expense', label: 'Gasto', color: 'bg-expense' },
-  { value: 'income', label: 'Ingreso', color: 'bg-income' },
-  { value: 'transfer', label: 'Transferencia', color: 'bg-transfer' },
-];
+type OrbState = 'idle' | 'listening' | 'thinking' | 'speaking';
+
+interface ConversationEntry {
+  role: 'user' | 'assistant';
+  content: string;
+}
 
 export function AddTransactionPage() {
-  const navigate = useNavigate();
-  const { accounts, categories, fetchAccounts, fetchCategories, addTransaction } = useAppStore();
-  const addToast = useToastStore(s => s.addToast);
+  const profile = useAuthStore(s => s.profile);
+  const { fetchAccounts, fetchCategories } = useAppStore();
 
-  const [type, setType] = useState<TransactionType>('expense');
-  const [amount, setAmount] = useState('');
-  const [description, setDescription] = useState('');
-  const [categoryId, setCategoryId] = useState('');
-  const [accountId, setAccountId] = useState('');
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 16));
-  const [saving, setSaving] = useState(false);
-  const [isListening, setIsListening] = useState(false);
-  const [voiceText, setVoiceText] = useState('');
+  const [orbState, setOrbState] = useState<OrbState>('idle');
+  const [subtitle, setSubtitle] = useState('');
+  const [showInput, setShowInput] = useState(false);
+  const [input, setInput] = useState('');
+  const [navOpen, setNavOpen] = useState(false);
+
+  // Conversation memory (last 5 exchanges)
+  const conversationRef = useRef<ConversationEntry[]>([]);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const isHoldingRef = useRef(false);
+  const transcriptRef = useRef('');
 
   useEffect(() => {
     fetchAccounts();
     fetchCategories();
   }, [fetchAccounts, fetchCategories]);
 
-  // Set default account
   useEffect(() => {
-    if (accounts.length > 0 && !accountId) {
-      setAccountId(accounts[0]!.account_id);
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 120)}px`;
     }
-  }, [accounts, accountId]);
+  }, [input]);
 
-  const filteredCategories = categories.filter(c => c.category_type === (type === 'transfer' ? 'expense' : type));
+  // Floating nav listener
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      setNavOpen(detail?.open ?? false);
+      if (detail?.open) setShowInput(false);
+    };
+    window.addEventListener('floating-nav', handler);
+    return () => window.removeEventListener('floating-nav', handler);
+  }, []);
 
-  const handleVoice = () => {
+  const firstName = profile?.display_name?.split(' ')[0] ?? '';
+  const [isFirstUse, setIsFirstUse] = useState(() => !localStorage.getItem('finapp_used'));
+
+  useEffect(() => {
+    if (isFirstUse) {
+      const timer = setTimeout(() => {
+        localStorage.setItem('finapp_used', '1');
+        setIsFirstUse(false);
+      }, 15000); // After 15s, hide the onboarding
+      return () => clearTimeout(timer);
+    }
+  }, [isFirstUse]);
+
+  // ── Agent call with conversation memory ──
+  const callAgent = useCallback(async (text: string) => {
+    setOrbState('thinking');
+    setSubtitle('');
+
+    // Add to memory
+    conversationRef.current.push({ role: 'user', content: text });
+    if (conversationRef.current.length > 10) conversationRef.current = conversationRef.current.slice(-10);
+
+    const timeout = setTimeout(() => {
+      setOrbState('idle');
+      setSubtitle('No pude procesar, intenta de nuevo');
+      setTimeout(() => setSubtitle(''), 4000);
+    }, 15000);
+
+    try {
+      let session = (await supabase.auth.getSession()).data.session;
+      if (!session) {
+        await new Promise(r => setTimeout(r, 1000));
+        session = (await supabase.auth.getSession()).data.session;
+      }
+      if (!session) throw new Error('No autenticado');
+
+      const response = await supabase.functions.invoke('agent', {
+        body: { text, history: conversationRef.current.slice(-8) },
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+
+      clearTimeout(timeout);
+
+      if (response.error) throw new Error(response.error.message);
+      const data = response.data;
+      if (data.error) throw new Error(data.error);
+
+      const message = data.message as string;
+
+      // Add to memory
+      conversationRef.current.push({ role: 'assistant', content: message });
+      if (conversationRef.current.length > 10) conversationRef.current = conversationRef.current.slice(-10);
+
+      // Show subtitle and speak
+      setSubtitle(message);
+      await speak(message);
+
+      // Clear subtitle after speaking (or after 6s for long text)
+      setTimeout(() => {
+        setSubtitle('');
+        setOrbState('idle');
+      }, Math.min(message.length * 60, 8000));
+
+    } catch (err) {
+      clearTimeout(timeout);
+      const errMsg = err instanceof Error ? err.message : 'Error';
+      setSubtitle(errMsg);
+      setOrbState('idle');
+      setTimeout(() => setSubtitle(''), 4000);
+    }
+  }, []);
+
+  // ── TTS (OpenAI nova) ──
+  const speak = useCallback(async (text: string): Promise<void> => {
+    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
+
+    setOrbState('speaking');
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/tts`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+          'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+        },
+        body: JSON.stringify({ text: text.slice(0, 400) }),
+      });
+
+      if (!response.ok) throw new Error('TTS failed');
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+
+      return new Promise((resolve) => {
+        const audio = new Audio(url);
+        audioRef.current = audio;
+        audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
+        audio.onerror = () => { URL.revokeObjectURL(url); resolve(); };
+        audio.play().catch(resolve);
+      });
+    } catch {
+      // Fallback browser TTS
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = 'es-PE';
+        u.rate = 1;
+        window.speechSynthesis.speak(u);
+      }
+    }
+  }, []);
+
+  // ── Hold-to-talk ──
+  const startHold = useCallback(() => {
+    if (orbState === 'speaking') {
+      // Interrupt: stop audio and go idle
+      if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
+      window.speechSynthesis?.cancel();
+      setOrbState('idle');
+      setSubtitle('');
+      return;
+    }
+    if (orbState !== 'idle') return;
+
+    isHoldingRef.current = true;
+    transcriptRef.current = '';
+    setSubtitle('');
+
     if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
-      addToast('Tu navegador no soporta reconocimiento de voz. Usa Chrome.', 'warning');
+      setSubtitle('Navegador sin soporte de voz');
+      setTimeout(() => setSubtitle(''), 3000);
       return;
     }
 
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const recognition = new SpeechRecognition();
+    const API = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const recognition = new API();
     recognition.lang = 'es-PE';
     recognition.continuous = false;
-    recognition.interimResults = false;
+    recognition.interimResults = true;
 
-    recognition.onstart = () => setIsListening(true);
-    recognition.onend = () => setIsListening(false);
+    recognition.onstart = () => setOrbState('listening');
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
-      const transcript = event.results[0]?.[0]?.transcript ?? '';
-      setVoiceText(transcript);
-      parseVoiceInput(transcript);
+      // Only use the last result to avoid mobile duplicates
+      const last = event.results[event.results.length - 1];
+      const text = last?.[0]?.transcript ?? '';
+      transcriptRef.current = text;
+      setSubtitle(text);
     };
 
-    recognition.onerror = () => setIsListening(false);
+    recognition.onerror = () => {
+      isHoldingRef.current = false;
+      setOrbState('idle');
+      setSubtitle('No te escuché, intenta de nuevo');
+      setTimeout(() => setSubtitle(''), 3000);
+    };
+
+    recognition.onend = () => {
+      // When released and recognition ends, process
+      if (transcriptRef.current.trim()) {
+        callAgent(transcriptRef.current.trim());
+      } else {
+        setOrbState('idle');
+      }
+    };
+
+    recognitionRef.current = recognition;
     recognition.start();
+  }, [orbState, callAgent]);
+
+  const endHold = useCallback(() => {
+    isHoldingRef.current = false;
+    recognitionRef.current?.stop();
+  }, []);
+
+  // ── Text submit ──
+  const handleSubmitText = () => {
+    if (!input.trim()) return;
+    const text = input.trim();
+    setInput('');
+    setShowInput(false);
+    callAgent(text);
   };
 
-  const parseVoiceInput = (text: string) => {
-    const lower = text.toLowerCase();
-
-    // Detectar monto
-    const milMatch = lower.match(/(\d+)\s*mil/);
-    const numMatch = lower.match(/(\d+(?:\.\d+)?)/);
-    if (milMatch) {
-      setAmount(String(Number(milMatch[1]) * 1000));
-    } else if (numMatch) {
-      setAmount(numMatch[1]!);
-    }
-
-    // Detectar tipo
-    if (lower.includes('gast') || lower.includes('pag') || lower.includes('compr')) {
-      setType('expense');
-    } else if (lower.includes('cobr') || lower.includes('pagar') || lower.includes('ingres') || lower.includes('sueldo')) {
-      setType('income');
-    }
-
-    // Usar el texto como descripción
-    setDescription(text);
-  };
-
-  const handleSubmit = async () => {
-    const parsedAmount = parseFloat(amount);
-    if (!parsedAmount || parsedAmount <= 0 || !accountId) {
-      addToast('Ingresa un monto válido y selecciona una cuenta', 'warning');
-      return;
-    }
-
-    setSaving(true);
-    const inputMethod: InputMethod = voiceText ? 'voice' : 'manual';
-
-    const result = await addTransaction({
-      transaction_type: type,
-      amount: parsedAmount,
-      currency_code: 'PEN',
-      description: description || null,
-      notes: null,
-      account_id: accountId,
-      category_id: categoryId || null,
-      transaction_date: new Date(date).toISOString(),
-      transfer_to_account_id: null,
-      input_method: inputMethod,
-      raw_voice_text: voiceText || null,
-      is_recurring: false,
-      recurring_id: null,
-      tags: null,
-    });
-
-    setSaving(false);
-
-    if (result) {
-      addToast(type === 'income' ? 'Ingreso registrado' : type === 'transfer' ? 'Transferencia registrada' : 'Gasto registrado');
-      navigate('/transactions');
-    } else {
-      addToast('Error al guardar el movimiento', 'error');
-    }
-  };
+  // ── Orb CSS state ──
+  const orbClass = cn(
+    'ai-orb w-[130px] h-[130px] cursor-pointer transition-all duration-300',
+    orbState === 'listening' && 'listening',
+    orbState === 'thinking' && 'processing',
+    orbState === 'speaking' && 'speaking',
+  );
 
   return (
-    <div className="space-y-5">
-      <h1 className="text-xl font-bold">Nuevo movimiento</h1>
+    <div className="flex flex-col items-center min-h-[calc(100vh-5rem)] relative">
 
-      {/* Tipo de transacción */}
-      <div className="flex gap-2">
-        {typeOptions.map(opt => (
-          <button
-            key={opt.value}
-            onClick={() => setType(opt.value)}
-            className={cn(
-              'flex-1 py-2.5 rounded-xl text-sm font-semibold transition-all',
-              type === opt.value
-                ? `${opt.color} text-white`
-                : 'bg-slate-800 text-slate-400'
-            )}
-          >
-            {opt.label}
-          </button>
-        ))}
-      </div>
+      {/* ── Orb ── */}
+      <div className="flex-1 flex flex-col items-center justify-center w-full">
+        <motion.div
+          className="relative mb-6 select-none touch-none"
+          whileTap={{ scale: 0.92 }}
+        >
+          {/* Glow */}
+          <motion.div
+            className="absolute inset-0 rounded-full blur-3xl pointer-events-none"
+            style={{ background: 'radial-gradient(circle, rgb(var(--halo) / 0.18) 0%, transparent 70%)' }}
+            animate={{
+              scale: orbState === 'listening' ? [1, 1.5, 1] :
+                     orbState === 'speaking' ? [1, 1.3, 1] : [1, 1.1, 1],
+              opacity: orbState === 'listening' ? [0.5, 0.9, 0.5] :
+                       orbState === 'speaking' ? [0.4, 0.7, 0.4] : 0.3,
+            }}
+            transition={{ duration: orbState === 'listening' ? 1 : 2, repeat: Infinity, ease: 'easeInOut' }}
+          />
 
-      {/* Monto + Voz */}
-      <div className="card space-y-3">
-        <label className="text-xs text-slate-400 uppercase tracking-wider">Monto</label>
-        <div className="flex items-center gap-3">
-          <div className="flex-1 relative">
-            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 text-lg">S/</span>
-            <input
-              type="number"
-              value={amount}
-              onChange={e => setAmount(e.target.value)}
-              placeholder="0.00"
-              className="input pl-10 text-2xl font-bold"
-              inputMode="decimal"
-              autoFocus
-            />
+          {/* Orb — hold to talk */}
+          <div
+            className={orbClass}
+            onPointerDown={startHold}
+            onPointerUp={endHold}
+            onPointerLeave={endHold}
+            onContextMenu={e => e.preventDefault()}
+          />
+
+          {/* Center icon */}
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <AnimatePresence mode="wait">
+              {orbState === 'thinking' ? (
+                <motion.div key="think" initial={{ opacity: 0 }} animate={{ opacity: 0.6 }} exit={{ opacity: 0 }}>
+                  <div className="w-6 h-6 border-2 border-slate-950/30 border-t-slate-950/80 rounded-full animate-spin" />
+                </motion.div>
+              ) : orbState === 'listening' ? (
+                <motion.div key="listen" initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 0.8, scale: [1, 1.15, 1] }} exit={{ opacity: 0 }}
+                  transition={{ scale: { duration: 1, repeat: Infinity } }}>
+                  <Mic className="w-8 h-8 text-slate-950" />
+                </motion.div>
+              ) : orbState === 'speaking' ? (
+                <motion.div key="speak" initial={{ opacity: 0 }} animate={{ opacity: [0.5, 0.9, 0.5] }} exit={{ opacity: 0 }}
+                  transition={{ duration: 1.5, repeat: Infinity }}>
+                  <div className="flex items-center gap-[3px]">
+                    {[0, 1, 2, 3, 4].map(i => (
+                      <motion.div key={i} className="w-[3px] rounded-full bg-slate-950/70"
+                        animate={{ height: [8, 20, 8] }}
+                        transition={{ duration: 0.8, repeat: Infinity, delay: i * 0.12 }}
+                      />
+                    ))}
+                  </div>
+                </motion.div>
+              ) : (
+                <motion.div key="idle" initial={{ opacity: 0 }} animate={{ opacity: 0.5 }} exit={{ opacity: 0 }}>
+                  <Mic className="w-7 h-7 text-slate-950" />
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
-          <button
-            onClick={handleVoice}
+        </motion.div>
+
+        {/* Subtitle */}
+        <AnimatePresence mode="wait">
+          {subtitle ? (
+            <motion.p
+              key="sub"
+              className={cn(
+                'text-center max-w-[300px] px-4 leading-relaxed',
+                orbState === 'listening' ? 'text-slate-400 text-sm italic' : 'text-slate-300 text-sm',
+              )}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+            >
+              {orbState === 'listening' ? `"${subtitle}"` : subtitle}
+            </motion.p>
+          ) : orbState === 'idle' && !showInput ? (
+            <motion.p
+              key="hint"
+              className="text-slate-500 text-sm"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+            >
+              {isFirstUse
+                ? `¡Hola${firstName ? ` ${firstName}` : ''}! Mantén presionado el orb y dime qué gastaste. También puedes escribir abajo.`
+                : firstName ? `Mantén presionado para hablar, ${firstName}` : 'Mantén presionado para hablar'
+              }
+            </motion.p>
+          ) : orbState === 'thinking' ? (
+            <motion.p
+              key="thinking"
+              className="text-slate-500 text-sm animate-pulse"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+            >
+              Pensando...
+            </motion.p>
+          ) : null}
+        </AnimatePresence>
+      </div>
+
+      {/* ── Input bar ── */}
+      <div className={cn('w-full pb-2 transition-all duration-300', navOpen && 'opacity-0 translate-y-4 pointer-events-none')}>
+        <div className="relative">
+
+          <motion.div
             className={cn(
-              'w-14 h-14 rounded-full flex items-center justify-center transition-all flex-shrink-0',
-              isListening
-                ? 'bg-expense text-white animate-pulse'
-                : 'bg-slate-800 text-slate-400 active:bg-slate-700'
+              'rounded-2xl border bg-slate-900 overflow-hidden relative',
+              orbState === 'idle' ? 'border-slate-600' : 'border-slate-700',
             )}
+            animate={{ height: showInput ? 'auto' : 48 }}
+            transition={{ type: 'spring', stiffness: 500, damping: 40 }}
           >
-            {isListening ? <MicOff size={22} /> : <Mic size={22} />}
-          </button>
-        </div>
-        {voiceText && (
-          <p className="text-xs text-slate-500 italic">"{voiceText}"</p>
-        )}
-      </div>
+            {!showInput && orbState === 'idle' && (
+              <div className="h-[48px] flex items-center px-4">
+                <button
+                  onClick={() => { setShowInput(true); setTimeout(() => textareaRef.current?.focus(), 100); }}
+                  className="flex-1 text-left text-sm text-slate-500"
+                >
+                  Escribe tu gasto o ingreso...
+                </button>
+              </div>
+            )}
 
-      {/* Descripción */}
-      <div>
-        <input
-          type="text"
-          value={description}
-          onChange={e => setDescription(e.target.value)}
-          placeholder="Descripción (opcional)"
-          className="input"
-        />
-      </div>
-
-      {/* Cuenta */}
-      <div>
-        <label className="text-xs text-slate-400 uppercase tracking-wider mb-2 block">Cuenta</label>
-        <div className="flex gap-2 overflow-x-auto no-scrollbar">
-          {accounts.map(acc => (
-            <button
-              key={acc.account_id}
-              onClick={() => setAccountId(acc.account_id)}
-              className={cn(
-                'px-4 py-2 rounded-xl text-sm whitespace-nowrap transition-all flex-shrink-0',
-                accountId === acc.account_id
-                  ? 'bg-primary-600 text-white'
-                  : 'bg-slate-800 text-slate-400'
-              )}
-            >
-              {acc.account_name}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Categoría */}
-      <div>
-        <label className="text-xs text-slate-400 uppercase tracking-wider mb-2 block">Categoría</label>
-        <div className="grid grid-cols-3 gap-2">
-          {filteredCategories.map(cat => (
-            <button
-              key={cat.category_id}
-              onClick={() => setCategoryId(cat.category_id)}
-              className={cn(
-                'px-3 py-2.5 rounded-xl text-xs font-medium transition-all text-center',
-                categoryId === cat.category_id
-                  ? 'bg-primary-600 text-white'
-                  : 'bg-slate-800 text-slate-400'
-              )}
-            >
-              <span className="block text-base mb-0.5">{cat.icon ?? '📋'}</span>
-              {cat.category_name}
-            </button>
-          ))}
+            {showInput && (
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="p-3">
+                <textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={e => setInput(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmitText(); }
+                    if (e.key === 'Escape') setShowInput(false);
+                  }}
+                  placeholder='"gasté 50 en almuerzo", "presupuesto 500 comida"...'
+                  className="w-full bg-transparent border-none text-slate-100 text-sm placeholder-slate-400 focus:outline-none resize-none min-h-[40px] max-h-[120px] px-1 py-1"
+                  rows={1}
+                />
+                <div className="flex items-center justify-between pt-1">
+                  <button onClick={() => setShowInput(false)} className="text-xs text-slate-500 px-2 py-1">Cancelar</button>
+                  <motion.button
+                    whileTap={{ scale: 0.9 }}
+                    onClick={handleSubmitText}
+                    disabled={!input.trim()}
+                    className={cn(
+                      'w-8 h-8 rounded-full flex items-center justify-center transition-all',
+                      input.trim() ? 'bg-primary-600 text-slate-950' : 'bg-slate-800 text-slate-500',
+                    )}
+                  >
+                    <ArrowUp size={16} />
+                  </motion.button>
+                </div>
+              </motion.div>
+            )}
+          </motion.div>
         </div>
       </div>
-
-      {/* Fecha */}
-      <div>
-        <label className="text-xs text-slate-400 uppercase tracking-wider mb-2 block">Fecha y hora</label>
-        <input
-          type="datetime-local"
-          value={date}
-          onChange={e => setDate(e.target.value)}
-          className="input"
-        />
-      </div>
-
-      {/* Botón guardar */}
-      <button
-        onClick={handleSubmit}
-        disabled={!amount || !accountId || saving}
-        className="btn-primary w-full flex items-center justify-center gap-2"
-      >
-        <Check size={18} />
-        {saving ? 'Guardando...' : 'Guardar'}
-      </button>
     </div>
   );
 }

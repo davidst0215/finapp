@@ -32,6 +32,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   error: null,
 
   fetchAccounts: async () => {
+    // Wait for session before fetching
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
     set({ loadingAccounts: true });
     const { data, error } = await supabase
       .from('accounts')
@@ -46,6 +49,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   fetchCategories: async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
     set({ loadingCategories: true });
     const { data, error } = await supabase
       .from('categories')
@@ -60,6 +65,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   fetchTransactions: async (limit = 50) => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
     set({ loadingTransactions: true });
     const { data, error } = await supabase
       .from('transactions')

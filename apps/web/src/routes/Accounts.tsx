@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Plus, CreditCard, Wallet, PiggyBank, TrendingUp, X, Check } from 'lucide-react';
+import { AccountCard } from '@/components/ui/AccountCard';
 import { useAppStore } from '@/stores/appStore';
 import { useToastStore } from '@/stores/toastStore';
 import { supabase } from '@/lib/supabase';
@@ -9,11 +10,11 @@ import { Spinner } from '@/components/ui/Spinner';
 import type { AccountType } from '@/types/database';
 
 const accountTypeConfig: Record<string, { icon: typeof Wallet; label: string; color: string }> = {
-  checking: { icon: Wallet, label: 'Cuenta corriente', color: '#3b82f6' },
-  savings: { icon: PiggyBank, label: 'Ahorro', color: '#10b981' },
-  credit_card: { icon: CreditCard, label: 'Tarjeta de crédito', color: '#ef4444' },
-  cash: { icon: Wallet, label: 'Efectivo', color: '#f59e0b' },
-  investment: { icon: TrendingUp, label: 'Inversión', color: '#8b5cf6' },
+  checking: { icon: Wallet, label: 'Cuenta corriente', color: '#f0f0f2' },
+  savings: { icon: PiggyBank, label: 'Ahorro', color: '#c8ccd4' },
+  credit_card: { icon: CreditCard, label: 'Tarjeta de crédito', color: '#c8ccd4' },
+  cash: { icon: Wallet, label: 'Efectivo', color: '#c8ccd4' },
+  investment: { icon: TrendingUp, label: 'Inversión', color: '#9a9aa6' },
 };
 
 export function AccountsPage() {
@@ -38,7 +39,7 @@ export function AccountsPage() {
       account_type: type,
       currency_code: 'PEN',
       current_balance: parseFloat(balance) || 0,
-      color: accountTypeConfig[type]?.color ?? '#3b82f6',
+      color: accountTypeConfig[type]?.color ?? '#c8ccd4',
       is_active: true,
     });
 
@@ -61,7 +62,7 @@ export function AccountsPage() {
         <h1 className="text-xl font-bold">Cuentas</h1>
         <button
           onClick={() => setShowForm(!showForm)}
-          className="w-9 h-9 rounded-full bg-primary-600 flex items-center justify-center"
+          className="w-9 h-9 rounded-full bg-primary-600 flex items-center justify-center text-slate-950"
         >
           {showForm ? <X size={18} /> : <Plus size={18} />}
         </button>
@@ -93,7 +94,7 @@ export function AccountsPage() {
                 onClick={() => setType(key as AccountType)}
                 className={cn(
                   'px-3 py-1.5 rounded-lg text-xs font-medium',
-                  type === key ? 'bg-primary-600 text-white' : 'bg-slate-800 text-slate-400'
+                  type === key ? 'bg-primary-600 text-slate-950' : 'bg-slate-800 text-slate-400'
                 )}
               >
                 {label}
@@ -115,34 +116,15 @@ export function AccountsPage() {
       )}
 
       {/* Lista de cuentas */}
-      <div className="space-y-2">
-        {accounts.map(acc => {
-          const config = accountTypeConfig[acc.account_type];
-          const Icon = config?.icon ?? Wallet;
-          return (
-            <div
-              key={acc.account_id}
-              className="card flex items-center justify-between"
-              style={{ borderLeftColor: acc.color ?? '#3b82f6', borderLeftWidth: 3 }}
-            >
-              <div className="flex items-center gap-3">
-                <Icon size={20} style={{ color: acc.color ?? '#3b82f6' }} />
-                <div>
-                  <p className="font-medium text-sm">{acc.account_name}</p>
-                  <p className="text-xs text-slate-500">{config?.label ?? acc.account_type}</p>
-                </div>
-              </div>
-              <div className="text-right">
-                <p className={cn('font-bold', acc.account_type === 'credit_card' ? 'text-expense' : 'text-white')}>
-                  {formatCurrency(acc.current_balance)}
-                </p>
-                {acc.account_type === 'credit_card' && acc.credit_limit && (
-                  <p className="text-[10px] text-slate-500">Límite: {formatCurrency(acc.credit_limit)}</p>
-                )}
-              </div>
-            </div>
-          );
-        })}
+      <div className="space-y-3">
+        {accounts.map(acc => (
+          <AccountCard
+            key={acc.account_id}
+            name={acc.account_name}
+            balance={acc.current_balance}
+            type={acc.account_type}
+          />
+        ))}
       </div>
 
       {loadingAccounts ? (

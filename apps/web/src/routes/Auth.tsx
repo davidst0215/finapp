@@ -13,23 +13,34 @@ export function AuthPage() {
     try {
       await signInWithGoogle();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error al iniciar sesión. Intenta de nuevo.');
+      setError(err instanceof Error ? err.message : 'Error al iniciar sesión');
       setLoading(false);
     }
   };
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen px-6">
-      <div className="text-center mb-10">
-        <h1 className="text-4xl font-bold text-white mb-2">FinApp</h1>
-        <p className="text-slate-400 text-lg">Control total de tus finanzas</p>
+    <div className="flex flex-col items-center justify-center min-h-screen px-6 bg-slate-950 relative overflow-hidden">
+      {/* Background glow */}
+      <div className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-80 h-80 rounded-full blur-3xl opacity-20"
+        style={{ background: 'radial-gradient(circle, rgb(var(--halo) / 0.14) 0%, transparent 70%)' }} />
+
+      {/* Orb */}
+      <div className="ai-orb w-[80px] h-[80px] mb-8" />
+
+      {/* Brand */}
+      <div className="text-center mb-10 relative z-10">
+        <h1 className="text-3xl font-bold text-slate-100 mb-2">Wabid</h1>
+        <p className="text-slate-400 text-sm max-w-[250px]">
+          Tu asistente personal
+        </p>
       </div>
 
-      <div className="w-full max-w-sm space-y-4">
+      {/* Login */}
+      <div className="w-full max-w-sm space-y-4 relative z-10">
         <button
           onClick={handleSignIn}
           disabled={loading}
-          className="w-full flex items-center justify-center gap-3 rounded-xl bg-white px-4 py-3.5 font-semibold text-slate-900 active:bg-slate-100 transition-colors disabled:opacity-70"
+          className="w-full flex items-center justify-center gap-3 rounded-2xl bg-slate-100 px-4 py-3.5 font-semibold text-slate-900 active:bg-slate-200 transition-colors disabled:opacity-70"
         >
           {loading ? (
             <Loader2 size={20} className="animate-spin text-slate-600" />
@@ -51,8 +62,8 @@ export function AuthPage() {
         )}
       </div>
 
-      <p className="mt-8 text-xs text-slate-600 text-center">
-        Al continuar, aceptas que tus datos financieros se almacenan de forma segura.
+      <p className="mt-12 text-[10px] text-slate-700 text-center relative z-10">
+        Tus datos financieros se almacenan de forma segura y encriptada.
       </p>
     </div>
   );

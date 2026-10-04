@@ -1,16 +1,17 @@
 import { useEffect, useState } from 'react';
 import { Bell, BellOff, Check, AlertTriangle, CreditCard, Target, RefreshCw, TrendingDown } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import { cn } from '@/lib/utils';
+import { cn, localDateKey } from '@/lib/utils';
 import { Spinner } from '@/components/ui/Spinner';
+import { GlassCard } from '@/components/ui/GlassCard';
 import type { Alert, AlertType } from '@/types/database';
 
 const alertConfig: Record<AlertType, { icon: typeof Bell; color: string; label: string }> = {
-  budget_threshold: { icon: AlertTriangle, color: 'text-yellow-400', label: 'Presupuesto' },
+  budget_threshold: { icon: AlertTriangle, color: 'text-slate-100', label: 'Presupuesto' },
   budget_exceeded: { icon: TrendingDown, color: 'text-expense', label: 'Presupuesto excedido' },
   recurring_due: { icon: RefreshCw, color: 'text-primary-400', label: 'Pago recurrente' },
   goal_milestone: { icon: Target, color: 'text-income', label: 'Meta de ahorro' },
-  unusual_spending: { icon: AlertTriangle, color: 'text-orange-400', label: 'Gasto inusual' },
+  unusual_spending: { icon: AlertTriangle, color: 'text-expense', label: 'Gasto inusual' },
   credit_card_due: { icon: CreditCard, color: 'text-expense', label: 'Tarjeta de crédito' },
   low_balance: { icon: TrendingDown, color: 'text-expense', label: 'Saldo bajo' },
 };
@@ -52,7 +53,7 @@ export function AlertsPage() {
             : `Llevas S/${b.amount_spent.toFixed(2)} de S/${b.amount_limit.toFixed(2)}. Controla tus gastos.`;
 
           // Solo crear si no existe una alerta similar reciente (hoy)
-          const today = new Date().toISOString().slice(0, 10);
+          const today = localDateKey(new Date());
           const { data: existing } = await supabase
             .from('alerts')
             .select('alert_id')
@@ -86,7 +87,7 @@ export function AlertsPage() {
 
     if (recurringData) {
       for (const r of recurringData) {
-        const today = new Date().toISOString().slice(0, 10);
+        const today = localDateKey(new Date());
         const { data: existing } = await supabase
           .from('alerts')
           .select('alert_id')
@@ -135,7 +136,7 @@ export function AlertsPage() {
         <div className="flex items-center gap-2">
           <h1 className="text-xl font-bold">Alertas</h1>
           {unreadCount > 0 && (
-            <span className="px-2 py-0.5 rounded-full bg-expense text-white text-xs font-bold">
+            <span className="px-2 py-0.5 rounded-full bg-expense text-slate-950 text-xs font-bold">
               {unreadCount}
             </span>
           )}
@@ -163,9 +164,10 @@ export function AlertsPage() {
             const timeAgo = getTimeAgo(alert.triggered_at);
 
             return (
-              <div
+              <GlassCard
                 key={alert.alert_id}
-                className={cn('card py-3 transition-all',
+                variant={!alert.is_read ? 'accent' : 'default'}
+                className={cn('py-3 transition-all cursor-pointer',
                   !alert.is_read && 'border-l-2 border-l-primary-500'
                 )}
                 onClick={() => !alert.is_read && handleMarkRead(alert.alert_id)}
@@ -176,7 +178,7 @@ export function AlertsPage() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-start justify-between gap-2">
-                      <p className={cn('text-sm font-medium', !alert.is_read && 'text-white')}>
+                      <p className={cn('text-sm font-medium', !alert.is_read && 'text-slate-100')}>
                         {alert.title}
                       </p>
                       <button
@@ -197,7 +199,7 @@ export function AlertsPage() {
                     </div>
                   </div>
                 </div>
-              </div>
+              </GlassCard>
             );
           })}
         </div>
