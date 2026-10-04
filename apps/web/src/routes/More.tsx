@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useAuthStore } from '@/stores/authStore';
 import { readTheme, setTheme, type ThemeMode } from '@/lib/theme';
-import { LogOut, Sun, Moon, SunMoon, Wallet, Target, PiggyBank, CreditCard, Bell, ChevronRight, CalendarDays, BarChart3, Video, Mail, Search, Terminal, MessageSquare } from 'lucide-react';
+import { LogOut, Sun, Moon, SunMoon, Wallet, Target, PiggyBank, CreditCard, Bell, BellRing, ChevronRight, CalendarDays, BarChart3, Video, Mail, Search, Terminal, MessageSquare } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { UserAvatar } from '@/components/ui/UserAvatar';
 import { GlassCard } from '@/components/ui/GlassCard';
@@ -36,6 +36,7 @@ export function MorePage() {
             { to: '/buscar', icon: Search, label: 'Buscar en proyectos', desc: 'Pregunta con la fuente citada' },
             { to: '/claude', icon: Terminal, label: 'Claude Code', desc: 'Sesiones y permisos' },
             { to: '/ai-chat', icon: MessageSquare, label: 'Chat con Wabid', desc: 'Conversación por texto' },
+            { to: '/avisos', icon: BellRing, label: 'Avisos', desc: 'Notificaciones en este celular y bandeja' },
           ].map(({ to, icon: Icon, label, desc }) => (
             <Link key={to} to={to}
               className="flex items-center gap-3.5 px-4 py-3.5 active:bg-slate-800/30 transition-colors">

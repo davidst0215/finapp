@@ -17,7 +17,7 @@ interface AppState {
   fetchAccounts: () => Promise<void>;
   fetchCategories: () => Promise<void>;
   fetchTransactions: (limit?: number) => Promise<void>;
-  addTransaction: (tx: Omit<Transaction, 'transaction_id' | 'created_at' | 'updated_at' | 'user_id'>) => Promise<Transaction | null>;
+  addTransaction: (tx: Omit<Transaction, 'transaction_id' | 'created_at' | 'updated_at' | 'user_id'> & { transaction_id?: string }) => Promise<Transaction | null>;
   deleteTransaction: (id: string) => Promise<void>;
   clearError: () => void;
 }

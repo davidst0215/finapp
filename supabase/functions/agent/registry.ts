@@ -1,3 +1,5 @@
+import { agenda } from "./tools/agenda.ts";
+import { correo } from "./tools/correo.ts";
 import { finanzas } from "./tools/finanzas.ts";
 import { memoria } from "./tools/memoria.ts";
 import { tareas } from "./tools/tareas.ts";
@@ -7,7 +9,9 @@ import { type AgentModule, tool } from "./types.ts";
 const general: AgentModule = {
   id: "general",
   definitions: [
-    tool("query", "Responde preguntas generales o saludos. NO para acciones de otros módulos.", { answer: { type: "string" } }, ["answer"]),
+    tool("query", "Responde preguntas generales o saludos. NO para acciones de otros módulos.", {
+      answer: { type: "string", description: "Respuesta FINAL que David escucha. Nunca un marcador ni 'déjame revisar'." },
+    }, ["answer"]),
   ],
   handlers: {
     query: async (args) => ({ action: "query", message: typeof args.answer === "string" ? args.answer : "" }),
@@ -18,6 +22,8 @@ const general: AgentModule = {
 // deno-lint-ignore no-explicit-any
 export const MODULES: AgentModule<any>[] = [
   general,
+  agenda,
+  correo,
   finanzas,
   tareas,
   memoria,

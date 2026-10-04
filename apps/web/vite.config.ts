@@ -26,6 +26,11 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        // Avisos push: public/sw-push.js agrega los eventos push y notificationclick al sw.js generado.
+        // Se carga con importScripts (el navegador lo revisa al buscar actualizaciones del service worker)
+        // y por eso no entra al precache.
+        importScripts: ['sw-push.js'],
+        globIgnores: ['sw-push.js'],
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/.*supabase\.co\/rest\/v1\/(transactions|accounts|categories)/,

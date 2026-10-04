@@ -8,10 +8,15 @@ export function llmConfigured(): boolean {
 
 export const LLM_URL = "https://openrouter.ai/api/v1/chat/completions";
 export const llmAuth = () => `Bearer ${OPENROUTER_API_KEY}`;
-// Campos fijos de cada request: modelo, proveedor (no Xiaomi) y sin razonamiento (latencia).
+// Proveedores en orden de preferencia (secreto LLM_PROVIDERS, coma entre slugs de OpenRouter);
+// cambiarlo no requiere redeploy. Xiaomi queda fuera siempre.
+const configurados = (Deno.env.get("LLM_PROVIDERS") ?? "")
+  .split(",").map((p) => p.trim()).filter((p) => p && p !== "xiaomi");
+const PROVEEDORES = configurados.length ? configurados : ["deepinfra"];
+// Campos fijos de cada request: modelo, proveedor y sin razonamiento (latencia).
 export const LLM_BODY = {
   model: LLM_MODEL,
-  provider: { order: ["deepinfra"], ignore: ["xiaomi"] },
+  provider: { order: PROVEEDORES, ignore: ["xiaomi"] },
   reasoning: { enabled: false },
 };
 
