@@ -15,6 +15,14 @@ import { AlertsPage } from '@/routes/Alerts';
 import { AiChatPage } from '@/routes/AiChat';
 import { ReportsPage } from '@/routes/Reports';
 import { CalendarPage } from '@/routes/CalendarPage';
+import { TareasPage } from '@/routes/modulos/TareasPage';
+import { AgendaPage } from '@/routes/modulos/AgendaPage';
+import { ReunionesPage } from '@/routes/modulos/ReunionesPage';
+import { CorreoPage } from '@/routes/modulos/CorreoPage';
+import { BuscarPage } from '@/routes/modulos/BuscarPage';
+import { ClaudeCodePage } from '@/routes/modulos/ClaudeCodePage';
+import { BriefPage } from '@/routes/modulos/BriefPage';
+import { ReciboPage } from '@/routes/modulos/ReciboPage';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading, initialized } = useAuthStore();
@@ -61,6 +69,14 @@ export default function App() {
           <Route path="/ai-chat" element={<AiChatPage />} />
           <Route path="/reports" element={<ReportsPage />} />
           <Route path="/calendar" element={<CalendarPage />} />
+          <Route path="/tareas" element={<TareasPage />} />
+          <Route path="/agenda" element={<AgendaPage />} />
+          <Route path="/reuniones" element={<ReunionesPage />} />
+          <Route path="/correo" element={<CorreoPage />} />
+          <Route path="/buscar" element={<BuscarPage />} />
+          <Route path="/claude" element={<ClaudeCodePage />} />
+          <Route path="/brief" element={<BriefPage />} />
+          <Route path="/recibo" element={<ReciboPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

@@ -1,5 +1,5 @@
 import { Outlet } from 'react-router-dom';
-import { FloatingNav } from './FloatingNav';
+import { TabBar } from './TabBar';
 import { ToastContainer } from '@/components/ui/Toast';
 import { useAppStore } from '@/stores/appStore';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
@@ -29,10 +29,10 @@ export function AppShell() {
           </button>
         </div>
       )}
-      <main className="pb-6 px-4 pt-4">
+      <main className="pb-28 px-4 pt-4">
         <Outlet />
       </main>
-      <FloatingNav />
+      <TabBar />
       <ToastContainer />
     </div>
   );

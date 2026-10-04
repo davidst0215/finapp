@@ -21,7 +21,6 @@ export function AddTransactionPage() {
   const [subtitle, setSubtitle] = useState('');
   const [showInput, setShowInput] = useState(false);
   const [input, setInput] = useState('');
-  const [navOpen, setNavOpen] = useState(false);
 
   // Conversation memory (last 5 exchanges)
   const conversationRef = useRef<ConversationEntry[]>([]);
@@ -42,17 +41,6 @@ export function AddTransactionPage() {
       textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 120)}px`;
     }
   }, [input]);
-
-  // Floating nav listener
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      setNavOpen(detail?.open ?? false);
-      if (detail?.open) setShowInput(false);
-    };
-    window.addEventListener('floating-nav', handler);
-    return () => window.removeEventListener('floating-nav', handler);
-  }, []);
 
   const firstName = profile?.display_name?.split(' ')[0] ?? '';
   const [isFirstUse, setIsFirstUse] = useState(() => !localStorage.getItem('finapp_used'));
@@ -251,7 +239,7 @@ export function AddTransactionPage() {
   );
 
   return (
-    <div className="flex flex-col items-center min-h-[calc(100vh-5rem)] relative">
+    <div className="flex flex-col items-center min-h-[calc(100dvh-9rem)] relative">
 
       {/* ── Orb ── */}
       <div className="flex-1 flex flex-col items-center justify-center w-full">
@@ -357,7 +345,7 @@ export function AddTransactionPage() {
       </div>
 
       {/* ── Input bar ── */}
-      <div className={cn('w-full pb-2 transition-all duration-300', navOpen && 'opacity-0 translate-y-4 pointer-events-none')}>
+      <div className="w-full pb-2">
         <div className="relative">
 
           <motion.div
