@@ -70,7 +70,18 @@ export function usePush() {
     const reg = await workerRegistration();
     if (!alive.current) return;
     setHasWorker(reg !== null);
-    const sub = reg ? await reg.pushManager.getSubscription() : null;
+    let sub = reg ? await reg.pushManager.getSubscription() : null;
+    // Si el servidor rotó la clave VAPID, la suscripción vieja ya no sirve: se quita y queda apagado para reactivar.
+    if (sub) {
+      const key = await pushApi.vapidKey().catch(() => null);
+      if (key && !sameKey(sub.options.applicationServerKey, key)) {
+        const endpoint = sub.endpoint;
+        await sub.unsubscribe().catch(() => {});
+        await pushApi.unsubscribe(endpoint).catch(() => {});
+        synced.current = false;
+        sub = null;
+      }
+    }
     if (!alive.current) return;
     setSubscribed(sub !== null);
     setChecking(false);

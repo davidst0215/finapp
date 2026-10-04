@@ -160,6 +160,36 @@ Deno.test("defensa en profundidad: una fila con endpoint interno no recibe POST 
     assert.equal(soloPush(ops, "update")[0]!.values!.failures, 1);
   }));
 
+Deno.test("al décimo fallo seguido la suscripción se borra", () =>
+  conFetchSimulado(async () => {
+    const mala = suscripcion("s-mala", "https://fcm.googleapis.com/fcm/send/mala", 9);
+    estados.set(mala.endpoint, 403);
+    const { db, ops } = bdSimulada({ subs: [mala] });
+    await notifyDetailed(db, "user-1", aviso);
+    assert.deepEqual(soloPush(ops, "delete")[0]!.filters, [["in", "subscription_id", ["s-mala"]]]);
+    assert.equal(soloPush(ops, "update").length, 0);
+  }));
+
+Deno.test("notify() con EdgeRuntime devuelve el id sin esperar al push (waitUntil)", () =>
+  conFetchSimulado(async () => {
+    const pendientes: Promise<unknown>[] = [];
+    // deno-lint-ignore no-explicit-any
+    (globalThis as any).EdgeRuntime = { waitUntil: (p: Promise<unknown>) => pendientes.push(p) };
+    try {
+      let liberar!: () => void;
+      const compuerta = new Promise<void>((r) => (liberar = r));
+      globalThis.fetch = async () => (await compuerta, new Response(null, { status: 201 }));
+      const { db } = bdSimulada({ subs: [suscripcion("s-1", "https://fcm.googleapis.com/fcm/send/x")] });
+      assert.equal(await notify(db, "user-1", aviso), "n-1");
+      assert.equal(pendientes.length, 1, "el push quedó en segundo plano");
+      liberar();
+      await Promise.all(pendientes);
+    } finally {
+      // deno-lint-ignore no-explicit-any
+      delete (globalThis as any).EdgeRuntime;
+    }
+  }));
+
 Deno.test("sin claves VAPID ni se consultan las suscripciones: solo bandeja", () =>
   conFetchSimulado(async () => {
     Deno.env.delete("VAPID_PRIVATE_KEY");

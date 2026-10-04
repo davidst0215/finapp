@@ -14,6 +14,7 @@ import {
   normalizeVapidSubject,
   parseSubscriptionInput,
   pushPolicyFor,
+  shouldDropSubscription,
   summarizePush,
   vapidJwkFromRaw,
 } from "./webpush-core.ts";
@@ -275,4 +276,11 @@ test("pushPolicyFor: urgencia y vigencia según el tipo de aviso", () => {
   for (const kind of ["tarea", "espera", "correo", "otro-tipo"]) {
     assert.deepEqual(pushPolicyFor(kind), { urgency: "normal", ttl: 86_400 }, kind);
   }
+});
+
+test("shouldDropSubscription: se borra al llegar a 10 fallos seguidos", () => {
+  assert.equal(shouldDropSubscription(9), false);
+  assert.equal(shouldDropSubscription(10), true);
+  assert.equal(shouldDropSubscription(nextFailureCount(9, "rejected")), true);
+  assert.equal(shouldDropSubscription(nextFailureCount(9, "ok")), false);
 });

@@ -12,6 +12,7 @@ const codigo = readFileSync(new URL("../../public/sw-push.js", import.meta.url),
 type Ventana = {
   url: string;
   focused: boolean;
+  visibilityState: string;
   navegadas: string[];
   enfocadas: number;
   mensajes: unknown[];
@@ -20,10 +21,11 @@ type Ventana = {
   postMessage: (m: unknown) => void;
 };
 
-function ventana(url: string, opciones: { focused?: boolean; navigateFalla?: boolean } = {}): Ventana {
+function ventana(url: string, opciones: { focused?: boolean; visible?: boolean; navigateFalla?: boolean } = {}): Ventana {
   const v: Ventana = {
     url,
     focused: opciones.focused ?? false,
+    visibilityState: opciones.visible ? "visible" : "hidden",
     navegadas: [],
     enfocadas: 0,
     mensajes: [],
@@ -160,6 +162,17 @@ test("clic: reutiliza la ventana abierta (la enfocada primero), navega y la enfo
   assert.deepEqual(enfocada.navegadas, [`${ORIGEN}/recurring`]);
   assert.equal(enfocada.enfocadas, 1);
   assert.deepEqual(otra.navegadas, []);
+  assert.deepEqual(sw.abiertas, []);
+});
+
+test("clic: con una ventana visible no recarga; le pide a la app navegar y la enfoca", async () => {
+  const oculta = ventana(`${ORIGEN}/dashboard`);
+  const visible = ventana(`${ORIGEN}/tareas`, { visible: true });
+  const sw = cargar([oculta, visible]);
+  await tocar(sw, { url: `${ORIGEN}/recurring?a=1#x` });
+  assert.deepEqual(visible.mensajes, [{ type: "navigate", url: "/recurring?a=1#x" }]);
+  assert.deepEqual(visible.navegadas, []);
+  assert.equal(visible.enfocadas, 1);
   assert.deepEqual(sw.abiertas, []);
 });
 

@@ -6,6 +6,7 @@ import {
   buildPushPayload,
   nextFailureCount,
   NO_PUSH,
+  shouldDropSubscription,
   parseSubscriptionInput,
   type PushSendResult,
   type PushSummary,
@@ -19,16 +20,30 @@ export type NotificationKind = "brief" | "pago" | "tarea" | "espera" | "agenda" 
 export type Notice = { kind: NotificationKind; title: string; body?: string; url?: string };
 
 // `db` debe ser el cliente de servicio (adminClient): la tabla no permite inserts desde el cliente.
+// Devuelve en cuanto el aviso queda en la bandeja: el push sigue en segundo plano (EdgeRuntime.waitUntil) para no
+// retrasar al módulo que avisó. Sin EdgeRuntime (pruebas, local) se espera igual. Un fallo de push nunca lanza.
 export async function notify(db: SupabaseClient, userId: string, notice: Notice): Promise<string | null> {
-  return (await notifyDetailed(db, userId, notice)).id;
+  const id = await insertNotice(db, userId, notice);
+  if (id === null) return null;
+  const push = pushToDevices(db, userId, id, notice);
+  // deno-lint-ignore no-explicit-any
+  const runtime = (globalThis as any).EdgeRuntime as { waitUntil?: (p: Promise<unknown>) => void } | undefined;
+  if (runtime?.waitUntil) runtime.waitUntil(push);
+  else await push;
+  return id;
 }
 
 export type NotifyResult = { id: string | null; push: PushSummary };
 
-// Igual que notify(), pero además informa qué pasó con el push (lo usa la acción `test` de la función push).
-// Espera a que el push service responda (tope de 8 s por dispositivo): las edge functions pueden cortar el
-// trabajo pendiente en cuanto devuelven la respuesta. Un fallo de push nunca lanza ni cambia el resultado.
+// Igual que notify(), pero espera al push service (tope de 4 s por dispositivo) e informa qué pasó:
+// lo usa la acción `test` de la función push.
 export async function notifyDetailed(db: SupabaseClient, userId: string, notice: Notice): Promise<NotifyResult> {
+  const id = await insertNotice(db, userId, notice);
+  if (id === null) return { id: null, push: NO_PUSH };
+  return { id, push: await pushToDevices(db, userId, id, notice) };
+}
+
+async function insertNotice(db: SupabaseClient, userId: string, notice: Notice): Promise<string | null> {
   const { data, error } = await db.from("notifications").insert({
     user_id: userId,
     kind: notice.kind,
@@ -38,10 +53,9 @@ export async function notifyDetailed(db: SupabaseClient, userId: string, notice:
   }).select("notification_id").single();
   if (error) {
     console.error("notify:", error.message);
-    return { id: null, push: NO_PUSH };
+    return null;
   }
-  const id = data.notification_id as string;
-  return { id, push: await pushToDevices(db, userId, id, notice) };
+  return data.notification_id as string;
 }
 
 type SubscriptionRow = { subscription_id: string; endpoint: string; p256dh: string; auth: string; failures: number };
@@ -83,7 +97,7 @@ async function pushToDevices(db: SupabaseClient, userId: string, notificationId:
 }
 
 // Deja constancia: envíos buenos (último ok, fallos a cero, pushed_at del aviso), suscripciones caducadas
-// (404/410: se borran) y fallos (se cuentan; la suscripción se conserva).
+// (404/410: se borran) y fallos (se cuentan; al 10.º seguido también se borra).
 async function recordResults(db: SupabaseClient, notificationId: string, subs: SubscriptionRow[], results: PushSendResult[]) {
   const now = new Date().toISOString();
   const entregadas: string[] = [];
@@ -95,9 +109,9 @@ async function recordResults(db: SupabaseClient, notificationId: string, subs: S
     if (result.outcome === "ok") entregadas.push(sub.subscription_id);
     else if (result.outcome === "gone") caducadas.push(sub.subscription_id);
     else {
-      escrituras.push(
-        db.from("push_subscriptions").update({ failures: nextFailureCount(sub.failures, result.outcome) }).eq("subscription_id", sub.subscription_id),
-      );
+      const fallos = nextFailureCount(sub.failures, result.outcome);
+      if (shouldDropSubscription(fallos)) caducadas.push(sub.subscription_id);
+      else escrituras.push(db.from("push_subscriptions").update({ failures: fallos }).eq("subscription_id", sub.subscription_id));
     }
   });
   if (entregadas.length > 0) {

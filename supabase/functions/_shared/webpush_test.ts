@@ -185,7 +185,7 @@ Deno.test("sin claves VAPID: pushConfigured() es falso y no se envía nada", asy
   }
 });
 
-Deno.test("un push service que no responde corta a los 8 s y no cuelga al módulo que avisó", async () => {
+Deno.test("un push service que no responde corta a los 4 s y no cuelga al módulo que avisó", async () => {
   const e = await entorno();
   try {
     e.estado.responder = () => new Promise(() => {}); // nunca responde
@@ -193,7 +193,7 @@ Deno.test("un push service que no responde corta a los 8 s y no cuelga al módul
     const r = await e.mod.sendPush(e.sub, payload, politica);
     const dt = Date.now() - t0;
     assert.deepEqual(r, { outcome: "error", status: null });
-    assert.ok(dt >= 7_500 && dt < 9_500, `${dt} ms`);
+    assert.ok(dt >= 3_500 && dt < 5_500, `${dt} ms`);
   } finally {
     e.restaurar();
   }

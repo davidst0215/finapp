@@ -20,6 +20,11 @@ export function nextFailureCount(current: number, outcome: PushOutcome | "error"
   return outcome === "ok" ? 0 : current + 1;
 }
 
+// Tras tantos fallos seguidos (incluye 401/403 persistentes) la suscripción se da por perdida y se borra;
+// el primer envío bueno reinicia la cuenta. El dispositivo vuelve a registrarse al abrir /avisos.
+export const MAX_FAILURES = 10;
+export const shouldDropSubscription = (failures: number): boolean => failures >= MAX_FAILURES;
+
 // ── base64url y claves VAPID ─────────────────────────────────────────────────
 
 const BASE64URL = /^[A-Za-z0-9_-]*$/;

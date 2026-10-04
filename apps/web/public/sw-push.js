@@ -81,8 +81,16 @@
   });
 
   // Abre la app en la ruta del aviso: enfoca la ventana que ya exista (instalada o en pestaña) o abre una.
+  // Con una ventana visible no se recarga: se le pide a la app que navegue en cliente (hook useNotifications, montado
+  // en AppShell) y se enfoca. Si hay ventanas pero ninguna visible se navega; sin ventanas se abre una.
   function openApp(target) {
     return self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (windows) {
+      var visible = windows.filter(function (w) { return w.visibilityState === 'visible'; })[0];
+      if (visible) {
+        var u = new URL(target);
+        visible.postMessage({ type: 'navigate', url: u.pathname + u.search + u.hash });
+        return visible.focus();
+      }
       var win = windows.filter(function (w) { return w.focused; })[0] || windows[0];
       if (!win) return self.clients.openWindow(target);
       if (win.url === target) return win.focus();

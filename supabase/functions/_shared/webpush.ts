@@ -24,7 +24,7 @@ type Sender = { lib: Lib; server: InstanceType<Lib["ApplicationServer"]> };
 type VapidConfig = { publicKey: string; privateKey: string; subject: string };
 
 // Tiempo máximo por dispositivo: un push service lento no debe colgar al módulo que avisó.
-const SEND_TIMEOUT_MS = 8_000;
+const SEND_TIMEOUT_MS = 4_000;
 
 function readVapidConfig(): VapidConfig | null {
   const publicKey = Deno.env.get("VAPID_PUBLIC_KEY")?.trim();
