@@ -18,6 +18,7 @@ export interface Espera {
   quien: string;
   texto: string;
   desde: string | null;
+  aprox: boolean;
   dias: number | null;
   vencida: boolean;
   reunion: string | null;
@@ -29,7 +30,7 @@ export type EsperasRespuesta =
   | { ok: true; esperas: Espera[]; hoy: string; umbral: number }
   | { ok: false; motivo: 'sin_vault' | 'error'; mensaje: string };
 export interface SyncRespuesta {
-  ok: true; guardadas: number; nuevas: number; quedan: boolean; desde: string; antes: string | null; avisos: number;
+  ok: true; guardadas: number; nuevas: number; quedan: boolean; avisos: number;
 }
 
 // invoke devuelve un error genérico en 4xx/5xx; el mensaje útil viene en el cuerpo JSON de la respuesta.
@@ -53,16 +54,15 @@ export const listarReuniones = (limite = 30) =>
 export const leerEsperas = () => llamar<EsperasRespuesta>({ action: 'esperas' });
 
 /** Sincroniza con Fathom; si la corrida se corta por el tope, continúa hacia atrás hasta completar (máx. 6 vueltas). */
-export async function sincronizar(): Promise<{ nuevas: number; avisos: number }> {
+export async function sincronizar(): Promise<{ nuevas: number; avisos: number; completa: boolean }> {
   let nuevas = 0;
   let avisos = 0;
-  let cont: { desde: string; antes: string } | null = null;
-  for (let i = 0; i < 6; i++) {
-    const r: SyncRespuesta = await llamar<SyncRespuesta>({ action: 'sync', ...(cont ?? {}) });
+  // El servidor guarda por dónde va: mientras responda `quedan`, se vuelve a llamar.
+  for (let i = 0; i < 8; i++) {
+    const r = await llamar<SyncRespuesta>({ action: 'sync' });
     nuevas += r.nuevas;
     avisos += r.avisos;
-    if (!r.quedan || !r.antes) break;
-    cont = { desde: r.desde, antes: r.antes };
+    if (!r.quedan) return { nuevas, avisos, completa: true };
   }
-  return { nuevas, avisos };
+  return { nuevas, avisos, completa: false };
 }

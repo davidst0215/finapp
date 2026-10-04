@@ -83,10 +83,52 @@ export function parsePage(raw: unknown): { items: Reunion[]; nextCursor: string 
   return { items, nextCursor: next, descartadas };
 }
 
-/** Desde cuándo pedir: la última reunión guardada menos el solape; sin historial, `diasInicial` atrás. */
-export function desdeSync(ultimaCreada: string | null, ahora: number, diasInicial = 30): string {
-  const base = ultimaCreada && isoOk(ultimaCreada) ? Date.parse(ultimaCreada) - SOLAPE_MS : ahora - diasInicial * 86400000;
-  return new Date(base).toISOString();
+// --- Estado de sincronización ---------------------------------------------------------------------------
+// `complete_until` solo avanza cuando una corrida termina. Una corrida cortada deja guardado por dónde
+// seguir (en_curso_desde / en_curso_antes) y la siguiente continúa ahí, sin saltarse reuniones viejas.
+
+export type EstadoSync = {
+  complete_until: string | null;
+  en_curso_desde: string | null;
+  en_curso_antes: string | null;
+  objetivo: string | null;
+};
+export type PlanSync = { desde: string; antes: string | null; objetivo: string };
+
+export const MAX_ATRAS_MS = 365 * 86400000;
+const MARGEN_MS = 1000; // created_after/before pueden ser exclusivos: el margen repite una reunión (el upsert es idempotente) en vez de perderla
+
+/** Qué pedir en esta corrida: continuar la cortada, o empezar una nueva desde `complete_until` − solape (máx. 1 año atrás). */
+export function planSync(estado: EstadoSync | null, ahora: number, diasInicial = 30): PlanSync {
+  const piso = ahora - MAX_ATRAS_MS;
+  const acotar = (ms: number) => new Date(Math.max(ms, piso)).toISOString();
+  if (estado && isoOk(estado.en_curso_desde) && isoOk(estado.objetivo)) {
+    return {
+      desde: acotar(Date.parse(estado.en_curso_desde)),
+      antes: isoOk(estado.en_curso_antes) ? new Date(estado.en_curso_antes).toISOString() : null,
+      objetivo: new Date(estado.objetivo).toISOString(),
+    };
+  }
+  const base = estado && isoOk(estado.complete_until) ? Date.parse(estado.complete_until) - SOLAPE_MS : ahora - diasInicial * 86400000;
+  return { desde: acotar(base), antes: null, objetivo: new Date(ahora).toISOString() };
+}
+
+/**
+ * Plan para continuar tras una corrida cortada, según lo ya traído. No se apoya en el orden de Fathom:
+ * lo deduce de lo recibido. Más nuevas primero (lo observado) → se retrocede `antes` hasta la más vieja traída;
+ * más viejas primero → se adelanta `desde` hasta la más nueva traída.
+ */
+export function avanzarPlan(plan: PlanSync, traidas: { creada_en: string }[]): PlanSync {
+  if (!traidas.length) return plan;
+  const t = traidas.map((r) => Date.parse(r.creada_en));
+  const descendente = t[0] >= t[t.length - 1];
+  if (descendente) {
+    // El `antes` previo ya trae el margen: se lo quita antes de comparar para que no se acumule vuelta tras vuelta.
+    const min = Math.min(...t, plan.antes ? Date.parse(plan.antes) - MARGEN_MS : Infinity);
+    return { ...plan, antes: new Date(min + MARGEN_MS).toISOString() };
+  }
+  const max = Math.max(...t, Date.parse(plan.desde) + MARGEN_MS);
+  return { ...plan, desde: new Date(max - MARGEN_MS).toISOString() };
 }
 
 // --- Fechas de Lima (UTC-5 todo el año) ------------------------------------------------------------
@@ -197,12 +239,15 @@ export type TareaIndexada = {
   note: string | null;
   raw: string | null;
   due: string | null;
+  path?: string | null; // archivo del vault: parte de la identidad de la espera
+  indexado?: string | null; // vault_docs.indexed_at: respaldo cuando la tarea no trae ninguna fecha
 };
 
 export type Espera = {
   quien: string; // para mostrar: "Daniel"
   texto: string;
   desde: string | null; // AAAA-MM-DD
+  aprox: boolean; // la fecha es la de indexado del archivo (cota inferior), no la de la tarea
   dias: number | null; // días de calendario en Lima; null si no hay fecha
   vencida: boolean; // más de UMBRAL_VENCIDA_DIAS
   reunion: string | null; // título de la reunión de origen, si la nota lo trae
@@ -259,19 +304,26 @@ export function construirEsperas(tareas: TareaIndexada[], hoy: string): Espera[]
     const slug = (t.shared_with ?? "").trim();
     if (!slug || !ESTADOS_ABIERTOS.includes(t.status)) continue;
     const nota = leerNota(t.note, hoy);
-    // Prioridad: fecha de alta si existe; si no, la de la reunión que dejó la nota.
-    const desde = fechaAlta(t.raw) ?? nota.fecha;
+    // Prioridad: fecha de alta (➕); si no, la de la reunión que dejó la nota; si no, la fecha en que el
+    // archivo se indexó. Esta última es una COTA INFERIOR de la espera real (se renueva si el archivo cambia,
+    // así que subestima los días), pero evita que una espera sin fecha no avise nunca.
+    const exacta = fechaAlta(t.raw) ?? nota.fecha;
+    const respaldo = !exacta && t.indexado && isoOk(t.indexado) ? limaDia(t.indexado) : null;
+    const desde = exacta ?? respaldo;
     const dias = desde ? Math.max(0, diasEntre(desde, hoy)) : null;
     out.push({
       quien: nombreDe(slug),
       texto: t.text.trim(),
       desde,
+      aprox: respaldo !== null,
       dias,
       vencida: dias !== null && dias > UMBRAL_VENCIDA_DIAS,
       reunion: nota.reunion,
       enlace: nota.enlace,
       vence: t.due,
-      clave: `${norm(slug)}|${norm(t.text).slice(0, 120)}`,
+      // quién + archivo + texto: la misma tarea reabierta conserva la clave; una copia en otro archivo es otra espera.
+      // Editar el texto cambia la clave y vuelve a avisar (aceptado).
+      clave: `${norm(slug)}|${(t.path ?? "").toLowerCase()}|${norm(t.text).slice(0, 120)}`,
     });
   }
   // La que más lleva esperando primero; sin fecha al final.

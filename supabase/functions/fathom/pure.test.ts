@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  buscarReuniones, construirEsperas, cuandoHablado, desdeSync, diasEntre, esperasDe, fechaAlta, hoyLima, leerConsulta,
+  buscarReuniones, construirEsperas, cuandoHablado, avanzarPlan, planSync, diasEntre, esperasDe, fechaAlta, hoyLima, leerConsulta,
   leerNota, limaDia, mensajeEsperas, mensajeReunion, parseMeeting, parsePage, resumenCorto, type Reunion,
 } from "./pure.ts";
 
@@ -65,9 +65,69 @@ test("parsePage: cursor y descartadas", () => {
   assert.throws(() => parsePage({ error: "x" }));
 });
 
-test("desdeSync: solape de 2 h y arranque inicial", () => {
-  assert.equal(desdeSync("2026-09-30T23:09:18Z", 0), "2026-09-30T21:09:18.000Z");
-  assert.equal(desdeSync(null, Date.parse("2026-10-04T00:00:00Z"), 30), "2026-09-04T00:00:00.000Z");
+const AHORA = Date.parse("2026-10-04T12:00:00Z");
+const vacio = { complete_until: null, en_curso_desde: null, en_curso_antes: null, objetivo: null };
+
+test("planSync: corrida nueva usa complete_until − 2 h; sin estado, 30 días", () => {
+  assert.deepEqual(planSync({ ...vacio, complete_until: "2026-10-03T12:00:00Z" }, AHORA),
+    { desde: "2026-10-03T10:00:00.000Z", antes: null, objetivo: "2026-10-04T12:00:00.000Z" });
+  assert.equal(planSync(null, AHORA).desde, "2026-09-04T12:00:00.000Z");
+});
+
+test("planSync: acota a 1 año atrás", () => {
+  assert.equal(planSync({ ...vacio, complete_until: "2020-01-01T00:00:00Z" }, AHORA).desde, "2025-10-04T12:00:00.000Z");
+  const cont = planSync({ ...vacio, en_curso_desde: "2019-01-01T00:00:00Z", en_curso_antes: "2026-09-01T00:00:00Z", objetivo: "2026-10-03T00:00:00Z" }, AHORA);
+  assert.equal(cont.desde, "2025-10-04T12:00:00.000Z");
+});
+
+test("planSync: una corrida cortada se continúa, no se reinicia ni avanza el objetivo", () => {
+  const p = planSync({ complete_until: "2026-09-01T00:00:00Z", en_curso_desde: "2026-09-30T22:00:00Z", en_curso_antes: "2026-10-02T00:00:00Z", objetivo: "2026-10-03T00:00:00Z" }, AHORA);
+  assert.deepEqual(p, { desde: "2026-09-30T22:00:00.000Z", antes: "2026-10-02T00:00:00.000Z", objetivo: "2026-10-03T00:00:00.000Z" });
+});
+
+test("avanzarPlan: más nuevas primero retrocede `antes` (sin perder las viejas)", () => {
+  const plan = { desde: "2026-09-01T00:00:00.000Z", antes: null, objetivo: "2026-10-04T12:00:00.000Z" };
+  const traidas = [{ creada_en: "2026-10-03T10:00:00Z" }, { creada_en: "2026-10-01T10:00:00Z" }, { creada_en: "2026-09-28T10:00:00Z" }];
+  const sig = avanzarPlan(plan, traidas);
+  assert.equal(sig.desde, plan.desde); // la ventana vieja sigue abierta
+  assert.equal(sig.antes, "2026-09-28T10:00:01.000Z"); // 1 s de margen: repite en vez de perder
+  assert.equal(sig.objetivo, plan.objetivo);
+  // y una segunda vuelta con `antes` previo no retrocede de más ni avanza
+  const sig2 = avanzarPlan(sig, [{ creada_en: "2026-09-20T10:00:00Z" }]);
+  assert.equal(sig2.antes, "2026-09-20T10:00:01.000Z");
+  assert.equal(avanzarPlan(sig2, [{ creada_en: "2026-09-29T10:00:00Z" }]).antes, "2026-09-20T10:00:01.000Z");
+});
+
+test("avanzarPlan: si Fathom devolviera más viejas primero, avanza `desde`", () => {
+  const plan = { desde: "2026-09-01T00:00:00.000Z", antes: null, objetivo: "2026-10-04T12:00:00.000Z" };
+  const sig = avanzarPlan(plan, [{ creada_en: "2026-09-10T00:00:00Z" }, { creada_en: "2026-09-20T00:00:00Z" }]);
+  assert.equal(sig.desde, "2026-09-19T23:59:59.000Z");
+  assert.equal(sig.antes, null);
+});
+
+test("avanzarPlan: sin reuniones traídas no mueve nada", () => {
+  const plan = { desde: "2026-09-01T00:00:00.000Z", antes: "2026-10-01T00:00:00.000Z", objetivo: "2026-10-04T12:00:00.000Z" };
+  assert.deepEqual(avanzarPlan(plan, []), plan);
+});
+
+test("esperas: respaldo por fecha de indexado, aprox y clave con path", () => {
+  const hoy = "2026-10-04";
+  const [a] = construirEsperas([{ ...T("Sin fecha", "ana", "solo texto"), path: "20-projects/cajon/pendientes.md", indexado: "2026-09-29T15:00:00Z" }], hoy);
+  assert.equal(a.desde, "2026-09-29");
+  assert.equal(a.aprox, true);
+  assert.equal(a.dias, 5);
+  assert.equal(a.vencida, true);
+  // una fecha exacta gana sobre el indexado
+  const [b] = construirEsperas([{ ...T("Con fecha", "ana", "R · 2 oct · c"), path: "p.md", indexado: "2026-09-01T00:00:00Z" }], hoy);
+  assert.equal(b.desde, "2026-10-02");
+  assert.equal(b.aprox, false);
+  // misma tarea en otro archivo = otra espera; misma tarea reabierta (mismo path y texto) = misma clave
+  const [c1, c2] = construirEsperas([
+    { ...T("Enviar", "ana", null), path: "a.md" }, { ...T("Enviar", "ana", null), path: "b.md" },
+  ], hoy);
+  assert.notEqual(c1.clave, c2.clave);
+  const [d] = construirEsperas([{ ...T("  ENVIAR ", "Ana", null), path: "A.md" }], hoy);
+  assert.equal(d.clave, c1.clave);
 });
 
 test("fechas de Lima", () => {

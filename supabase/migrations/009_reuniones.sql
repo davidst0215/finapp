@@ -46,4 +46,21 @@ ALTER TABLE fathom_avisos ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS fathom_avisos_select_own ON fathom_avisos;
 CREATE POLICY fathom_avisos_select_own ON fathom_avisos FOR SELECT USING (user_id = auth.uid());
--- Solo escribe la función `fathom` (rol de servicio).
+-- Solo escribe la función `fathom` (rol de servicio) en estas tablas.
+
+-- Estado de la sincronización. `complete_until` solo avanza cuando una corrida TERMINA: hasta ahí no
+-- falta ninguna reunión. Mientras una corrida está cortada (tope de páginas o de tiempo, error, pestaña
+-- cerrada) quedan guardados `en_curso_desde`/`en_curso_antes`/`objetivo` y la siguiente continúa desde ahí.
+CREATE TABLE IF NOT EXISTS fathom_sync_estado (
+    user_id         UUID        PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+    complete_until  TIMESTAMPTZ,
+    en_curso_desde  TIMESTAMPTZ,
+    en_curso_antes  TIMESTAMPTZ,
+    objetivo        TIMESTAMPTZ,                       -- inicio de la corrida en curso: será el nuevo complete_until
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE fathom_sync_estado ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS fathom_sync_estado_select_own ON fathom_sync_estado;
+CREATE POLICY fathom_sync_estado_select_own ON fathom_sync_estado FOR SELECT USING (user_id = auth.uid());

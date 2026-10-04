@@ -26,9 +26,10 @@ export function ReunionesPage() {
   async function sync() {
     setSincronizando(true);
     try {
-      const { nuevas, avisos } = await sincronizar();
+      const { nuevas, avisos, completa } = await sincronizar();
       await cargar();
-      const base = nuevas === 0 ? 'Todo al día.' : nuevas === 1 ? '1 reunión nueva.' : `${nuevas} reuniones nuevas.`;
+      const base = (nuevas === 0 ? 'Todo al día.' : nuevas === 1 ? '1 reunión nueva.' : `${nuevas} reuniones nuevas.`)
+        + (completa ? '' : ' Faltan más: vuelve a sincronizar.');
       addToast(avisos > 0 ? `${base} ${avisos} ${avisos === 1 ? 'espera pasó' : 'esperas pasaron'} de 3 días.` : base, 'success');
     } catch (e) {
       addToast(e instanceof Error ? e.message : 'No pude sincronizar con Fathom.', 'error');
