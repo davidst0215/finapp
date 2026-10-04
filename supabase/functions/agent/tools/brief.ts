@@ -6,8 +6,8 @@ import { generarBrief } from "../../brief/generate.ts";
 import { type AgentModule, tool } from "../types.ts";
 
 const rules = `BRIEF DEL DÍA:
-- "dame mi brief", "resumen del día", "qué tengo hoy" (en general: agenda, tareas y pagos juntos) = get_brief.
-- Si pregunta solo por reuniones o por la agenda de un día concreto, usa calendar_view, no get_brief.`;
+- "qué tengo hoy", "mi día", "mi brief", "resumen del día" = get_brief.
+- "qué reuniones tengo", "mi agenda de <día>" = calendar_view, no get_brief.`;
 
 export const brief: AgentModule = {
   id: "brief",
