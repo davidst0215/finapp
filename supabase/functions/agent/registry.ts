@@ -1,3 +1,5 @@
+import { agenda } from "./tools/agenda.ts";
+import { correo } from "./tools/correo.ts";
 import { finanzas } from "./tools/finanzas.ts";
 import { type AgentModule, tool } from "./types.ts";
 
@@ -16,5 +18,7 @@ const general: AgentModule = {
 // deno-lint-ignore no-explicit-any
 export const MODULES: AgentModule<any>[] = [
   general,
+  agenda,
+  correo,
   finanzas,
 ];
