@@ -6,6 +6,8 @@ import {
   acotar,
   ANTES_DE_LAS_7,
   copiaFragmento,
+  corridaReciente,
+  vaultSinConectar,
   debeAvisar,
   tieneFuenteCaida,
   buildSections,
@@ -265,4 +267,25 @@ test("fuente caída, vista previa y aviso", () => {
   assert.equal(debeAvisar({ notificado: false, origen: "manual" }, "ui"), false);
   assert.equal(debeAvisar({ notificado: false, origen: "cron" }, "ui"), true); // reintento de un aviso fallido
   assert.equal(debeAvisar({ notificado: true, origen: "cron" }, "cron"), false);
+});
+
+test("vault sin sincronizar o vacío = no conectado (se guarda); con datos = null", () => {
+  for (const sync of [null, { docs: 0, tasks: 0 }]) {
+    const fuente = vaultSinConectar(sync);
+    assert.ok(fuente && !fuente.ok && fuente.estado === "no_conectado");
+    assert.equal(fuente.mensaje, "Tareas: el vault aún no está conectado.");
+    const f = base();
+    f.tareas = fuente;
+    const s = buildSections(AHORA, f);
+    assert.equal(s.tareas.estado, "no_conectado");
+    assert.equal(s.esperas.estado, "no_conectado");
+    assert.equal(tieneFuenteCaida(s), false);
+  }
+  assert.equal(vaultSinConectar({ docs: 10, tasks: 0 }), null);
+});
+
+test("corridaReciente: ventana de 10 minutos", () => {
+  assert.equal(corridaReciente(undefined, 1_000_000), false);
+  assert.equal(corridaReciente(1_000_000, 1_000_000 + 9 * 60_000), true);
+  assert.equal(corridaReciente(1_000_000, 1_000_000 + 10 * 60_000), false);
 });

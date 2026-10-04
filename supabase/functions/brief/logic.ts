@@ -308,6 +308,24 @@ export function copiaFragmento(texto: string, titulos: string[], n = 6): boolean
   return false;
 }
 
+export const MENSAJE_VAULT_SIN_CONECTAR = "Tareas: el vault aún no está conectado.";
+export const VENTANA_SIN_MODELO_MS = 10 * 60_000;
+
+/**
+ * Vault sin sincronizar (sin fila de sync, o sincronizado pero vacío) = fuente "no conectada", no un error:
+ * así el brief se guarda igual. Devuelve null si el vault tiene datos.
+ */
+export function vaultSinConectar(sync: { docs: number; tasks: number } | null): Fuente<never> | null {
+  if (sync === null || (sync.docs === 0 && sync.tasks === 0)) {
+    return { ok: false, estado: "no_conectado", mensaje: MENSAJE_VAULT_SIN_CONECTAR };
+  }
+  return null;
+}
+
+/** ¿Hubo una corrida sin guardar hace menos de 10 min? Entonces no se vuelve a gastar el modelo. */
+export const corridaReciente = (ultimaMs: number | undefined, ahoraMs: number) =>
+  ultimaMs !== undefined && ahoraMs - ultimaMs < VENTANA_SIN_MODELO_MS;
+
 /** ¿Alguna fuente quedó en error? Un brief así no se guarda: el próximo intento lo completa. */
 export const tieneFuenteCaida = (s: Secciones) =>
   [s.agenda, s.tareas, s.dinero, s.esperas].some((x) => x.estado === "error");

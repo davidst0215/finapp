@@ -18,6 +18,8 @@ import {
   type Secciones,
   SISTEMA_BRIEF,
   type TareaCruda,
+  corridaReciente,
+  vaultSinConectar,
   textoRespaldo,
   tieneFuenteCaida,
   MAX_VENCIDO_DIAS,
@@ -48,9 +50,10 @@ async function leerAgenda(userId: string, fecha: string): Promise<Fuente<EventoC
 }
 
 async function leerTareas(db: SupabaseClient, userId: string): Promise<Fuente<TareaCruda[]>> {
-  const { data: sync, error: syncError } = await db.from("vault_sync").select("user_id").eq("user_id", userId).maybeSingle();
+  const { data: sync, error: syncError } = await db.from("vault_sync").select("docs, tasks").eq("user_id", userId).maybeSingle();
   if (syncError) return { ok: false, estado: "error", mensaje: "No pude leer tus tareas." };
-  if (!sync) return { ok: false, estado: "error", mensaje: "Tu vault aún no está sincronizado." };
+  const sinVault = vaultSinConectar(sync as { docs: number; tasks: number } | null);
+  if (sinVault) return sinVault;
   const { data, error } = await db.from("vault_tasks").select("text, status, due, scheduled, shared_with, raw")
     .eq("user_id", userId).in("status", ["pending", "in-progress", "need-help"]).limit(PAGINA);
   if (error) {
@@ -140,6 +143,9 @@ export async function briefDeHoy(db: SupabaseClient, userId: string, fecha = lim
   return (data as Brief | null) ?? null;
 }
 
+// Última corrida sin guardar por día (en memoria de la instancia): clics repetidos no vuelven a llamar al modelo.
+const corridasSinGuardar = new Map<string, number>();
+
 export type Resultado = {
   brief: Brief;
   /** true si quedó guardado (o ya lo estaba); false para una vista previa o un brief con una fuente caída. */
@@ -168,11 +174,16 @@ export async function generarBrief(db: SupabaseClient, userId: string, origen: O
   ]);
   const fuentes: FuentesBrief = { agenda, tareas, gasto, pagos };
   const secciones = buildSections(ahora, fuentes);
-  const texto = (await redactar(secciones)) ?? textoRespaldo(secciones);
+  const vistaPrevia = origen === "manual" && ANTES_DE_LAS_7(minutes);
+  const sinGuardar = vistaPrevia || tieneFuenteCaida(secciones);
+  const reciente = sinGuardar && corridaReciente(corridasSinGuardar.get(fecha), ahora.getTime());
+  const texto = (reciente ? null : await redactar(secciones)) ?? textoRespaldo(secciones);
   const nuevo: Brief = { fecha, texto, secciones, creado: ahora.toISOString(), origen, notificado: false };
 
-  const vistaPrevia = origen === "manual" && ANTES_DE_LAS_7(minutes);
-  if (vistaPrevia || tieneFuenteCaida(secciones)) return { brief: nuevo, persistido: false };
+  if (sinGuardar) {
+    if (!reciente) corridasSinGuardar.set(fecha, ahora.getTime());
+    return { brief: nuevo, persistido: false };
+  }
 
   if (existente) {
     const { data, error } = await db.from("briefs").update({ texto, secciones })

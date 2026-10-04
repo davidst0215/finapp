@@ -64,11 +64,11 @@ function Badge({ children, alarm }: { children: ReactNode; alarm?: boolean }) {
 const Note = ({ children }: { children: ReactNode }) => <p className="py-3 text-base text-slate-400">{children}</p>;
 
 /** Una fuente caída o sin conectar se dice en su tarjeta; el resto del brief sigue. */
-function Unavailable({ estado, mensaje, fallback }: { estado: Estado; mensaje: string | null; fallback: string }) {
+function Unavailable({ estado, mensaje, fallback, hint }: { estado: Estado; mensaje: string | null; fallback: string; hint?: string }) {
   return (
     <Note>
       {mensaje ?? fallback}
-      {estado === 'no_conectado' ? ' Conéctalo desde Agenda.' : ''}
+      {estado === 'no_conectado' && hint ? ` ${hint}` : ''}
     </Note>
   );
 }
@@ -82,7 +82,7 @@ export function SectionCards({ s }: { s: Secciones }) {
     <div className="space-y-4">
       <Card icon={CalendarDays} title="Agenda">
         {agenda.estado !== 'ok' ? (
-          <Unavailable estado={agenda.estado} mensaje={agenda.mensaje} fallback="No pude leer tu agenda." />
+          <Unavailable estado={agenda.estado} mensaje={agenda.mensaje} fallback="No pude leer tu agenda." hint="Conéctalo desde Agenda." />
         ) : agenda.eventos.length === 0 ? (
           <Note>Tu agenda de hoy está libre.</Note>
         ) : (
