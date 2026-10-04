@@ -26,6 +26,7 @@ import {
   pickAccountId,
   readingMessage,
   resolveCategoryId,
+  savedMatchesSubmission,
   validateForm,
 } from './reciboLogic.ts';
 
@@ -453,6 +454,27 @@ describe('formulario', () => {
   test('validateForm junta todos los errores', () => {
     const errors = errorsOf(validateForm({ ...valid, amountText: '', date: '', accountId: '' }, vctx));
     assert.deepEqual(Object.keys(errors).sort(), ['account', 'amount', 'date']);
+  });
+});
+
+describe('savedMatchesSubmission (reintento tras respuesta perdida)', () => {
+  const v = { description: 'Tottus', amountCents: 8640, currency: 'PEN' as const, date: '2026-10-04', categoryId: 'c1', accountId: 'a1' };
+  const saved = { amount: 86.4, account_id: 'a1', category_id: 'c1', currency_code: 'PEN', transaction_date: '2026-10-04T17:00:00.000Z', description: 'Tottus' };
+  test('igual -> true (monto numérico o texto)', () => {
+    assert.equal(savedMatchesSubmission(saved, v), true);
+    assert.equal(savedMatchesSubmission({ ...saved, amount: '86.40' }, v), true);
+  });
+  test('cualquier diferencia -> false', () => {
+    assert.equal(savedMatchesSubmission({ ...saved, amount: 90.1 }, v), false);
+    assert.equal(savedMatchesSubmission({ ...saved, account_id: 'a2' }, v), false);
+    assert.equal(savedMatchesSubmission({ ...saved, category_id: null }, v), false);
+    assert.equal(savedMatchesSubmission({ ...saved, currency_code: 'USD' }, v), false);
+    assert.equal(savedMatchesSubmission({ ...saved, transaction_date: '2026-10-03T17:00:00.000Z' }, v), false);
+    assert.equal(savedMatchesSubmission({ ...saved, description: 'Otro' }, v), false);
+  });
+  test('sin categoría en ambos lados -> true; día de Lima, no UTC', () => {
+    assert.equal(savedMatchesSubmission({ ...saved, category_id: null }, { ...v, categoryId: null }), true);
+    assert.equal(savedMatchesSubmission({ ...saved, transaction_date: '2026-10-05T02:00:00.000Z' }, v), true); // 21:00 del 4 en Lima
   });
 });
 

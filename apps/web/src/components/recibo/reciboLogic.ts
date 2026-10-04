@@ -417,6 +417,28 @@ export function validateForm(
   };
 }
 
+/** ¿La fila ya guardada dice lo mismo que el formulario? (monto en céntimos, cuenta, categoría, moneda, día de Lima, texto). */
+export function savedMatchesSubmission(
+  saved: {
+    amount: number | string;
+    account_id: string;
+    category_id: string | null;
+    currency_code: string;
+    transaction_date: string;
+    description: string | null;
+  },
+  v: ReceiptSubmission,
+): boolean {
+  return (
+    Math.round(Number(saved.amount) * 100) === v.amountCents &&
+    saved.account_id === v.accountId &&
+    (saved.category_id ?? null) === v.categoryId &&
+    saved.currency_code === v.currency &&
+    limaToday(Date.parse(saved.transaction_date)) === v.date &&
+    (saved.description ?? '') === v.description
+  );
+}
+
 // ───────────────────────── Errores y espera ─────────────────────────
 
 /** Tiempo máximo de espera de `parse-receipt` en el cliente. */

@@ -19,6 +19,8 @@ import {
   pickAccountId,
   problemOf,
   readingSummary,
+  savedMatchesSubmission,
+  type ReceiptSubmission,
   validateForm,
   type FormErrors,
   type ReceiptFormValues,
@@ -83,6 +85,28 @@ async function fetchSaved(id: string): Promise<Transaction | null> {
       .from('transactions')
       .select('*, category:categories(*), account:accounts!transactions_account_id_fkey(*)')
       .eq('transaction_id', id)
+      .single();
+    return (data as Transaction | null) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Pone en la fila ya guardada lo que dice el formulario ahora. null si no se pudo: no se anuncia un "listo" falso. */
+async function syncSaved(id: string, v: ReceiptSubmission, now: number): Promise<Transaction | null> {
+  try {
+    const { data } = await supabase
+      .from('transactions')
+      .update({
+        amount: v.amountCents / 100,
+        currency_code: v.currency,
+        description: v.description,
+        account_id: v.accountId,
+        category_id: v.categoryId,
+        transaction_date: dateToTimestamp(v.date, now),
+      })
+      .eq('transaction_id', id)
+      .select('*, category:categories(*), account:accounts!transactions_account_id_fkey(*)')
       .single();
     return (data as Transaction | null) ?? null;
   } catch {
@@ -265,7 +289,10 @@ export function ReciboPage() {
     if (!tx && /duplicate key|23505/i.test(useAppStore.getState().error ?? '')) {
       // Un intento anterior sí llegó a guardarse (se perdió la respuesta): es el mismo gasto, no un error.
       tx = await fetchSaved(txIdRef.current);
-      if (tx) useAppStore.getState().clearError();
+      if (tx) {
+        useAppStore.getState().clearError();
+        if (!savedMatchesSubmission(tx, v)) tx = await syncSaved(tx.transaction_id, v, now); // David editó antes de reintentar
+      }
     }
 
     if (!tx) {
