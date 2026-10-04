@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Send, Mic, MicOff, Bot, User, Trash2 } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
+import { supabase, functionUrl } from '@/lib/supabase';
 import { useVoiceInput } from '@/hooks/useVoiceInput';
 import { cn } from '@/lib/utils';
 
@@ -58,7 +58,7 @@ export function AiChatPage() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) throw new Error('No hay sesión');
 
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-chat`, {
+      const res = await fetch(functionUrl('ai-chat'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -5,7 +5,9 @@ import { type AgentModule, tool } from "./types.ts";
 const general: AgentModule = {
   id: "general",
   definitions: [
-    tool("query", "Responde preguntas generales o saludos. NO para acciones de otros módulos.", { answer: { type: "string" } }, ["answer"]),
+    tool("query", "Responde preguntas generales o saludos. NO para acciones de otros módulos.", {
+      answer: { type: "string", description: "Respuesta FINAL que David escucha. Nunca un marcador ni 'déjame revisar'." },
+    }, ["answer"]),
   ],
   handlers: {
     query: async (args) => ({ action: "query", message: typeof args.answer === "string" ? args.answer : "" }),
