@@ -2,19 +2,21 @@ import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { X } from 'lucide-react';
 import { useAppStore } from '@/stores/appStore';
+import { supabase } from '@/lib/supabase';
 import type { Transaction } from '@/types/database';
 import { CapturePanel } from '@/components/recibo/CapturePanel';
 import { DonePanel } from '@/components/recibo/DonePanel';
 import { ProblemPanel } from '@/components/recibo/ProblemPanel';
 import { ReadingPanel } from '@/components/recibo/ReadingPanel';
 import { ReceiptForm } from '@/components/recibo/ReceiptForm';
-import { prepareReceiptImage, type PreparedImage } from '@/components/recibo/prepareImage';
+import { ImageTooLargeError, prepareReceiptImage, type PreparedImage } from '@/components/recibo/prepareImage';
 import { readReceipt } from '@/components/recibo/readReceipt';
 import {
   buildFormValues,
   dateToTimestamp,
   limaToday,
   needsDoubleCheck,
+  pickAccountId,
   problemOf,
   readingSummary,
   validateForm,
@@ -46,6 +48,8 @@ const ANNOUNCE: Record<Flow['phase'], string> = {
   done: 'Gasto registrado.',
 };
 
+const LOOKUPS_TIMEOUT_MS = 8000;
+
 const EMPTY_FORM: ReceiptFormValues = {
   description: '',
   amountText: '',
@@ -72,6 +76,20 @@ const savePreferredAccount = (accountId: string) => {
   }
 };
 
+/** Lee de vuelta un gasto ya guardado (con categoría y cuenta, como lo devuelve addTransaction). */
+async function fetchSaved(id: string): Promise<Transaction | null> {
+  try {
+    const { data } = await supabase
+      .from('transactions')
+      .select('*, category:categories(*), account:accounts!transactions_account_id_fkey(*)')
+      .eq('transaction_id', id)
+      .single();
+    return (data as Transaction | null) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export function ReciboPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -86,6 +104,7 @@ export function ReciboPage() {
 
   const runRef = useRef(0); // corrida vigente: el resultado de una anterior se descarta
   const abortRef = useRef<AbortController | null>(null);
+  const txIdRef = useRef('');
   const savingRef = useRef(false); // evita el doble toque antes de que React repinte
   const lookupsRef = useRef<Promise<unknown>>(Promise.resolve());
   const cameraRef = useRef<HTMLInputElement>(null);
@@ -97,10 +116,12 @@ export function ReciboPage() {
   useEffect(() => {
     const store = useAppStore.getState();
     // Nunca rechaza: si fallan, el formulario avisa que no hay cuentas en vez de quedarse esperando.
-    lookupsRef.current = Promise.all([
+    const lookups = Promise.all([
       store.accounts.length ? null : store.fetchAccounts(),
       store.categories.length ? null : store.fetchCategories(),
     ]).catch(() => undefined);
+    // Tope de 8 s: si Supabase no contesta, el formulario sale igual (avisa que faltan cuentas).
+    lookupsRef.current = Promise.race([lookups, new Promise((resolve) => setTimeout(resolve, LOOKUPS_TIMEOUT_MS))]);
     return () => {
       runRef.current += 1;
       abortRef.current?.abort();
@@ -133,6 +154,7 @@ export function ReciboPage() {
     );
     setAttempted(false);
     setSaveError(null);
+    txIdRef.current = crypto.randomUUID(); // mismo id en cada reintento: una respuesta perdida no duplica el gasto
     setFlow({ phase: 'review', photo, reading });
   };
 
@@ -159,8 +181,9 @@ export function ReciboPage() {
     let photo: PreparedImage;
     try {
       photo = await prepareReceiptImage(file);
-    } catch {
-      if (run === runRef.current) setFlow({ phase: 'problem', photo: null, problem: problemOf('image') });
+    } catch (e) {
+      const kind = e instanceof ImageTooLargeError ? 'too-large' : 'image';
+      if (run === runRef.current) setFlow({ phase: 'problem', photo: null, problem: problemOf(kind) });
       return;
     }
     if (run !== runRef.current) return;
@@ -201,7 +224,7 @@ export function ReciboPage() {
   const register = async () => {
     if (flow.phase !== 'review' || savingRef.current) return;
     const now = Date.now();
-    const checked = validateForm(form, { today: limaToday(now), accountIds: accounts.map((a) => a.account_id) });
+    const checked = validateForm(form, { today: limaToday(now), accounts });
     if (!checked.ok) {
       setAttempted(true);
       requestAnimationFrame(() => document.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus());
@@ -217,6 +240,7 @@ export function ReciboPage() {
       // Mismo camino que el resto de la app. El esquema solo admite input_method manual|voice|recurring|import:
       // la boleta entra como 'manual' (David confirma cada dato) y se marca con la etiqueta 'boleta'.
       tx = await useAppStore.getState().addTransaction({
+        transaction_id: txIdRef.current,
         transaction_type: 'expense',
         amount: v.amountCents / 100,
         currency_code: v.currency,
@@ -238,6 +262,12 @@ export function ReciboPage() {
     savingRef.current = false;
     setSaving(false);
 
+    if (!tx && /duplicate key|23505/i.test(useAppStore.getState().error ?? '')) {
+      // Un intento anterior sí llegó a guardarse (se perdió la respuesta): es el mismo gasto, no un error.
+      tx = await fetchSaved(txIdRef.current);
+      if (tx) useAppStore.getState().clearError();
+    }
+
     if (!tx) {
       const detail = useAppStore.getState().error;
       useAppStore.getState().clearError(); // el mensaje de abajo reemplaza al aviso global
@@ -258,7 +288,7 @@ export function ReciboPage() {
   const today = limaToday(Date.now());
   let shownErrors: FormErrors = {};
   if (flow.phase === 'review' && attempted) {
-    const checked = validateForm(form, { today, accountIds: accounts.map((a) => a.account_id) });
+    const checked = validateForm(form, { today, accounts });
     if (!checked.ok) shownErrors = checked.errors;
   }
 
@@ -309,7 +339,16 @@ export function ReciboPage() {
             photo={flow.photo}
             values={form}
             errors={shownErrors}
-            onChange={(patch) => setForm((current) => ({ ...current, ...patch }))}
+            onChange={(patch) =>
+              setForm((current) => {
+                const next = { ...current, ...patch };
+                // Cambiar la moneda busca una cuenta de esa moneda (conserva la actual si ya calza).
+                if (patch.currency && patch.currency !== current.currency) {
+                  next.accountId = pickAccountId(accounts, patch.currency, current.accountId);
+                }
+                return next;
+              })
+            }
             onSubmit={() => void register()}
             onRetake={() => startOver(true)}
             categories={categories}

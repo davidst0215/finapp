@@ -17,6 +17,16 @@ export class ImageUnreadableError extends Error {
   }
 }
 
+/** La foto pesa más de lo razonable para decodificarla en el celular. */
+export class ImageTooLargeError extends ImageUnreadableError {
+  constructor() {
+    super('archivo demasiado grande');
+    this.name = 'ImageTooLargeError';
+  }
+}
+
+export const MAX_FILE_BYTES = 25 * 1024 * 1024;
+
 function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -31,6 +41,7 @@ function loadImage(url: string): Promise<HTMLImageElement> {
  * El navegador aplica la orientación EXIF al dibujar, así que la boleta sale derecha.
  */
 export async function prepareReceiptImage(file: File): Promise<PreparedImage> {
+  if (file.size > MAX_FILE_BYTES) throw new ImageTooLargeError();
   const objectUrl = URL.createObjectURL(file);
   try {
     const img = await loadImage(objectUrl);

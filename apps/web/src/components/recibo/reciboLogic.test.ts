@@ -134,7 +134,17 @@ describe('coerceAmountCents (lo que devuelve el modelo)', () => {
   });
   test('texto', () => {
     assert.equal(coerceAmountCents('86.40'), 8640);
+    assert.equal(coerceAmountCents('86,40'), 8640);
     assert.equal(coerceAmountCents('S/ 1,234.50'), 123450);
+  });
+  test('salida del modelo ambigua -> null (lectura dudosa)', () => {
+    assert.equal(coerceAmountCents(86.405), null); // no se redondea en silencio
+    assert.equal(coerceAmountCents(0.005), null);
+    assert.equal(coerceAmountCents('86,405'), null);
+    assert.equal(coerceAmountCents('12,500'), null);
+    assert.equal(coerceAmountCents('1,234.50'), 123450);
+    assert.equal(parseAmountToCents('86,405'), 8640500); // lo que escribe David sigue siendo miles
+    assert.equal(parseAmountToCents('86,405', { strict: true }), null);
   });
   test('inválidos -> null', () => {
     for (const v of [0, -1, '0', '0.00', Number.NaN, Infinity, null, undefined, 'abc', {}, [], true]) {
@@ -389,7 +399,13 @@ describe('formulario', () => {
     categoryId: 'c1',
     accountId: 'a1',
   };
-  const vctx = { today: '2026-10-05', accountIds: ['a1'] };
+  const vctx = {
+    today: '2026-10-05',
+    accounts: [
+      { account_id: 'a1', currency_code: 'PEN' },
+      { account_id: 'a3', currency_code: 'USD' },
+    ],
+  };
   // validateForm devuelve una unión: estos ayudantes la afirman y la estrechan.
   const errorsOf = (r: ReturnType<typeof validateForm>): FormErrors => {
     assert.equal(r.ok, false);
@@ -427,6 +443,12 @@ describe('formulario', () => {
   test('validateForm: cuenta', () => {
     assert.ok(errorsOf(validateForm({ ...valid, accountId: '' }, vctx)).account);
     assert.ok(errorsOf(validateForm({ ...valid, accountId: 'otra' }, vctx)).account);
+  });
+  test('validateForm: la moneda debe coincidir con la de la cuenta', () => {
+    const e = errorsOf(validateForm({ ...valid, currency: 'USD' }, vctx));
+    assert.match(e.account ?? '', /soles.*dólares/);
+    assert.equal(validateForm({ ...valid, currency: 'USD', accountId: 'a3' }, vctx).ok, true);
+    assert.equal(validateForm({ ...valid, accountId: 'a3' }, vctx).ok, false);
   });
   test('validateForm junta todos los errores', () => {
     const errors = errorsOf(validateForm({ ...valid, amountText: '', date: '', accountId: '' }, vctx));

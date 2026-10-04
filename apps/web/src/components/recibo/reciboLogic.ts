@@ -49,9 +49,10 @@ function isGrouped(value: string, separator: string): boolean {
  * Texto de monto -> centavos enteros, o null si no se puede leer sin adivinar.
  * Acepta "86.40", "86,40", "S/ 86.40", "1,234.50", "1.234,50", "1 234,50" y "86".
  * Rechaza más de 2 decimales, signos y el ambiguo "1.234" (punto + 3 cifras).
+ * Con `strict` (salida del modelo) también es ambiguo "86,405" / "12,500" (coma + 3 cifras): null.
  * Puede devolver 0 ("0.00"): decidir si eso vale es cosa de quien llama.
  */
-export function parseAmountToCents(input: unknown): number | null {
+export function parseAmountToCents(input: unknown, opts: { strict?: boolean } = {}): number | null {
   if (typeof input !== 'string') return null;
   const s = input
     .replace(/[\s  ]/g, '')
@@ -88,7 +89,7 @@ export function parseAmountToCents(input: unknown): number | null {
       if (right.length <= 2) {
         whole = left; // "86.4", "86,40", ".5", "86."
         frac = right;
-      } else if (right.length === 3 && sep === ',' && /^[1-9]\d{0,2}$/.test(left)) {
+      } else if (right.length === 3 && sep === ',' && !opts.strict && /^[1-9]\d{0,2}$/.test(left)) {
         whole = left + right; // "1,234" = mil doscientos treinta y cuatro
       } else {
         return null; // "1.234" es ambiguo y "86.405" trae más de 2 decimales
@@ -104,8 +105,11 @@ export function parseAmountToCents(input: unknown): number | null {
 /** Lo que devuelve el modelo (número o texto) -> centavos válidos (1 .. MAX), o null. */
 export function coerceAmountCents(value: unknown): number | null {
   let cents: number | null = null;
-  if (typeof value === 'number') cents = Number.isFinite(value) ? Math.round(value * 100) : null;
-  else if (typeof value === 'string') cents = parseAmountToCents(value);
+  if (typeof value === 'number') {
+    // 86.405 no es un monto: redondearlo en silencio cambiaría el centavo. 1e-6 absorbe el ruido de coma flotante.
+    const raw = value * 100;
+    cents = Number.isFinite(raw) && Math.abs(raw - Math.round(raw)) <= 1e-6 ? Math.round(raw) : null;
+  } else if (typeof value === 'string') cents = parseAmountToCents(value, { strict: true });
   if (cents === null || cents <= 0 || cents > MAX_AMOUNT_CENTS) return null;
   return cents;
 }
@@ -381,7 +385,7 @@ export function buildFormValues(
 
 export function validateForm(
   values: ReceiptFormValues,
-  ctx: { today: string; accountIds: string[] },
+  ctx: { today: string; accounts: { account_id: string; currency_code: string }[] },
 ): { ok: true; value: ReceiptSubmission } | { ok: false; errors: FormErrors } {
   const errors: FormErrors = {};
 
@@ -393,7 +397,11 @@ export function validateForm(
   if (!isValidIsoDate(values.date)) errors.date = 'Elige una fecha válida.';
   else if (values.date > ctx.today) errors.date = 'La fecha no puede ser futura.';
 
-  if (!ctx.accountIds.includes(values.accountId)) errors.account = 'Elige la cuenta del gasto.';
+  const account = ctx.accounts.find((a) => a.account_id === values.accountId);
+  if (!account) errors.account = 'Elige la cuenta del gasto.';
+  else if (account.currency_code !== values.currency) {
+    errors.account = `La cuenta es en ${currencyName(account.currency_code)} y el gasto en ${currencyName(values.currency)}. Elige otra cuenta o cambia la moneda.`;
+  }
 
   if (Object.keys(errors).length > 0 || cents === null) return { ok: false, errors };
   return {

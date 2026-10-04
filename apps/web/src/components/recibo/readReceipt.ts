@@ -51,12 +51,29 @@ export async function readReceipt(imageBase64: string, signal: AbortSignal): Pro
     } = await supabase.auth.getSession();
     if (!session) return { ok: false, problem: describeFailure({ status: 401 }) };
 
-    const { data, error } = await supabase.functions.invoke('parse-receipt', {
-      body: { image: imageBase64 },
-      headers: { Authorization: `Bearer ${session.access_token}` },
-      signal,
-      timeout: READ_TIMEOUT_MS,
-    });
+    // Control propio del tiempo límite: no depender de `timeout` de functions.invoke.
+    const controller = new AbortController();
+    let timedOut = false;
+    const onAbort = () => controller.abort();
+    signal.addEventListener('abort', onAbort);
+    if (signal.aborted) controller.abort();
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, READ_TIMEOUT_MS);
+    let result;
+    try {
+      result = await supabase.functions.invoke('parse-receipt', {
+        body: { image: imageBase64 },
+        headers: { Authorization: `Bearer ${session.access_token}` },
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+    }
+    const { data, error } = result;
+    if (timedOut) return { ok: false, problem: describeFailure({ timedOut: true }) };
     if (error) return { ok: false, problem: await problemFromInvokeError(error) };
 
     const reading = parseReading(data, limaToday(Date.now()));
