@@ -108,11 +108,14 @@ export function AddTransactionPage() {
     // Si la voz de Wabid no llegó a sonar, la del navegador lee el mismo texto.
     if (sono || !vigente() || !('speechSynthesis' in window)) return;
     await new Promise<void>((ok) => {
+      // Algunos navegadores nunca disparan onend/onerror: el tope evita un orb "hablando" para siempre.
+      const tope = setTimeout(ok, text.length * 90 + 3000);
+      const listo = () => { clearTimeout(tope); ok(); };
       window.speechSynthesis.cancel();
       const u = new SpeechSynthesisUtterance(text);
       u.lang = 'es-PE';
-      u.onend = () => ok();
-      u.onerror = () => ok();
+      u.onend = listo;
+      u.onerror = listo;
       window.speechSynthesis.speak(u);
     });
   }, []);
