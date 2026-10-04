@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { ArrowUp, Mic } from 'lucide-react';
+import { ArrowUp, Camera, Mic } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAppStore } from '@/stores/appStore';
 import { useAuthStore } from '@/stores/authStore';
@@ -14,6 +15,7 @@ interface ConversationEntry {
 }
 
 export function AddTransactionPage() {
+  const navigate = useNavigate();
   const profile = useAuthStore(s => s.profile);
   const { fetchAccounts, fetchCategories } = useAppStore();
 
@@ -363,6 +365,16 @@ export function AddTransactionPage() {
                   className="flex-1 text-left text-sm text-slate-500"
                 >
                   Escribe tu gasto o ingreso...
+                </button>
+                <button
+                  type="button"
+                  onClick={() => navigate('/recibo')}
+                  aria-label="Leer una boleta con la cámara"
+                  className="group -mr-3.5 flex h-11 w-11 flex-shrink-0 items-center justify-center"
+                >
+                  <span className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-800 text-slate-200 transition-colors group-active:bg-slate-700">
+                    <Camera size={18} strokeWidth={1.8} aria-hidden="true" />
+                  </span>
                 </button>
               </div>
             )}
