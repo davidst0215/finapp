@@ -83,6 +83,13 @@ export function createSupabaseStore(db: SupabaseClient): Store {
       must(await db.from("claude_events").insert(row), "insertEvent");
     },
 
+    async touchSessionPreview(userId, sessionId, summary, role) {
+      must(
+        await db.from("claude_sessions").update({ last_summary: summary, last_role: role }).eq("user_id", userId).eq("session_id", sessionId),
+        "touchSessionPreview",
+      );
+    },
+
     async countSessionsSince(deviceId, sinceIso) {
       const res = await db
         .from("claude_sessions")
@@ -174,6 +181,17 @@ export function createSupabaseStore(db: SupabaseClient): Store {
       return must(res, "listApprovals") as ApprovalRow[];
     },
 
+    async listSessionApprovals(userId, sessionId, limit) {
+      const res = await db
+        .from("claude_approvals")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("session_id", sessionId)
+        .order("created_at", { ascending: false })
+        .limit(limit);
+      return must(res, "listSessionApprovals") as ApprovalRow[];
+    },
+
     async decideApproval(userId, approvalId, status, byUserId, nowIso) {
       const res = await db
         .from("claude_approvals")
@@ -250,7 +268,7 @@ export function createSupabaseStore(db: SupabaseClient): Store {
     async ackMessage(userId, messageId, deviceId, nowIso) {
       const res = await db
         .from("claude_messages")
-        .update({ status: "entregado", body: null, claimed_at: null, delivered_at: nowIso })
+        .update({ status: "entregado", claimed_at: null, delivered_at: nowIso })
         .eq("message_id", messageId)
         .eq("user_id", userId)
         .eq("device_id", deviceId)
@@ -287,6 +305,18 @@ export function createSupabaseStore(db: SupabaseClient): Store {
         .order("created_at", { ascending: false })
         .limit(limit);
       return (must(res, "listMessages") as Omit<MessageRow, "body">[]).map((m) => ({ ...m, body: null }));
+    },
+
+    async listSessionMessages(userId, sessionId, limit) {
+      // Con texto (013). Solo lo llama la línea de tiempo de la sesión, con el cliente de servicio.
+      const res = await db
+        .from("claude_messages")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("session_id", sessionId)
+        .order("created_at", { ascending: false })
+        .limit(limit);
+      return must(res, "listSessionMessages") as MessageRow[];
     },
 
     // --- v2 (012): tareas

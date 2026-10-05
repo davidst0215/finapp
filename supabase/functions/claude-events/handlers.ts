@@ -7,7 +7,8 @@
 
 import type { Notice } from "../_shared/notify.ts";
 import { mergeSession, parseDeviceEvent, planNotice, summarizeEvent } from "./events.ts";
-import { cleanLine, normalizeForStorage, sanitizeText } from "./redact.ts";
+import { clipText, cleanLine, normalizeForStorage, redactSecrets, sanitizeText } from "./redact.ts";
+import { buildTimeline } from "./timeline.ts";
 import { matchRoute } from "./routes.ts";
 import type { Cutoffs, Store } from "./store.ts";
 import { generateDeviceToken, parseDeviceToken, verifyDeviceToken } from "./token.ts";
@@ -32,7 +33,7 @@ export const LIMITS = {
   /** El sondeo cada 2 s no debe escribir "último contacto" en cada vuelta. */
   touchEveryMs: 30_000,
   recentApprovalsWindowMs: DAY,
-  retention: { eventsMs: 14 * DAY, approvalsMs: 30 * DAY, sessionsMs: 30 * DAY, messagesMs: 7 * DAY, tasksMs: 14 * DAY },
+  retention: { eventsMs: 14 * DAY, approvalsMs: 30 * DAY, sessionsMs: 30 * DAY, messagesMs: 14 * DAY, tasksMs: 14 * DAY },
   // v2 (SPEC-claude-code-v2.md)
   message: {
     maxChars: 2000,
@@ -57,6 +58,8 @@ export const LIMITS = {
     errorMax: 300,
   },
   deviceNameMax: 60,
+  // 013: línea de tiempo de una sesión (chat)
+  timeline: { defaultLimit: 60, maxLimit: 200 },
 } as const;
 
 export interface ApiDeps {
@@ -135,6 +138,8 @@ export async function handleApi(req: ApiRequest, deps: ApiDeps): Promise<ApiResu
         return await uiOverview(deps, user.userId);
       case "ui.sessionEvents":
         return ok({ events: (await deps.store.listEvents(user.userId, route.sessionId, 30)).map(toEventView) });
+      case "ui.sessionTimeline":
+        return await uiSessionTimeline(route.sessionId, req, deps, user.userId);
       case "ui.deviceCreate":
         return await uiDeviceCreate(req, deps, user.userId);
       case "ui.devicePatch":
@@ -536,10 +541,43 @@ async function deviceTaskEvent(taskId: string, req: ApiRequest, deps: ApiDeps, d
     const detail = updated.status === "terminada" ? updated.result : updated.error || updated.result;
     const title = updated.status === "terminada" ? `Tarea terminada · ${updated.project}` : `Tarea ${updated.status} · ${updated.project}`;
     await bestEffort("notify", () =>
-      deps.notify(userId, { kind: "claude", title: cleanLine(title, 120), body: cleanLine(detail ?? "", 120), url: "/claude" })
+      deps.notify(userId, {
+        kind: "claude",
+        title: cleanLine(title, 120),
+        body: cleanLine(detail ?? "", 120),
+        // La conversación de la tarea: su sesión si ya abrió una, o la propia tarea.
+        url: updated.session_id ? `/claude/s/${encodeURIComponent(updated.session_id)}` : `/claude/t/${encodeURIComponent(updated.task_id)}`,
+      })
     );
   }
   return ok({ ok: true, cancel_requested: updated.cancel_requested });
+}
+
+// --- App: línea de tiempo de una sesión (chat) -------------------------------------------------------------------------------
+
+// Solo el dueño: devuelve lo que David escribió (incluido el texto de sus mensajes del celular) y lo que Claude respondió.
+async function uiSessionTimeline(sessionId: string, req: ApiRequest, deps: ApiDeps, userId: string): Promise<ApiResult> {
+  const denied = requireOwner(deps, userId);
+  if (denied) return denied;
+  const asked = Number(new URLSearchParams(req.query ?? "").get("limit"));
+  const limit = Number.isInteger(asked) && asked >= 1 ? Math.min(asked, LIMITS.timeline.maxLimit) : LIMITS.timeline.defaultLimit;
+
+  const now = deps.now();
+  const nowIso = now.toISOString();
+  const { store } = deps;
+  const session = await store.getSession(userId, sessionId);
+  if (!session) return fail(404, "No existe");
+
+  await store.expireApprovals(userId, nowIso);
+  await store.expireMessages(userId, nowIso);
+  const [events, messages, approvals, tasks] = await Promise.all([
+    store.listEvents(userId, sessionId, limit),
+    store.listSessionMessages(userId, sessionId, limit),
+    store.listSessionApprovals(userId, sessionId, limit),
+    store.listTasks(userId, 30),
+  ]);
+  const { items, hasMore } = buildTimeline({ sessionId, events, messages, approvals, tasks, nowMs: now.getTime() }, limit);
+  return ok({ now: nowIso, items, has_more: hasMore });
 }
 
 // --- App: escribirle a una sesión -----------------------------------------------------------------------------------------
@@ -551,6 +589,9 @@ async function uiMessageCreate(sessionId: string, req: ApiRequest, deps: ApiDeps
   if (!json.ok) return fail(400, "JSON inválido");
   const text = parseUserText(asObject(json.value).text, LIMITS.message.maxChars);
   if (text === null) return fail(400, `El mensaje debe tener entre 1 y ${LIMITS.message.maxChars} caracteres`);
+  // Un mensaje del celular no debe transportar secretos: se redacta AL GUARDAR, así que Claude recibe el texto ya redactado (igual
+  // que el chat y la vista previa). Una llave pegada por error llega como [oculto]; es mejor que viaje y se guarde 14 días.
+  const body = clipText(redactSecrets(text), LIMITS.message.maxChars);
 
   const now = deps.now();
   const nowIso = now.toISOString();
@@ -570,10 +611,14 @@ async function uiMessageCreate(sessionId: string, req: ApiRequest, deps: ApiDeps
     user_id: userId,
     session_id: sessionId,
     device_id: session.device_id,
-    body: text,
+    body,
     created_at: nowIso,
     expires_at: new Date(now.getTime() + LIMITS.message.ttlMs).toISOString(),
   });
+  // Vista previa de la lista de conversaciones: lo último que se dijo en el chat. No toca last_event_at (eso es
+  // actividad de Claude Code y gobierna "trabajando"/"sin actividad").
+  // Actualización parcial (solo esas dos columnas): un evento del dispositivo que llegue en medio no pierde su estado.
+  await bestEffort("preview", () => store.touchSessionPreview(userId, sessionId, cleanLine(body, 300), "usuario"));
   return ok({ message: toMessageView(row) }, 201);
 }
 

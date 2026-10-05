@@ -1,7 +1,9 @@
-import type { ApprovalView, EventKind, MessageStatus, SessionView, TaskStatus, TaskView } from './types';
+import type { MessageStatus, TaskStatus, TaskView } from './types';
 
 // Todo se muestra en hora de Lima (UTC-5): el celular de David puede cambiar de zona al viajar.
 const TZ = 'America/Lima';
+const weekdayFmt = new Intl.DateTimeFormat('es-PE', { timeZone: TZ, weekday: 'short' });
+const longDayFmt = new Intl.DateTimeFormat('es-PE', { timeZone: TZ, weekday: 'long', day: 'numeric', month: 'short' });
 const clockFmt = new Intl.DateTimeFormat('es-PE', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false });
 const dayFmt = new Intl.DateTimeFormat('es-PE', { timeZone: TZ, day: 'numeric', month: 'short' });
 const dayKeyFmt = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' });
@@ -59,48 +61,7 @@ export function toolLabel(toolName: string): string {
   return `Usar ${toolName}`;
 }
 
-export type SessionTone = 'active' | 'waiting' | 'done' | 'error' | 'asking' | 'stale';
-
-export interface SessionLine {
-  tone: SessionTone;
-  text: string;
-}
-
-// Una sesión sin señal por tanto tiempo ya no está "trabajando": probablemente se cerró la laptop sin SessionEnd.
-const STALE_AFTER_MS = 6 * HOUR;
-
-/** Estado de una sesión como texto. `asking` viene de tener una aprobación pendiente (no se guarda en la base). */
-export function describeSession(session: SessionView, pending: ApprovalView | undefined, nowMs: number): SessionLine {
-  if (pending) return { tone: 'asking', text: 'Pide permiso' };
-  switch (session.status) {
-    case 'terminada':
-      return { tone: 'done', text: `Terminó ${limaDayClock(session.ended_at ?? session.last_event_at, nowMs)}` };
-    case 'error':
-      return { tone: 'error', text: `Falló · ${limaDayClock(session.last_event_at, nowMs)}` };
-    case 'esperando':
-    case 'trabajando': {
-      if (nowMs - Date.parse(session.last_event_at) > STALE_AFTER_MS) {
-        return { tone: 'stale', text: `Sin actividad desde ${limaDayClock(session.last_event_at, nowMs)}` };
-      }
-      return session.status === 'esperando'
-        ? { tone: 'waiting', text: `Esperando tu instrucción · ${timeAgo(session.last_event_at, nowMs)}` }
-        : { tone: 'active', text: `Trabajando · ${timeAgo(session.last_event_at, nowMs)}` };
-    }
-  }
-}
-
-const EVENT_WORDS: Record<EventKind, string> = {
-  session_start: 'Inicio',
-  session_end: 'Fin',
-  stop: 'Respuesta',
-  stop_failure: 'Falla',
-  notification: 'Aviso',
-  permission_request: 'Permiso',
-};
-
-export const eventWord = (kind: EventKind) => EVENT_WORDS[kind];
-
-const MESSAGE_LABELS: Record<MessageStatus, string> = { en_cola: 'En cola', entregando: 'Entregando…', entregado: 'Entregado', vencido: 'Vencido' };
+const MESSAGE_LABELS: Record<MessageStatus, string> = { en_cola: 'En cola', entregando: 'Entregando…', entregado: 'Entregado', vencido: 'No se entregó' };
 export const messageStatusLabel = (status: MessageStatus) => MESSAGE_LABELS[status];
 
 const TASK_LABELS: Record<TaskStatus, string> = {
@@ -126,4 +87,29 @@ export function taskDuration(task: Pick<TaskView, 'started_at' | 'finished_at'>,
   const min = Math.floor(sec / 60);
   if (min < 60) return `${min} min`;
   return `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, '0')} min`;
+}
+
+const DAY = 24 * HOUR;
+const dayIndex = (iso: string) => {
+  const [y, m, d] = dayKeyFmt.format(new Date(iso)).split('-').map(Number);
+  return Math.floor(Date.UTC(y!, m! - 1, d!) / DAY);
+};
+const daysBetween = (iso: string, nowMs: number) => dayIndex(new Date(nowMs).toISOString()) - dayIndex(iso);
+
+/** Hora de una conversación en la lista, como en un chat: "Ahora" · "14:20" · "Ayer" · "lun" · "3 oct". */
+export function listTime(iso: string, nowMs: number): string {
+  if (nowMs - Date.parse(iso) < MIN) return 'Ahora';
+  const days = daysBetween(iso, nowMs);
+  if (days <= 0) return clockFmt.format(new Date(iso));
+  if (days === 1) return 'Ayer';
+  if (days < 7) return weekdayFmt.format(new Date(iso)).replace('.', '');
+  return dayFmt.format(new Date(iso)).replace('.', '');
+}
+
+/** Separador de día dentro del chat: "Hoy" · "Ayer" · "lunes, 29 sep". */
+export function dayLabel(iso: string, nowMs: number): string {
+  const days = daysBetween(iso, nowMs);
+  if (days <= 0) return 'Hoy';
+  if (days === 1) return 'Ayer';
+  return longDayFmt.format(new Date(iso)).replace(/\./g, '');
 }

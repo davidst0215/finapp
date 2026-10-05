@@ -34,7 +34,7 @@ Deno.serve(async (req: Request) => {
   // Cliente de servicio: salta RLS. El aislamiento entre usuarios lo garantiza el Store (todo lleva user_id).
   const db = adminClient();
   const result = await handleApi(
-    { method: req.method, path: new URL(req.url).pathname, headers: req.headers, body },
+    { method: req.method, path: new URL(req.url).pathname, query: new URL(req.url).search.slice(1), headers: req.headers, body },
     {
       store: createSupabaseStore(db),
       now: () => new Date(),

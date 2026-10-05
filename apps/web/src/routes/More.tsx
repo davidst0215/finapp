@@ -34,7 +34,7 @@ export function MorePage() {
             { to: '/reuniones', icon: Video, label: 'Reuniones', desc: 'Fathom y lo que esperas de otros' },
             { to: '/correo', icon: Mail, label: 'Correo', desc: 'Importantes y borradores para aprobar' },
             { to: '/buscar', icon: Search, label: 'Buscar en proyectos', desc: 'Pregunta con la fuente citada' },
-            { to: '/claude', icon: Terminal, label: 'Claude Code', desc: 'Sesiones y permisos' },
+            { to: '/claude', icon: Terminal, label: 'Claude Code', desc: 'Tus sesiones como chats' },
             { to: '/ai-chat', icon: MessageSquare, label: 'Chat con Wabid', desc: 'Conversación por texto' },
             { to: '/avisos', icon: BellRing, label: 'Avisos', desc: 'Notificaciones en este celular y bandeja' },
           ].map(({ to, icon: Icon, label, desc }) => (

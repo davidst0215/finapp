@@ -22,7 +22,7 @@ export function RecentApprovals({ approvals, now }: Props) {
   if (approvals.length === 0) return null;
 
   return (
-    <section className="card divide-y divide-slate-700 p-0" aria-label="Permisos recientes">
+    <section className="divide-y divide-slate-700 rounded-2xl border border-slate-700 bg-slate-800/40 p-0" aria-label="Permisos recientes">
       <button
         type="button"
         aria-expanded={open}

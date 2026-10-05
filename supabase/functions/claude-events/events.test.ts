@@ -198,7 +198,7 @@ test("un permiso pendiente avisa con proyecto, herramienta y comando en una lín
     kind: "claude",
     title: "Claude pide permiso · finapp",
     body: "Bash: vercel env add VITE_SUPABASE_URL production",
-    url: "/claude",
+    url: "/claude/s/s",
   });
 });
 
@@ -217,7 +217,7 @@ test("permission_prompt avisa solo si no hay ya una aprobación pendiente de esa
   const e = ev({ type: "notification", detail: "permission_prompt", message: "Claude needs your permission" });
   assert.equal(planNotice(e, { approvalCreated: false, hasPendingApproval: true }), null);
   assert.deepEqual(planNotice(e, { approvalCreated: false, hasPendingApproval: false }), {
-    kind: "claude", title: "Claude espera permiso · finapp", body: "Claude needs your permission", url: "/claude",
+    kind: "claude", title: "Claude espera permiso · finapp", body: "Claude needs your permission", url: "/claude/s/s",
   });
 });
 

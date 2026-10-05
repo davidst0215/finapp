@@ -18,7 +18,7 @@ export function LaptopsCard({ devices, now, onToggleApprovals, onRevoke, onConne
   const [revoking, setRevoking] = useState<DeviceView | null>(null);
 
   return (
-    <section className="card divide-y divide-slate-700 p-0" aria-label="Laptops conectadas">
+    <section className="divide-y divide-slate-700 rounded-2xl border border-slate-700 bg-slate-800/40 p-0" aria-label="Laptops conectadas">
       {devices.map((d) => (
         <div key={d.id} className="space-y-3 px-4 py-3.5">
           <div className="flex items-center gap-3">
@@ -32,7 +32,7 @@ export function LaptopsCard({ devices, now, onToggleApprovals, onRevoke, onConne
             <button
               type="button"
               onClick={() => setRevoking(d)}
-              aria-label={`Revocar ${d.name}`}
+              aria-label={`Desconectar ${d.name}`}
               className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full text-slate-400 active:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
             >
               <Unplug size={18} strokeWidth={1.7} aria-hidden="true" />
@@ -41,17 +41,17 @@ export function LaptopsCard({ devices, now, onToggleApprovals, onRevoke, onConne
 
           <div className="flex items-center gap-3">
             <div className="min-w-0 flex-1">
-              <p className="text-base font-semibold text-slate-100">Aprobar desde el celular</p>
+              <p className="text-base font-semibold text-slate-100">Modo ausente</p>
               <p className="text-[13px] text-slate-400">
                 {d.approvals_enabled
-                  ? 'Activado: los permisos te llegan aquí. Si no respondes en 2 min, se preguntan en la terminal.'
+                  ? 'Activado: los permisos te llegan al chat y la laptop espera tus mensajes unos 2 min tras cada turno. Sin respuesta, se pregunta en la terminal.'
                   : 'Apagado: los permisos se contestan en la terminal. Actívalo cuando te alejes.'}
               </p>
             </div>
             <Switch
               checked={d.approvals_enabled}
               onChange={(next) => onToggleApprovals(d.id, next)}
-              label={`Aprobar permisos desde el celular en ${d.name}`}
+              label={`Modo ausente en ${d.name}`}
             />
           </div>
         </div>
@@ -70,9 +70,9 @@ export function LaptopsCard({ devices, now, onToggleApprovals, onRevoke, onConne
 
       <ConfirmDialog
         open={revoking !== null}
-        title={`Revocar ${revoking?.name ?? ''}`}
-        message="Dejará de enviar eventos y de pedir permisos al celular. Para volver a conectarla tendrás que generar un token nuevo."
-        confirmLabel="Revocar"
+        title={`Desconectar ${revoking?.name ?? ''}`}
+        message="Dejará de enviar sus conversaciones y de pedir permisos al celular. Para volver a conectarla tendrás que generar un token nuevo."
+        confirmLabel="Desconectar"
         onCancel={() => setRevoking(null)}
         onConfirm={() => {
           if (revoking) onRevoke(revoking.id);

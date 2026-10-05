@@ -75,7 +75,7 @@ export default function App() {
           <Route path="/reuniones" element={<ReunionesPage />} />
           <Route path="/correo" element={<CorreoPage />} />
           <Route path="/buscar" element={<BuscarPage />} />
-          <Route path="/claude" element={<ClaudeCodePage />} />
+          <Route path="/claude/*" element={<ClaudeCodePage />} />
           <Route path="/brief" element={<BriefPage />} />
           <Route path="/recibo" element={<ReciboPage />} />
           <Route path="/avisos" element={<AvisosPage />} />

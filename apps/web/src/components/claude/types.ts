@@ -3,7 +3,9 @@
 
 export type SessionStatus = 'trabajando' | 'esperando' | 'terminada' | 'error';
 export type ApprovalStatus = 'pendiente' | 'aprobada' | 'denegada' | 'vencida';
-export type EventKind = 'session_start' | 'session_end' | 'stop' | 'stop_failure' | 'notification' | 'permission_request';
+export type EventKind = 'session_start' | 'session_end' | 'stop' | 'stop_failure' | 'notification' | 'permission_request' | 'user_prompt';
+/** Quién habló último en la sesión. null en sesiones anteriores a la migración 013. */
+export type SessionRole = 'usuario' | 'claude';
 
 export interface DeviceView {
   id: string;
@@ -22,6 +24,7 @@ export interface SessionView {
   cwd: string | null;
   status: SessionStatus;
   summary: string | null;
+  last_role: SessionRole | null;
   started_at: string;
   last_event_at: string;
   ended_at: string | null;
@@ -86,6 +89,24 @@ export interface TaskView {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+}
+
+// --- Chat (013): línea de tiempo de una sesión. Espejo de supabase/functions/claude-events/timeline.ts ---------------
+
+export type TimelineItem =
+  /** Lo que David escribió: en la laptop, desde el celular, o el encargo de una tarea lanzada desde el celular. */
+  | { id: string; at: string; type: 'user'; source: 'laptop' | 'phone' | 'task'; text: string | null; delivery: MessageStatus | null }
+  /** Lo que dice Claude: respuesta al fin de un turno, aviso o error. */
+  | { id: string; at: string; type: 'claude'; tone: 'reply' | 'notice' | 'error'; text: string }
+  /** Eventos de sistema: chips pequeños y centrados. */
+  | { id: string; at: string; type: 'system'; text: string }
+  /** Un permiso: pendiente = tarjeta con Aprobar/Rechazar; resuelto = chip. */
+  | { id: string; at: string; type: 'approval'; approval: ApprovalView };
+
+export interface TimelineResponse {
+  now: string;
+  items: TimelineItem[];
+  has_more: boolean;
 }
 
 export interface PairedDevice {

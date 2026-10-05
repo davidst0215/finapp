@@ -38,7 +38,7 @@ export function PairDevicePanel({ onPair, onClose }: Props) {
 
   if (!paired) {
     return (
-      <form onSubmit={submit} className="card space-y-4">
+      <form onSubmit={submit} className="space-y-4 rounded-2xl border border-slate-700 bg-slate-800/40 p-4">
         <div className="space-y-2">
           <label htmlFor="claude-device-name" className="text-base font-bold text-slate-100">
             ¿Cómo se llama esta laptop?
@@ -68,7 +68,7 @@ export function PairDevicePanel({ onPair, onClose }: Props) {
   }
 
   return (
-    <section className="card space-y-4" aria-labelledby="claude-pair-title">
+    <section className="space-y-4 rounded-2xl border border-slate-700 bg-slate-800/40 p-4" aria-labelledby="claude-pair-title">
       <div className="space-y-1">
         <h2 id="claude-pair-title" className="text-base font-bold text-slate-100">
           {paired.device.name} está lista para conectarse
@@ -85,10 +85,10 @@ export function PairDevicePanel({ onPair, onClose }: Props) {
           <code className="break-all rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[13px] text-slate-100">node tools/claude-hooks/wabid-hook.mjs setup</code> y pega la URL y el token.
         </li>
         <li>
-          Pega el bloque de hooks de <code className="font-mono text-[13px] text-slate-100">tools/claude-hooks/README.md</code> en tu{' '}
-          <code className="font-mono text-[13px] text-slate-100">settings.json</code> de Claude Code.
+          Instala los hooks con{' '}
+          <code className="break-all rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[13px] text-slate-100">node tools/claude-hooks/instalar-hooks.mjs</code> y reinicia Claude Code.
         </li>
-        <li>Vuelve aquí y activa «Aprobar desde el celular» cuando te alejes de la laptop.</li>
+        <li>Vuelve aquí y activa el modo ausente cuando te alejes de la laptop.</li>
       </ol>
 
       <button type="button" onClick={onClose} className="btn-primary min-h-[48px] w-full">

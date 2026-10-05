@@ -343,7 +343,7 @@ test("con las aprobaciones activas se crea una pendiente de 2 min y se avisa al 
     kind: "claude",
     title: "Claude pide permiso · finapp",
     body: "Bash: vercel env add VITE_SUPABASE_URL production",
-    url: "/claude",
+    url: `/claude/s/${SESSION}`,
   });
 
   const overview = (await t.ui("GET", "/overview")).body;
