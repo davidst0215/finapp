@@ -71,14 +71,21 @@ Deno.serve(async (req: Request) => {
     assertOwner(userId, env);
     const hoy = limaNow().toISOString().slice(0, 10);
 
-    // 2) Acción.
+    // 2) Acción. Leer y sincronizar dejan una línea con su duración (sin contenido del vault) para seguir el p50.
+    const t0 = performance.now();
+    const medido = (extra: Record<string, unknown>) =>
+      console.log(JSON.stringify({ evt: "vault", action, ms: Math.round(performance.now() - t0), ...extra }));
     switch (action) {
       case "sync": {
         const r = await syncIndex(db, userId, env, { force: body.force === true });
+        medido({ skipped: r.skipped, cambios: r.added + r.updated + r.removed });
         return json({ ok: true, ...r });
       }
-      case "tasks":
-        return json(await tasksView(db, userId, env, hoy, { refresh: body.refresh === true }));
+      case "tasks": {
+        const view = await tasksView(db, userId, env, hoy, { refresh: body.refresh === true });
+        medido({ refresh: body.refresh === true });
+        return json(view);
+      }
       case "task.create": {
         const r = await createTask(db, userId, env, {
           text: body.text, folder: body.folder, level: body.level, due: body.due, shared: body.shared, note: body.note,
