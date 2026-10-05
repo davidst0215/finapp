@@ -1,15 +1,21 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { ArrowUp, Camera, Mic } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAppStore } from '@/stores/appStore';
 import { useAuthStore } from '@/stores/authStore';
 import { supabase, functionUrl, calentarFunciones } from '@/lib/supabase';
 import { reproducirStream, type Reproduccion } from '@/lib/audioStream';
 import { separarRespuesta } from '@/lib/respuestaAgente';
+import { esFraseDeCierre, leerEscucharAlAbrir, MAX_SILENCIOS } from '@/lib/conversacion';
 import { cn } from '@/lib/utils';
 
 type OrbState = 'idle' | 'listening' | 'thinking' | 'speaking';
+
+/** Menos que esto entre bajar y levantar el dedo es un toque (conversar); más, es mantener (un solo pedido). */
+const TOQUE_MS = 350;
+// «Escuchar al abrir» arranca solo una vez por carga de la app; volver a la pestaña Wabid dentro de la app no.
+let arrancoEnEstaCarga = false;
 
 interface ConversationEntry {
   role: 'user' | 'assistant';
@@ -35,8 +41,16 @@ export function AddTransactionPage() {
   // no toca el estado: si no, un turno anterior deja el orb en reposo en medio del siguiente.
   const turnoRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const isHoldingRef = useRef(false);
   const transcriptRef = useRef('');
+
+  // Modo conversación: tras cada respuesta el orbe vuelve a escuchar solo, hasta una despedida, dos silencios
+  // seguidos, un toque en el orbe o que la app pase a segundo plano.
+  const [conversando, setConversando] = useState(false);
+  const conversandoRef = useRef(false);
+  const silenciosRef = useRef(0);
+  const pulsadoEnRef = useRef(0); // cuándo bajó el dedo sobre el orbe (0 = no hay pulsación en curso)
+  const escucharRef = useRef<() => void>(() => {}); // callAgent y escuchar se llaman entre sí
+  const [params, setParams] = useSearchParams();
 
   useEffect(() => {
     fetchAccounts();
@@ -205,6 +219,11 @@ export function AddTransactionPage() {
       await hablar(message, audio, vigente);
       if (!vigente()) return;
 
+      // En conversación, apenas termina la voz vuelve a escuchar (el micrófono nunca oye a Wabid hablando).
+      if (conversandoRef.current) {
+        escucharRef.current();
+        return;
+      }
       // Apenas termina la voz se puede volver a hablar; el subtítulo queda un momento para leerlo.
       setOrbState('idle');
       setTimeout(() => setSubtitle(s => (s === message ? '' : s)), 2500);
@@ -212,6 +231,9 @@ export function AddTransactionPage() {
     } catch (err) {
       clearTimeout(timeout);
       if (!vigente()) return;
+      // Un error corta la conversación: volver a escuchar solo repetiría el mismo fallo.
+      conversandoRef.current = false;
+      setConversando(false);
       const errMsg = err instanceof Error ? err.message : 'Error';
       setSubtitle(errMsg);
       setOrbState('idle');
@@ -221,69 +243,167 @@ export function AddTransactionPage() {
     }
   }, [cortarVoz, hablar]);
 
-  // ── Hold-to-talk ──
-  const startHold = useCallback(() => {
-    if (orbState === 'speaking') {
-      // Interrumpir: termina el turno y corta la voz, aunque la descarga de /tts siga en curso.
-      turnoRef.current++;
-      cortarVoz();
-      setOrbState('idle');
-      setSubtitle('');
+  // ── Conversación ──
+  const terminarConversacion = useCallback((aviso?: string) => {
+    conversandoRef.current = false;
+    setConversando(false);
+    silenciosRef.current = 0;
+    const rec = recognitionRef.current;
+    recognitionRef.current = null; // primero: así su onend ya no cuenta
+    rec?.abort();
+    setOrbState(s => (s === 'listening' ? 'idle' : s));
+    if (aviso) {
+      setSubtitle(aviso);
+      setTimeout(() => setSubtitle(s => (s === aviso ? '' : s)), 3000);
+    }
+  }, []);
+
+  // Una escucha: el navegador corta solo cuando dejas de hablar, o tras unos segundos de silencio.
+  const escuchar = useCallback(() => {
+    if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
+      terminarConversacion('Este navegador no reconoce voz');
       return;
     }
-    if (orbState !== 'idle') return;
     calentarFunciones('agent', 'tts');
-
-    isHoldingRef.current = true;
     transcriptRef.current = '';
     setSubtitle('');
-
-    if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
-      setSubtitle('Navegador sin soporte de voz');
-      setTimeout(() => setSubtitle(''), 3000);
-      return;
-    }
 
     const API = window.SpeechRecognition || window.webkitSpeechRecognition;
     const recognition = new API();
     recognition.lang = 'es-PE';
     recognition.continuous = false;
     recognition.interimResults = true;
+    // Una escucha que ya no es la actual (se terminó o la reemplazó otra) no toca el estado.
+    const actual = () => recognitionRef.current === recognition;
+    let fallo: string | null = null;
 
-    recognition.onstart = () => setOrbState('listening');
+    recognition.onstart = () => { if (actual()) setOrbState('listening'); };
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
-      // Only use the last result to avoid mobile duplicates
+      if (!actual()) return;
+      // Solo el último resultado: en el celular los anteriores se repiten.
       const last = event.results[event.results.length - 1];
       const text = last?.[0]?.transcript ?? '';
       transcriptRef.current = text;
       setSubtitle(text);
     };
 
-    recognition.onerror = () => {
-      isHoldingRef.current = false;
-      setOrbState('idle');
-      setSubtitle('No te escuché, intenta de nuevo');
-      setTimeout(() => setSubtitle(''), 3000);
+    // 'no-speech' es un silencio (lo resuelve onend) y 'aborted' lo pedimos nosotros; lo demás es un fallo.
+    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      if (event.error !== 'no-speech' && event.error !== 'aborted') fallo = event.error;
     };
 
     recognition.onend = () => {
-      // When released and recognition ends, process
-      if (transcriptRef.current.trim()) {
-        callAgent(transcriptRef.current.trim());
-      } else {
+      if (!actual()) return;
+      recognitionRef.current = null;
+      const texto = transcriptRef.current.trim();
+      if (fallo) {
+        // Sin permiso o sin un toque previo, el navegador no deja escuchar solo: se pide el toque.
+        const sinPermiso = fallo === 'not-allowed' || fallo === 'service-not-allowed';
+        terminarConversacion(sinPermiso ? 'Toca el orbe para hablar' : 'No te escuché, intenta de nuevo');
         setOrbState('idle');
+        return;
       }
+      if (texto) {
+        silenciosRef.current = 0;
+        if (conversandoRef.current && esFraseDeCierre(texto)) {
+          terminarConversacion('Cuando quieras.');
+          setOrbState('idle');
+          return;
+        }
+        void callAgent(texto);
+        return;
+      }
+      if (conversandoRef.current && ++silenciosRef.current < MAX_SILENCIOS) {
+        escucharRef.current();
+        return;
+      }
+      if (conversandoRef.current) terminarConversacion();
+      setOrbState('idle');
     };
 
     recognitionRef.current = recognition;
-    recognition.start();
-  }, [orbState, callAgent, cortarVoz]);
+    try {
+      recognition.start();
+    } catch {
+      recognitionRef.current = null;
+      terminarConversacion('Toca el orbe para hablar');
+      setOrbState('idle');
+    }
+  }, [callAgent, terminarConversacion]);
 
-  const endHold = useCallback(() => {
-    isHoldingRef.current = false;
-    recognitionRef.current?.stop();
+  useEffect(() => { escucharRef.current = escuchar; }, [escuchar]);
+
+  const iniciarConversacion = useCallback(() => {
+    conversandoRef.current = true;
+    setConversando(true);
+    silenciosRef.current = 0;
+    escucharRef.current();
   }, []);
+
+  // Toque corto: conversación (escucha, responde y vuelve a escuchar). Mantener: un solo pedido, como siempre.
+  const alPresionar = useCallback(() => {
+    if (orbState === 'speaking') {
+      // Interrumpir: corta la voz aunque la descarga siga en curso; en conversación, vuelve a escuchar ya.
+      turnoRef.current++;
+      cortarVoz();
+      setSubtitle('');
+      if (conversandoRef.current) escucharRef.current();
+      else setOrbState('idle');
+      return;
+    }
+    if (conversandoRef.current) {
+      terminarConversacion();
+      return;
+    }
+    if (orbState !== 'idle') return;
+    pulsadoEnRef.current = Date.now();
+    escucharRef.current();
+  }, [orbState, cortarVoz, terminarConversacion]);
+
+  const alSoltar = useCallback(() => {
+    if (!pulsadoEnRef.current) return;
+    const fueToque = Date.now() - pulsadoEnRef.current < TOQUE_MS;
+    pulsadoEnRef.current = 0;
+    if (fueToque) {
+      // La escucha ya arrancó al bajar el dedo: sigue sola y, tras responder, vuelve a escuchar.
+      conversandoRef.current = true;
+      setConversando(true);
+      silenciosRef.current = 0;
+      return;
+    }
+    recognitionRef.current?.stop(); // mantener: soltar es «terminé de hablar»
+  }, []);
+
+  // Abrir Wabid (o volver a él) arranca la conversación si «Escuchar al abrir» está activo, o siempre que se abra
+  // con ?conversar=1 (acceso directo del ícono). Así el doble toque atrás del celular, configurado para abrir
+  // Wabid, sirve para invocarlo.
+  useEffect(() => {
+    const pedido = params.get('conversar') === '1';
+    if (pedido) setParams({}, { replace: true });
+    if (pedido || (!arrancoEnEstaCarga && leerEscucharAlAbrir())) {
+      arrancoEnEstaCarga = true;
+      iniciarConversacion();
+    }
+    // Solo al montar: el parámetro se limpia y volver a esta pestaña dentro de la app no debe arrancar.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // En segundo plano el micrófono se apaga siempre; al volver a Wabid arranca de nuevo si corresponde.
+  useEffect(() => {
+    const alCambiar = () => {
+      if (document.visibilityState === 'hidden') {
+        turnoRef.current++;
+        cortarVoz();
+        terminarConversacion();
+        setOrbState('idle');
+      } else if (leerEscucharAlAbrir() && !conversandoRef.current) {
+        iniciarConversacion();
+      }
+    };
+    document.addEventListener('visibilitychange', alCambiar);
+    return () => document.removeEventListener('visibilitychange', alCambiar);
+  }, [cortarVoz, terminarConversacion, iniciarConversacion]);
 
   // ── Text submit ──
   const handleSubmitText = () => {
@@ -324,12 +444,12 @@ export function AddTransactionPage() {
             transition={{ duration: orbState === 'listening' ? 1 : 2, repeat: Infinity, ease: 'easeInOut' }}
           />
 
-          {/* Orb — hold to talk */}
+          {/* Orb: toque = conversar, mantener = un pedido */}
           <div
             className={orbClass}
-            onPointerDown={startHold}
-            onPointerUp={endHold}
-            onPointerLeave={endHold}
+            onPointerDown={alPresionar}
+            onPointerUp={alSoltar}
+            onPointerLeave={alSoltar}
             onContextMenu={e => e.preventDefault()}
           />
 
@@ -381,6 +501,16 @@ export function AddTransactionPage() {
             >
               {orbState === 'listening' ? `"${subtitle}"` : subtitle}
             </motion.p>
+          ) : conversando && orbState === 'listening' ? (
+            <motion.p
+              key="escucho"
+              className="text-slate-400 text-sm"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+            >
+              Te escucho…
+            </motion.p>
           ) : orbState === 'idle' && !showInput ? (
             <motion.p
               key="hint"
@@ -390,8 +520,8 @@ export function AddTransactionPage() {
               exit={{ opacity: 0 }}
             >
               {isFirstUse
-                ? `¡Hola${firstName ? ` ${firstName}` : ''}! Mantén presionado el orb y dime qué gastaste. También puedes escribir abajo.`
-                : firstName ? `Mantén presionado para hablar, ${firstName}` : 'Mantén presionado para hablar'
+                ? `¡Hola${firstName ? ` ${firstName}` : ''}! Toca el orbe y conversemos. Mantenlo presionado para un pedido rápido, o escribe abajo.`
+                : firstName ? `Toca para conversar, ${firstName}` : 'Toca para conversar'
               }
             </motion.p>
           ) : orbState === 'thinking' ? (
@@ -406,6 +536,11 @@ export function AddTransactionPage() {
             </motion.p>
           ) : null}
         </AnimatePresence>
+
+        {/* Texto fijo, sin animación: con movimiento reducido igual se sabe que el micrófono va a volver a abrirse. */}
+        {conversando && (
+          <p className="mt-4 text-sm text-slate-500">En conversación · di «gracias» para terminar</p>
+        )}
       </div>
 
       {/* ── Input bar ── */}

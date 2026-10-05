@@ -23,6 +23,10 @@ export default defineConfig({
           { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
           { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
+        // Mantener presionado el ícono → «Conversar»: abre Wabid ya escuchando (aunque «Escuchar al abrir» esté apagado).
+        shortcuts: [
+          { name: 'Conversar con Wabid', short_name: 'Conversar', url: '/?conversar=1', icons: [{ src: '/icons/icon-192.png', sizes: '192x192' }] },
+        ],
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
