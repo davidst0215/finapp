@@ -199,7 +199,7 @@ export class MemoryStore implements Store {
 
   async insertMessage(row: NewMessage) {
     if (!this.sessions.has(sessionKey(row.user_id, row.session_id))) throw new Error("FK: la sesión no existe");
-    const m: MessageRow = { ...row, status: "en_cola", claimed_at: null, delivered_at: null, resume_task_id: null, error: null };
+    const m: MessageRow = { ...row, status: "en_cola", claimed_at: null, delivered_at: null, resume_task_id: null, resume_claimed_at: null, error: null };
     this.messages.set(m.message_id, m);
     return { ...m };
   }
@@ -268,12 +268,19 @@ export class MemoryStore implements Store {
       .map((m) => ({ ...m }));
   }
 
-  async claimMessageForResume(userId: string, messageId: string, taskId: string) {
+  async claimMessageForResume(userId: string, messageId: string, taskId: string, nowIso: string) {
     const m = this.messages.get(messageId);
     if (!m || m.user_id !== userId || m.status !== "en_cola") return false;
     m.status = "retomando";
     m.resume_task_id = taskId;
+    m.resume_claimed_at = nowIso;
     return true;
+  }
+
+  async listStaleResumeMessages(userId: string, claimedBeforeIso: string) {
+    return [...this.messages.values()]
+      .filter((m) => m.user_id === userId && m.status === "retomando" && m.resume_claimed_at != null && m.resume_claimed_at < claimedBeforeIso)
+      .map((m) => ({ ...m }));
   }
 
   async releaseResumeMessages(userId: string, taskId: string) {
@@ -281,16 +288,18 @@ export class MemoryStore implements Store {
       if (m.user_id === userId && m.status === "retomando" && m.resume_task_id === taskId) {
         m.status = "en_cola";
         m.resume_task_id = null;
+        m.resume_claimed_at = null;
       }
     }
   }
 
-  async settleResumeMessages(userId: string, taskId: string, outcome: { ok: true; atIso: string } | { ok: false; error: string }) {
+  async settleResumeMessages(userId: string, taskId: string, outcome: { ok: true; atIso: string; error?: string } | { ok: false; error: string }) {
     for (const m of this.messages.values()) {
       if (m.user_id !== userId || m.status !== "retomando" || m.resume_task_id !== taskId) continue;
       if (outcome.ok) {
         m.status = "entregado";
         m.delivered_at = outcome.atIso;
+        if (outcome.error) m.error = outcome.error;
       } else {
         m.status = "no_retomado";
         m.error = outcome.error;

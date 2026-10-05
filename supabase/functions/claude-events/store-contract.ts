@@ -530,13 +530,13 @@ export function defineStoreContract(label: string, make: () => Promise<StoreFixt
     const d = await withSession(f);
     const m = await f.store.insertMessage(msg(U1, d.device_id, "s1", "hola", 0));
     const taskId = crypto.randomUUID();
-    assert.equal(await f.store.claimMessageForResume(U1, m.message_id, taskId), true);
-    assert.equal(await f.store.claimMessageForResume(U1, m.message_id, crypto.randomUUID()), false, "ya lo tiene otra tarea");
+    assert.equal(await f.store.claimMessageForResume(U1, m.message_id, taskId, iso(5)), true);
+    assert.equal(await f.store.claimMessageForResume(U1, m.message_id, crypto.randomUUID(), iso(6)), false, "ya lo tiene otra tarea");
     assert.equal(await f.store.claimNextMessage(U1, "s1", iso(10)), null, "el hook Stop ya no lo ve");
 
     const m2 = await f.store.insertMessage(msg(U1, d.device_id, "s1", "otro", 1));
     assert.ok(await f.store.claimNextMessage(U1, "s1", iso(10)), "el Stop reclama primero");
-    assert.equal(await f.store.claimMessageForResume(U1, m2.message_id, crypto.randomUUID()), false, "entonces el runner no lo retoma");
+    assert.equal(await f.store.claimMessageForResume(U1, m2.message_id, crypto.randomUUID(), iso(11)), false, "entonces el runner no lo retoma");
   });
 
   T("retomar: listStalledMessages respeta umbral, dispositivo, usuario, vencimiento y estado", async (f) => {
@@ -559,8 +559,8 @@ export function defineStoreContract(label: string, make: () => Promise<StoreFixt
     const b = await f.store.insertMessage(msg(U1, d.device_id, "s1", "b", 1));
     const t1 = crypto.randomUUID();
     const t2 = crypto.randomUUID();
-    await f.store.claimMessageForResume(U1, a.message_id, t1);
-    await f.store.claimMessageForResume(U1, b.message_id, t2);
+    await f.store.claimMessageForResume(U1, a.message_id, t1, iso(20));
+    await f.store.claimMessageForResume(U1, b.message_id, t2, iso(20));
     await f.store.releaseResumeMessages(U1, t1);
     await f.store.settleResumeMessages(U1, t2, { ok: false, error: "proyecto no autorizado en la laptop" });
     const rows = await f.store.listSessionMessages(U1, "s1", 10);
@@ -569,7 +569,7 @@ export function defineStoreContract(label: string, make: () => Promise<StoreFixt
     assert.equal(byBody["a"]!.resume_task_id, null);
     assert.equal(byBody["b"]!.status, "no_retomado");
     assert.equal(byBody["b"]!.error, "proyecto no autorizado en la laptop");
-    await f.store.claimMessageForResume(U1, a.message_id, t1);
+    await f.store.claimMessageForResume(U1, a.message_id, t1, iso(20));
     await f.store.settleResumeMessages(U1, t1, { ok: true, atIso: iso(50) });
     const done = (await f.store.listSessionMessages(U1, "s1", 10)).find((m) => m.body === "a")!;
     assert.equal(done.status, "entregado");

@@ -315,6 +315,7 @@ async function uiOverview(deps: ApiDeps, userId: string): Promise<ApiResult> {
   const nowIso = now.toISOString();
   await store.expireApprovals(userId, nowIso);
   await store.expireMessages(userId, nowIso);
+  await bestEffort("reap", () => reapResumeMessages(store, userId, now));
   const staleIso = new Date(now.getTime() - LIMITS.task.staleMs).toISOString();
 
   const [devices, sessions, pending, recent, messages] = await Promise.all([
@@ -432,6 +433,35 @@ function requireOwner(deps: ApiDeps, userId: string): ApiResult | null {
 // Retención mínima: al terminar una tarea el prompt completo se reemplaza por un resumen redactado y corto.
 const promptSummary = (prompt: string) => cleanLine(prompt, LIMITS.task.promptSummaryMax) || "(sin texto)";
 
+// Cierra los mensajes de una tarea de retomar según cómo terminó. Si la continuación llegó a abrirse (el runner ya reportó la
+// sesión nueva) Claude SÍ procesó el mensaje aunque terminara mal (tope de turnos o de gasto): queda entregado, con el error y el
+// enlace a la continuación. Si no, no se pudo retomar.
+async function settleResume(store: Store, userId: string, t: TaskRow, atIso: string, failure: string) {
+  const opened = !!t.session_id && t.session_id !== t.resume_session_id;
+  const error = cleanLine(failure, LIMITS.task.errorMax);
+  if (t.status === "terminada") await store.settleResumeMessages(userId, t.task_id, { ok: true, atIso });
+  else if (t.status === "fallida" && opened) await store.settleResumeMessages(userId, t.task_id, { ok: true, atIso, error });
+  else await store.settleResumeMessages(userId, t.task_id, { ok: false, error });
+}
+
+// Mensajes que quedaron 'retomando' sin que nadie los cierre: la función murió entre el reclamo y la creación de la tarea (sin
+// tarea -> vuelven a la cola con su texto), o la tarea ya terminó y no se alcanzó a cerrarlos. Pasado el plazo del reclamo
+// (no antes: el reclamo y la creación de la tarea no son una sola sentencia).
+async function reapResumeMessages(store: Store, userId: string, now: Date) {
+  const stale = await store.listStaleResumeMessages(userId, new Date(now.getTime() - LIMITS.message.claimTtlMs).toISOString());
+  const seen = new Set<string>();
+  for (const m of stale) {
+    const taskId = m.resume_task_id;
+    if (!taskId || seen.has(taskId)) continue;
+    seen.add(taskId);
+    const task = await store.findTask(userId, taskId);
+    if (!task) await store.releaseResumeMessages(userId, taskId);
+    else if (task.status !== "en_cola" && task.status !== "ejecutando") {
+      await settleResume(store, userId, task, now.toISOString(), task.error || `la tarea quedó ${task.status}`);
+    }
+  }
+}
+
 // Barrido de tareas vencidas / sin latido. Las que cambian de estado también pierden el prompt completo: queda un
 // resumen redactado (la redacción es de este módulo; el store solo mueve estados).
 async function sweepTasks(store: Store, userId: string, deviceId: string, nowIso: string, staleIso: string) {
@@ -439,7 +469,7 @@ async function sweepTasks(store: Store, userId: string, deviceId: string, nowIso
     await store.updateTask(userId, t.task_id, { prompt: promptSummary(t.prompt) }, ["vencida", "fallida"]);
     if (t.kind === "resume") {
       const error = t.status === "vencida" ? "la laptop no recogió el trabajo a tiempo" : "el runner de la laptop dejó de responder";
-      await store.settleResumeMessages(userId, t.task_id, { ok: false, error });
+      await settleResume(store, userId, t, nowIso, error);
     }
   }
 }
@@ -545,6 +575,7 @@ async function resumeStalledMessages(deps: ApiDeps, device: DeviceRow, now: Date
 
   await store.requeueStaleMessages(userId, new Date(now.getTime() - LIMITS.message.claimTtlMs).toISOString());
   await store.expireMessages(userId, nowIso);
+  await reapResumeMessages(store, userId, now);
   const stalled = await store.listStalledMessages(userId, device.device_id, new Date(now.getTime() - afterMs).toISOString(), nowIso, 20);
 
   const bySession = new Map<string, typeof stalled>();
@@ -566,7 +597,7 @@ async function resumeStalledMessages(deps: ApiDeps, device: DeviceRow, now: Date
     }
     const taskId = deps.randomUUID();
     const claimed: typeof rows = [];
-    for (const m of chosen) if (await store.claimMessageForResume(userId, m.message_id, taskId)) claimed.push(m);
+    for (const m of chosen) if (await store.claimMessageForResume(userId, m.message_id, taskId, nowIso)) claimed.push(m);
     if (claimed.length === 0) continue; // el hook Stop se los llevó primero
 
     try {
@@ -578,7 +609,8 @@ async function resumeStalledMessages(deps: ApiDeps, device: DeviceRow, now: Date
         prompt: claimed.map((m) => m.body ?? "").join(BODY_SEP),
         kind: "resume",
         resume_session_id: sessionId,
-        resume_cwd: session.cwd,
+        // La carpeta donde NACIÓ la sesión, no la actual: tras un `cd`, `--resume` no encontraría la conversación desde otra carpeta.
+        resume_cwd: session.start_cwd ?? session.cwd,
         created_at: nowIso,
         expires_at: new Date(now.getTime() + LIMITS.task.queueTtlMs).toISOString(),
       });
@@ -612,6 +644,7 @@ async function linkContinuation(store: Store, task: TaskRow, sessionId: string, 
     device_id: device.device_id,
     project: original?.project ?? task.project,
     cwd: task.resume_cwd ?? original?.cwd ?? null,
+    start_cwd: task.resume_cwd ?? original?.start_cwd ?? original?.cwd ?? null,
     status: result !== null ? "esperando" : "trabajando",
     last_summary: null,
     last_role: null,
@@ -671,17 +704,20 @@ async function deviceTaskEvent(taskId: string, req: ApiRequest, deps: ApiDeps, d
     if (sessionId) await bestEffort("continuation", () => linkContinuation(store, updated, sessionId, device, nowIso, type === "finish" ? updated.result : null));
     if (type === "finish") {
       const failure = updated.error || (updated.status === "cancelada" ? "cancelado desde el celular" : "no terminó");
-      await store.settleResumeMessages(userId, taskId, updated.status === "terminada" ? { ok: true, atIso: nowIso } : { ok: false, error: cleanLine(failure, LIMITS.task.errorMax) });
+      await settleResume(store, userId, updated, nowIso, failure);
     }
   }
 
   if (type === "finish" && updated.status !== "cancelada") {
     const detail = updated.status === "terminada" ? updated.result : updated.error || updated.result;
     const resume = updated.kind === "resume";
+    const opened = !!updated.session_id && updated.session_id !== updated.resume_session_id;
     const title = resume
       ? updated.status === "terminada"
         ? `Claude retomó tu mensaje · ${updated.project}`
-        : `No se pudo retomar · ${updated.project}`
+        : updated.status === "fallida" && opened
+          ? `Claude retomó tu mensaje, con error · ${updated.project}`
+          : `No se pudo retomar · ${updated.project}`
       : updated.status === "terminada"
         ? `Tarea terminada · ${updated.project}`
         : `Tarea ${updated.status} · ${updated.project}`;
@@ -716,6 +752,9 @@ async function uiSessionTimeline(sessionId: string, req: ApiRequest, deps: ApiDe
 
   await store.expireApprovals(userId, nowIso);
   await store.expireMessages(userId, nowIso);
+  // Si la laptop nunca vuelve, sus tareas vencen / pierden el latido y los mensajes que llevaban se liquidan al mirar el chat.
+  await bestEffort("sweep", () => sweepTasks(store, userId, session.device_id, nowIso, new Date(now.getTime() - LIMITS.task.staleMs).toISOString()));
+  await bestEffort("reap", () => reapResumeMessages(store, userId, now));
   const [events, messages, approvals, tasks, owner, original] = await Promise.all([
     store.listEvents(userId, sessionId, limit),
     store.listSessionMessages(userId, sessionId, limit),

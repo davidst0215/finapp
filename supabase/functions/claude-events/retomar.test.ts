@@ -16,8 +16,8 @@ const NEW_SESSION = "99999999-aaaa-4bbb-8ccc-333333333333";
 // deno-lint-ignore no-explicit-any
 type Json = any;
 
-function setup() {
-  const store = new MemoryStore();
+function setup(makeStore: () => MemoryStore = () => new MemoryStore()) {
+  const store = makeStore();
   let nowMs = START;
   store.clock = () => new Date(nowMs).toISOString();
   const notices: Notice[] = [];
@@ -335,4 +335,108 @@ test("la vista general expone el estado y el motivo de los mensajes, sin texto",
   assert.equal(o.messages[0].status, "no_retomado");
   assert.equal(o.messages[0].error, "proyecto no autorizado en la laptop");
   assert.equal(JSON.stringify(o.messages).includes("secreto-privado"), false);
+});
+
+// --- Revisión: carrera real, huérfanos, fallida parcial y cwd ----------------------------------------------------------------
+
+// Simula la carrera: el hook Stop reclama el mensaje DESPUÉS de que la conversión lo listó y ANTES de que lo reclame el runner.
+class RacyStore extends MemoryStore {
+  override async listStalledMessages(userId: string, deviceId: string, olderThanIso: string, nowIso: string, limit: number) {
+    const rows = await super.listStalledMessages(userId, deviceId, olderThanIso, nowIso, limit);
+    for (const m of rows) await this.claimNextMessage(userId, m.session_id, nowIso); // el Stop gana
+    return rows;
+  }
+}
+
+test("carrera: si el Stop reclama entre el listado y el reclamo del runner, la conversión NO crea tarea ni toca el mensaje", async () => {
+  const t = setup(() => new RacyStore());
+  const d = await t.pair();
+  await d.stop();
+  await t.send("hola");
+  t.tick(afterThreshold);
+  assert.equal((await d.next()).body.task, null);
+  assert.equal(t.store.tasks.size, 0, "ninguna tarea para un mensaje que ya entrega el Stop");
+  const m = [...t.store.messages.values()][0]!;
+  assert.equal(m.status, "entregando");
+  assert.equal(m.resume_task_id, null);
+});
+
+test("huérfano: si la función murió entre el reclamo y la tarea, el mensaje vuelve a la cola pasado el plazo (no antes) y se retoma una sola vez", async () => {
+  const t = setup();
+  const d = await t.pair();
+  await d.stop();
+  await t.send("hola");
+  const m = [...t.store.messages.values()][0]!;
+  t.tick(afterThreshold);
+  const ghost = crypto.randomUUID();
+  assert.equal(await t.store.claimMessageForResume(DAVID, m.message_id, ghost, new Date(START + afterThreshold).toISOString()), true);
+  // dentro del plazo del reclamo: no se toca (la tarea podría estar a punto de crearse)
+  t.tick(10_000);
+  await t.call("GET", `/ui/sessions/${SESSION}/timeline`);
+  assert.equal(m.status, "retomando");
+  // pasado el plazo y sin tarea: vuelve a la cola con su texto, y el siguiente pedido del runner la retoma con una tarea real
+  t.tick(LIMITS.message.claimTtlMs);
+  const tl = await t.call("GET", `/ui/sessions/${SESSION}/timeline`);
+  const item = tl.body.items.find((i: Json) => i.type === "user" && i.source === "phone");
+  assert.equal(item.delivery, "en_cola");
+  assert.equal(m.body, "hola");
+  assert.equal(m.resume_task_id, null);
+  const task = (await d.next()).body.task;
+  assert.equal(task.prompt, "hola");
+  assert.equal(t.store.tasks.size, 1);
+  assert.equal(m.status, "retomando");
+  assert.equal(m.resume_task_id, task.id);
+});
+
+test("laptop que nunca vuelve: al mirar el chat (no solo la vista general) la tarea vencida liquida el mensaje", async () => {
+  const t = setup();
+  const d = await t.pair();
+  await d.stop();
+  await t.send("hola");
+  t.tick(afterThreshold);
+  await d.next(); // tarea 'ejecutando' y la laptop desaparece
+  t.tick(LIMITS.task.staleMs + 1000);
+  const item = (await t.timeline()).items.find((i: Json) => i.type === "user" && i.source === "phone");
+  assert.equal(item.delivery, "no_retomado");
+  assert.match(item.note, /runner/);
+});
+
+test("fallida parcial: si la continuación llegó a abrirse, Claude sí leyó el mensaje: entregado con el error y enlace, no 'no se pudo retomar'", async () => {
+  const t = setup();
+  const d = await t.pair();
+  await d.stop();
+  await t.send("sigue");
+  t.tick(afterThreshold);
+  const task = (await d.next()).body.task;
+  await d.taskEvent(task.id, { type: "progress", message: "Claude: trabajando", session_id: NEW_SESSION });
+  await d.taskEvent(task.id, { type: "finish", outcome: "fallida", session_id: NEW_SESSION, error: "Claude terminó con error: error_max_turns" });
+  const m = [...t.store.messages.values()][0]!;
+  assert.equal(m.status, "entregado");
+  assert.match(m.error ?? "", /error_max_turns/);
+  assert.match(t.notices.at(-1)!.title, /con error/);
+  assert.equal(t.notices.at(-1)!.url, `/claude/s/${NEW_SESSION}`);
+  const item = (await t.timeline()).items.find((i: Json) => i.type === "user" && i.source === "phone");
+  assert.deepEqual([item.delivery, item.continuation, /error_max_turns/.test(item.note)], ["entregado", NEW_SESSION, true]);
+});
+
+test("fallida sin sesión nueva (no llegó a abrirse) sigue siendo 'no_retomado'", async () => {
+  const t = setup();
+  const d = await t.pair();
+  await d.stop();
+  await t.send("sigue");
+  t.tick(afterThreshold);
+  const task = (await d.next()).body.task;
+  await d.taskEvent(task.id, { type: "finish", outcome: "fallida", error: "No se pudo iniciar claude (ENOENT)" });
+  assert.equal([...t.store.messages.values()][0]!.status, "no_retomado");
+});
+
+test("cwd: se retoma desde la carpeta donde NACIÓ la sesión aunque después hiciera cd", async () => {
+  const t = setup();
+  const d = await t.pair();
+  await d.ev("session_start", SESSION, { cwd: "~\\finapp" });
+  await d.ev("stop", SESSION, { cwd: "~\\finapp\\apps\\web", message: "listo" });
+  assert.equal((await t.store.getSession(DAVID, SESSION))!.cwd, "~\\finapp\\apps\\web", "cwd sigue al último evento");
+  await t.send("hola");
+  t.tick(afterThreshold);
+  assert.deepEqual((await d.next()).body.task.resume, { session_id: SESSION, cwd: "~\\finapp" });
 });

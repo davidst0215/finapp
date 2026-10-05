@@ -84,6 +84,8 @@ export function deliveryLine(item: UserItem): DeliveryLine | null {
     case 'retomando':
       return line('Claude está quieto: lo retomo en la laptop…');
     case 'entregado':
+      // Retomado pero la continuación terminó mal (tope de turnos o de gasto): Claude sí leyó el mensaje; se avisa y se enlaza.
+      if (item.continuation && item.note) return line(`Retomado con error: ${item.note}`, { continuation: item.continuation, alert: true });
       return item.continuation ? line('Retomado en la laptop', { continuation: item.continuation }) : line(base.label);
     case 'no_retomado':
       return line(`No se puede retomar: ${item.note || 'la laptop no pudo abrir la sesión'}`, { alert: true });

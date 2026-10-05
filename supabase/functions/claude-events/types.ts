@@ -48,6 +48,8 @@ export interface SessionRow {
   ended_at: string | null;
   /** Sesión original de la que se bifurcó esta al retomarla desde el celular (014). */
   continued_from?: string | null;
+  /** Carpeta donde nació la sesión (014): `claude --resume` busca la conversación ahí; `cwd` cambia con cada `cd`. */
+  start_cwd?: string | null;
 }
 
 export interface EventRow {
@@ -184,8 +186,10 @@ export interface MessageRow {
   delivered_at: string | null;
   /** Tarea del runner que lleva este mensaje (014). */
   resume_task_id?: string | null;
-  /** Por qué no se pudo retomar (014). */
+  /** Por qué no se pudo retomar, o con qué error terminó una continuación que sí se abrió (014). */
   error?: string | null;
+  /** Cuándo lo reclamó el runner (014): un 'retomando' sin tarea pasado el plazo vuelve a la cola. */
+  resume_claimed_at?: string | null;
 }
 
 export interface TaskRow {

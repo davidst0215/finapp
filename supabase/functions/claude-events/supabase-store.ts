@@ -335,11 +335,11 @@ export function createSupabaseStore(db: SupabaseClient): Store {
       return must(res, "listStalledMessages") as MessageRow[];
     },
 
-    async claimMessageForResume(userId, messageId, taskId) {
+    async claimMessageForResume(userId, messageId, taskId, nowIso) {
       // UPDATE condicional: solo uno gana entre el hook Stop (en_cola -> entregando) y este reclamo (en_cola -> retomando).
       const res = await db
         .from("claude_messages")
-        .update({ status: "retomando", resume_task_id: taskId })
+        .update({ status: "retomando", resume_task_id: taskId, resume_claimed_at: nowIso })
         .eq("message_id", messageId)
         .eq("user_id", userId)
         .eq("status", "en_cola")
@@ -349,14 +349,26 @@ export function createSupabaseStore(db: SupabaseClient): Store {
 
     async releaseResumeMessages(userId, taskId) {
       must(
-        await db.from("claude_messages").update({ status: "en_cola", resume_task_id: null }).eq("user_id", userId).eq("status", "retomando").eq("resume_task_id", taskId),
+        await db.from("claude_messages").update({ status: "en_cola", resume_task_id: null, resume_claimed_at: null }).eq("user_id", userId).eq("status", "retomando").eq("resume_task_id", taskId),
         "releaseResumeMessages",
       );
     },
 
     async settleResumeMessages(userId, taskId, outcome) {
-      const patch = outcome.ok ? { status: "entregado", delivered_at: outcome.atIso } : { status: "no_retomado", error: outcome.error };
+      const patch = outcome.ok
+        ? { status: "entregado", delivered_at: outcome.atIso, ...(outcome.error ? { error: outcome.error } : {}) }
+        : { status: "no_retomado", error: outcome.error };
       must(await db.from("claude_messages").update(patch).eq("user_id", userId).eq("status", "retomando").eq("resume_task_id", taskId), "settleResumeMessages");
+    },
+
+    async listStaleResumeMessages(userId, claimedBeforeIso) {
+      const res = await db
+        .from("claude_messages")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("status", "retomando")
+        .lt("resume_claimed_at", claimedBeforeIso);
+      return must(res, "listStaleResumeMessages") as MessageRow[];
     },
 
     // --- v2 (012): tareas

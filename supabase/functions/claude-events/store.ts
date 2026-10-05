@@ -159,11 +159,16 @@ export interface Store {
    * Reclamo atómico para retomar: 'en_cola' -> 'retomando' (UPDATE condicional status = 'en_cola') y guarda la tarea que lo lleva.
    * false si otro lo tomó antes (el hook Stop lo entregó o lo reclamó, o venció): ese mensaje NO se retoma.
    */
-  claimMessageForResume(userId: string, messageId: string, taskId: string): Promise<boolean>;
+  claimMessageForResume(userId: string, messageId: string, taskId: string, nowIso: string): Promise<boolean>;
   /** La tarea no se pudo crear: sus mensajes 'retomando' vuelven a 'en_cola'. */
   releaseResumeMessages(userId: string, taskId: string): Promise<void>;
-  /** La tarea terminó: sus mensajes 'retomando' pasan a 'entregado' (outcome ok) o 'no_retomado' (con el motivo). */
-  settleResumeMessages(userId: string, taskId: string, outcome: { ok: true; atIso: string } | { ok: false; error: string }): Promise<void>;
+  /**
+   * La tarea terminó: sus mensajes 'retomando' pasan a 'entregado' (ok; con `error` si la continuación se abrió pero terminó mal)
+   * o a 'no_retomado' (con el motivo).
+   */
+  settleResumeMessages(userId: string, taskId: string, outcome: { ok: true; atIso: string; error?: string } | { ok: false; error: string }): Promise<void>;
+  /** Mensajes 'retomando' reclamados antes de `claimedBeforeIso`: candidatos a huérfanos (la función murió antes de crear la tarea, o la tarea ya terminó). */
+  listStaleResumeMessages(userId: string, claimedBeforeIso: string): Promise<MessageRow[]>;
 
   // --- v2 (012): tareas --------------------------------------------------------------------------------------
   countQueuedTasks(userId: string, nowIso: string): Promise<number>;

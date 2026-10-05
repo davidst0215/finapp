@@ -143,6 +143,15 @@ function isInside(child, parent) {
   return child.norm === parent.norm || child.norm.startsWith(base);
 }
 
+// realpath en Windows puede devolver la forma extendida (\\?\C:\x, \\?\UNC\srv\share): es la MISMA carpeta. Solo para rutas ya
+// resueltas por el sistema; la cwd que llega del servidor con esa forma se sigue rechazando (normalizeAbs).
+export function stripExtendedPrefix(p) {
+  if (typeof p !== "string") return p;
+  if (/^\\\\\?\\UNC\\/i.test(p)) return "\\\\" + p.slice(8);
+  if (/^\\\\\?\\[A-Za-z]:\\/.test(p)) return p.slice(4);
+  return p;
+}
+
 // Devuelve { name, dir } del proyecto permitido que contiene `cwd`, o null. Solo lexical (el caso real se confirma con realpath).
 export function findProjectForCwd(config, cwd, home = os.homedir()) {
   const target = normalizeAbs(expandHome(cwd, home));
@@ -661,8 +670,8 @@ export function validateResumeTask(task, config, { isDirectory, realpath, home }
   if (!isDirectory(cwd)) return { error: "la carpeta de la sesión ya no existe en esta laptop" };
   // Enlaces simbólicos y junctions: la ruta real de la carpeta también debe quedar dentro de la ruta real del proyecto.
   try {
-    const real = normalizeAbs(realpath(cwd));
-    const root = normalizeAbs(realpath(match.dir));
+    const real = normalizeAbs(stripExtendedPrefix(realpath(cwd)));
+    const root = normalizeAbs(stripExtendedPrefix(realpath(match.dir)));
     if (!isInside(real, root)) return { error: RESUME_REJECTED };
   } catch {
     return { error: "la carpeta de la sesión ya no existe en esta laptop" };

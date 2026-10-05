@@ -135,7 +135,8 @@ export function buildTimeline(src: TimelineSources, limit: number): { items: Tim
       text: shown(m.body),
       delivery: m.status,
       queue: m.status === "en_cola" ? queue : null,
-      note: m.status === "no_retomado" ? (m.error ?? "no se pudo retomar") : null,
+      // no_retomado: el motivo. entregado con error: la continuación se abrió pero terminó mal (tope de turnos o de gasto).
+      note: m.status === "no_retomado" ? (m.error ?? "no se pudo retomar") : m.status === "entregado" ? (m.error ?? null) : null,
       continuation: task?.session_id ?? null,
     });
   }

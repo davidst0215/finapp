@@ -244,3 +244,14 @@ test("punta a punta: la carpeta de la sesión es '~\\\\proyecto' (como la manda 
   const r = runner.validateTask(resumeTask(`~${path.sep}proyecto${path.sep}apps`), c, { ...alwaysDir, home });
   assert.equal(path.resolve(r.cwd), path.resolve(path.join(projectDir, "apps")));
 });
+
+test("realpath en forma extendida (\\?\C:\...) no rechaza proyectos legítimos; la cwd del servidor con esa forma sí", () => {
+  assert.equal(runner.stripExtendedPrefix("\\\\?\\C:\\proj\\sub"), "C:\\proj\\sub");
+  assert.equal(runner.stripExtendedPrefix("\\\\?\\UNC\\srv\\share\\x"), "\\\\srv\\share\\x");
+  assert.equal(runner.stripExtendedPrefix("C:\\proj"), "C:\\proj");
+  const c = cfg({ demo: "C:\\proj" });
+  const ext = (p) => (/^[A-Za-z]:/.test(p) ? "\\\\?\\" + p : p);
+  const opts = { isDirectory: () => true, realpath: ext, home: "C:\\Users\\x" };
+  assert.equal(runner.validateResumeTask(resumeTask("C:\\proj\\sub"), c, opts).cwd, "C:\\proj\\sub");
+  assert.equal(runner.validateResumeTask(resumeTask("\\\\?\\C:\\proj\\sub"), c, opts).error, runner.RESUME_REJECTED, "la cwd que viene del servidor nunca puede usar la forma extendida");
+});

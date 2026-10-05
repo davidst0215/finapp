@@ -214,3 +214,8 @@ test("buildConversations: retomar no crea filas de tarea ni marca la sesión nue
   );
   assert.deepEqual(list.map((c) => [c.key, c.isTask]), [["s:nueva", false]]);
 });
+
+test("deliveryLine: retomado con error enlaza la continuación y avisa en rojo (no es 'no se pudo retomar')", () => {
+  const l = deliveryLine(phone("entregado", { continuation: "nueva", note: "Claude terminó con error: error_max_turns" }));
+  assert.deepEqual([l.label, l.alert, l.continuation, l.ticks], ["Retomado con error: Claude terminó con error: error_max_turns", true, "nueva", 2]);
+});
