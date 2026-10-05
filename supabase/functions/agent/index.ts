@@ -110,7 +110,10 @@ Deno.serve(async (req: Request) => {
       if (!respuestaInservible(call)) break;
       console.error(`agent: respuesta inservible del modelo (intento ${intento + 1})`);
     }
-    if (respuestaInservible(call) || !call) return json({ action: "query", message: "No me salió la respuesta. ¿Me lo repites?" });
+    if (respuestaInservible(call) || !call) {
+      console.log(JSON.stringify({ evt: "agent", tool: "(inservible)", ...t.resumen() }));
+      return json({ action: "query", message: "No me salió la respuesta. ¿Me lo repites?" });
+    }
 
     const owner = OWNER.get(call.function.name);
     if (!owner) return json({ action: "unknown", message: "No entendí. Intenta de nuevo." });
