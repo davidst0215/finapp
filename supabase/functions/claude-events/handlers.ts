@@ -317,7 +317,7 @@ async function uiOverview(deps: ApiDeps, userId: string): Promise<ApiResult> {
     store.listMessages(userId, 30),
   ]);
   // Una tarea cuyo runner dejó de dar señal se marca fallida aunque nadie más sondee.
-  for (const d of devices) await store.sweepTasks(userId, d.device_id, nowIso, staleIso);
+  for (const d of devices) await sweepTasks(store, userId, d.device_id, nowIso, staleIso);
   const tasks = await store.listTasks(userId, 15);
   const view = (a: (typeof pending)[number]) => toApprovalView(a, now.getTime());
   return ok({
@@ -420,6 +420,14 @@ function requireOwner(deps: ApiDeps, userId: string): ApiResult | null {
 // Retención mínima: al terminar una tarea el prompt completo se reemplaza por un resumen redactado y corto.
 const promptSummary = (prompt: string) => cleanLine(prompt, LIMITS.task.promptSummaryMax) || "(sin texto)";
 
+// Barrido de tareas vencidas / sin latido. Las que cambian de estado también pierden el prompt completo: queda un
+// resumen redactado (la redacción es de este módulo; el store solo mueve estados).
+async function sweepTasks(store: Store, userId: string, deviceId: string, nowIso: string, staleIso: string) {
+  for (const t of await store.sweepTasks(userId, deviceId, nowIso, staleIso)) {
+    await store.updateTask(userId, t.task_id, { prompt: promptSummary(t.prompt) }, ["vencida", "fallida"]);
+  }
+}
+
 const PROJECT_NAME_RE = /^[A-Za-z0-9._ -]{1,60}$/;
 
 // Texto de David: no se redacta (cambiaría lo que quiso decir), pero se unifican saltos y se marcan los
@@ -471,7 +479,7 @@ async function deviceTaskNext(req: ApiRequest, deps: ApiDeps, device: DeviceRow)
   const { store } = deps;
 
   await store.setRunnerState(device.device_id, projects, nowIso);
-  await store.sweepTasks(userId, device.device_id, nowIso, new Date(now.getTime() - LIMITS.task.staleMs).toISOString());
+  await sweepTasks(store, userId, device.device_id, nowIso, new Date(now.getTime() - LIMITS.task.staleMs).toISOString());
 
   // Una tarea a la vez por dispositivo.
   const busy = (await store.listTasks(userId, 30)).some((t) => t.device_id === device.device_id && t.status === "ejecutando");
@@ -592,7 +600,7 @@ async function uiTaskCreate(req: ApiRequest, deps: ApiDeps, userId: string): Pro
   const target = candidates.find((d) => d.runner_seen_at && now.getTime() - Date.parse(d.runner_seen_at) <= RUNNER_ONLINE_MS);
   if (!target) return fail(409, "El runner de tu laptop no está conectado");
 
-  await store.sweepTasks(userId, target.device_id, nowIso, new Date(now.getTime() - LIMITS.task.staleMs).toISOString());
+  await sweepTasks(store, userId, target.device_id, nowIso, new Date(now.getTime() - LIMITS.task.staleMs).toISOString());
   if ((await store.countQueuedTasks(userId, nowIso)) >= LIMITS.task.maxQueued) return fail(429, "Ya hay varias tareas en cola");
 
   const task = await store.insertTask({

@@ -82,7 +82,7 @@ cada sesión. Tras actualizar `finapp`, vuelve a correr el instalador. **No agre
 
 **Escribirle a una sesión**: en la app, abre la sesión y usa «Escríbele» (máx. 2000 caracteres). Se entrega una sola vez cuando Claude termina su turno
 (hook Stop, `{"decision":"block","reason":...}`) y en dos fases: el hook reclama el mensaje (estado «Entregando…»), lo escribe en stdout y recién entonces lo
-confirma (ack) → «Entregado» y se borra el texto. Sin ack en 60 s vuelve a la cola. Los mensajes sin recoger vencen a las 6 h (el texto se borra).
+confirma (ack) → «Entregado» y se borra el texto. Sin ack en 60 s vuelve a la cola. **La entrega es «al menos una vez»**: si el ack falla (red caída justo después de escribir stdout), Claude puede recibir el mismo mensaje dos veces. Los mensajes sin recoger vencen a las 6 h (el texto se borra).
 
 - **Con «Aprobar desde el celular» activo, CADA turno de Claude espera hasta 2 min (`stop_wait_minutes` en `claude-hook.json`, máx. 14, `0` = no esperar)** a que
   llegue un mensaje (sondeo cada 3 s) antes de terminar. Con el modo apagado no espera: solo entrega lo que ya estaba en cola.
@@ -94,7 +94,7 @@ confirma (ack) → «Entregado» y se borra el texto. Sin ack en 60 s vuelve a l
 1. Permite proyectos (nombre -> ruta) en esta laptop; nunca se editan desde el celular:
    `node tools/claude-hooks/wabid-runner.mjs add finapp-demo C:\ruta\al\proyecto` (`list`, `remove`, `check`). Archivo: `%LOCALAPPDATA%\Wabid\claude-runner.json`.
    El runner **relee el archivo en cada vuelta** (por fecha de modificación): `remove` revoca un proyecto sin reiniciar, incluso para tareas ya en cola.
-   Opcionales: `claudeCommand` (ruta de claude.exe o `["node","...\\cli.js"]`; un `.cmd` no se puede lanzar sin shell), `maxMinutes` (30), `pollSeconds` (10),
+   Opcionales: `claudeCommand` (ruta de claude.exe o `["node","...\\cli.js"]`; un `.cmd` no se puede lanzar sin shell; sin esto se busca `claude.exe` en el PATH y, en Windows, en `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`, porque el shim `claude` de npm no se puede lanzar sin shell), `maxMinutes` (30), `pollSeconds` (10),
    `maxTurns` (40) y `maxBudgetUsd` (2).
 2. `node tools/claude-hooks/wabid-runner.mjs check` verifica la conexión, encuentra `claude` y exige **Claude Code ≥ 2.1.259** (`--permission-prompts`).
 3. Arranque al iniciar sesión (oculto): `node tools/claude-hooks/instalar-runner.mjs --dry-run`, luego sin `--dry-run` (copia a `bin` y crea la tarea). Quitar: `--quitar`.

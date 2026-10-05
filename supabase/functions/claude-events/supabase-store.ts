@@ -350,25 +350,25 @@ export function createSupabaseStore(db: SupabaseClient): Store {
     },
 
     async sweepTasks(userId, deviceId, nowIso, staleIso) {
-      must(
-        await db
-          .from("claude_tasks")
-          .update({ status: "vencida", finished_at: nowIso, updated_at: nowIso })
-          .eq("user_id", userId)
-          .eq("status", "en_cola")
-          .lte("expires_at", nowIso),
-        "sweepTasks vencidas",
-      );
-      must(
-        await db
-          .from("claude_tasks")
-          .update({ status: "fallida", error: "El runner dejó de responder", finished_at: nowIso, updated_at: nowIso })
-          .eq("user_id", userId)
-          .eq("device_id", deviceId)
-          .eq("status", "ejecutando")
-          .lt("updated_at", staleIso),
-        "sweepTasks sin latido",
-      );
+      const expired = await db
+        .from("claude_tasks")
+        .update({ status: "vencida", finished_at: nowIso, updated_at: nowIso })
+        .eq("user_id", userId)
+        .eq("status", "en_cola")
+        .lte("expires_at", nowIso)
+        .select("*");
+      const stale = await db
+        .from("claude_tasks")
+        .update({ status: "fallida", error: "El runner dejó de responder", finished_at: nowIso, updated_at: nowIso })
+        .eq("user_id", userId)
+        .eq("device_id", deviceId)
+        .eq("status", "ejecutando")
+        .lt("updated_at", staleIso)
+        .select("*");
+      return [
+        ...(must(expired as Result<TaskRow[] | null>, "sweepTasks vencidas") ?? []),
+        ...(must(stale as Result<TaskRow[] | null>, "sweepTasks sin latido") ?? []),
+      ];
     },
   };
 }

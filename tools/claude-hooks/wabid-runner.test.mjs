@@ -108,6 +108,17 @@ test("resolveClaudeCommand: PATH, .cmd rechazado, claudeCommand explícito", () 
 
 // --- Salida stream-json -----------------------------------------------------------------------------------------
 
+test("resolveClaudeCommand: en Windows usa el claude.exe del paquete npm cuando el PATH solo tiene el shim; error claro si no existe", () => {
+  const npmExe = "C:\\Users\\D\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe";
+  const env = { PATH: "C:\\Users\\D\\AppData\\Roaming\\npm;C:\\otro", APPDATA: "C:\\Users\\D\\AppData\\Roaming" };
+  const shimOnly = (p) => p.endsWith("\\claude") || p.endsWith("claude.cmd"); // el shim existe, claude.exe no
+  assert.deepEqual(runner.resolveClaudeCommand({ config: {}, env, platform: "win32", exists: (p) => p === npmExe || shimOnly(p) }), { file: npmExe, args: [] });
+  const none = runner.resolveClaudeCommand({ config: {}, env, platform: "win32", exists: shimOnly });
+  assert.match(none.error, /No encuentro claude\.exe.*npm.*claude-code.*claudeCommand/);
+  assert.deepEqual(runner.resolveClaudeCommand({ config: {}, env: { ...env, PATH: "C:\\bin" }, platform: "win32", exists: (p) => p === "C:\\bin\\claude.exe" || p === npmExe }), { file: "C:\\bin\\claude.exe", args: [] }, "el PATH manda sobre el defecto de npm");
+  assert.deepEqual(runner.resolveClaudeCommand({ config: { claudeCommand: ["D:\\mio\\claude.exe"] }, env, platform: "win32", exists: () => true }), { file: "D:\\mio\\claude.exe", args: [] }, "claudeCommand manda sobre todo");
+});
+
 test("StreamTracker: sesión, último texto, avance y resultado; ignora basura y subagentes", () => {
   const t = new runner.StreamTracker("C:\\Users\\Dsalg");
   t.feed("no es json");
@@ -483,6 +494,8 @@ test("una tarea con claude viejo falla con un error claro y claude no ejecuta la
 test("si close no llega tras matar, se fuerza, se reporta fallida y se sigue", async () => {
   const pidFile = path.join(tmp, "stuck.pid");
   let child;
+  const kills = [];
+  const logs = [];
   const started = Date.now();
   const r = await runner.runTask({
     task: task("HANG"),
@@ -491,11 +504,17 @@ test("si close no llega tras matar, se fuerza, se reporta fallida y se sigue", a
     env: fakeEnv({ FAKE_PID_FILE: pidFile }),
     maxMs: 300,
     forceAfterMs: 400,
+    forceSettleMs: 300,
     heartbeatMs: 1000,
     report: async () => ({}),
-    killImpl: () => {}, // el kill "no funciona": close nunca llega solo
+    killImpl: (c, o) => void kills.push(o), // el kill "no funciona": close nunca llega solo
     onChild: (c) => (child = c),
+    log: (m) => logs.push(m),
   });
+  assert.equal(kills.length, 2, "primer intento + segundo intento sobre el árbol tras el cierre forzado");
+  assert.equal(kills[1].force, true);
+  assert.ok(logs.some((m) => m.includes("se vuelve a matar el árbol")), "queda registrado");
+  assert.ok(Date.now() - started >= 400 + 300 - 50, "espera unos segundos antes de seguir");
   assert.equal(r.outcome, "fallida");
   assert.match(r.error, /se forzó el cierre/);
   assert.ok(Date.now() - started < 5000);
@@ -518,16 +537,43 @@ test("abortar el runner (SIGHUP/cierre de sesión) mata la tarea y la reporta fa
 
 test("acquireLock: toma el bloqueo, rechaza un segundo runner vivo y recupera uno viejo", () => {
   const file = path.join(tmp, "runner.lock");
-  const a = runner.acquireLock(file, { pid: 1111, isAlive: () => false });
+  const BOOT = 1_700_000_000;
+  const a = runner.acquireLock(file, { pid: 1111, boot: BOOT, isAlive: () => false });
   assert.equal(a.ok, true);
-  assert.equal(readFileSync(file, "utf8"), "1111");
-  const b = runner.acquireLock(file, { pid: 2222, isAlive: (p) => p === 1111 });
-  assert.deepEqual([b.ok, b.pid], [false, 1111]);
-  const c = runner.acquireLock(file, { pid: 3333, isAlive: () => false });
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { pid: 1111, boot: BOOT });
+  const b = runner.acquireLock(file, { pid: 2222, boot: BOOT + 2, isAlive: (p) => p === 1111 });
+  assert.deepEqual([b.ok, b.pid], [false, 1111], "mismo arranque y pid vivo: ocupado (tolera 5 s de deriva)");
+  const c = runner.acquireLock(file, { pid: 3333, boot: BOOT, isAlive: () => false });
   assert.equal(c.ok, true, "el pid anterior ya no existe: bloqueo viejo");
   c.release();
   assert.equal(existsSync(file), false);
-  const own = runner.acquireLock(file, { pid: 4444, isAlive: () => true });
-  assert.equal(own.ok, true);
-  own.release();
+});
+
+test("acquireLock: un pid vivo de OTRO arranque del sistema es un bloqueo viejo (Windows reusa pids)", () => {
+  const file = path.join(tmp, "runner-boot.lock");
+  const BOOT = 1_700_000_000;
+  assert.equal(runner.acquireLock(file, { pid: 1111, boot: BOOT, isAlive: () => true }).ok, true);
+  const after = runner.acquireLock(file, { pid: 2222, boot: BOOT + 86_400, isAlive: () => true }); // el pid 1111 "vive", pero es otra sesión de Windows
+  assert.equal(after.ok, true);
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).pid, 2222);
+  after.release();
+});
+
+test("acquireLock: crea con flag wx; el formato viejo (solo pid) y un archivo basura se tratan bien", () => {
+  const file = path.join(tmp, "runner-wx.lock");
+  const flags = [];
+  const lock = runner.acquireLock(file, { pid: 5, boot: 10, isAlive: () => false, write: (f, d, o) => (flags.push(o?.flag), writeFileSync(f, d, o)) });
+  assert.deepEqual(flags, ["wx"]);
+  lock.release();
+  writeFileSync(file, "4242"); // lock del formato anterior, pid muerto
+  assert.equal(runner.acquireLock(file, { pid: 6, boot: 10, isAlive: () => false }).ok, true);
+  writeFileSync(file, "basura"); // ilegible: se retira
+  const last = runner.acquireLock(file, { pid: 7, boot: 10, isAlive: () => true });
+  assert.equal(last.ok, true);
+  last.release();
+  // dos arranques "simultáneos": el segundo ve el archivo del primero y no lo pisa
+  const first = runner.acquireLock(file, { pid: 8, boot: 10, isAlive: () => true });
+  assert.equal(runner.acquireLock(file, { pid: 9, boot: 10, isAlive: () => true }).ok, false);
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).pid, 8);
+  first.release();
 });

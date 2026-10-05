@@ -37,6 +37,8 @@ export const DEFAULT_MAX_BUDGET_USD = 2;
 export const MIN_CLAUDE_VERSION = [2, 1, 259];
 // Si tras matar el proceso `close` no llega en este tiempo, se fuerza y se sigue con la siguiente tarea.
 const FORCE_AFTER_KILL_MS = 10_000;
+// Tras un cierre forzado se espera un poco antes de tomar otra tarea, para que el sistema libere el árbol de procesos.
+const FORCE_SETTLE_MS = 5000;
 const HEARTBEAT_MS = 5000;
 const NAME_RE = /^[A-Za-z0-9._ -]{1,60}$/;
 const SESSION_RE = /^[A-Za-z0-9._:-]{1,100}$/;
@@ -187,7 +189,12 @@ export function checkClaudeVersion(command, { spawnImpl = nodeSpawn, timeoutMs =
 
 // --- Un solo runner a la vez ---------------------------------------------------------------------------------------------
 // Archivo de bloqueo con el pid. Si el pid anterior ya no existe, el bloqueo es viejo y se toma.
-export function acquireLock(file, { pid = process.pid, isAlive, read = readFileSync, write = writeFileSync, exists = existsSync, remove = unlinkSync, mkdir = (d) => mkdirSync(d, { recursive: true }) } = {}) {
+// Se guarda { pid, boot }: `boot` es la hora de arranque del sistema. Windows reusa pids tras reiniciar, así que un pid vivo
+// con otro `boot` es un bloqueo viejo. Se crea con flag "wx" (falla si existe): dos arranques simultáneos no se pisan.
+export const systemBootSeconds = (now = Date.now(), uptime = os.uptime()) => Math.round(now / 1000 - uptime);
+const BOOT_TOLERANCE_S = 5; // now() - uptime() oscila un poco entre lecturas
+
+export function acquireLock(file, { pid = process.pid, boot = systemBootSeconds(), isAlive, read = readFileSync, write = writeFileSync, remove = unlinkSync, mkdir = (d) => mkdirSync(d, { recursive: true }) } = {}) {
   const alive =
     isAlive ??
     ((p) => {
@@ -198,22 +205,46 @@ export function acquireLock(file, { pid = process.pid, isAlive, read = readFileS
         return e && e.code === "EPERM";
       }
     });
-  if (exists(file)) {
-    const other = Number.parseInt(String(read(file, "utf8")).trim(), 10);
-    if (Number.isInteger(other) && other !== pid && alive(other)) return { ok: false, pid: other };
-  }
-  mkdir(path.dirname(file));
-  write(file, String(pid));
-  return {
-    ok: true,
-    release: () => {
-      try {
-        if (Number.parseInt(String(read(file, "utf8")).trim(), 10) === pid) remove(file);
-      } catch {
-        /* ya no está */
-      }
-    },
+  const readLock = () => {
+    try {
+      const raw = String(read(file, "utf8")).trim();
+      const data = raw.startsWith("{") ? JSON.parse(raw) : { pid: Number.parseInt(raw, 10) }; // formato viejo: solo el pid
+      return Number.isInteger(data.pid) ? data : null;
+    } catch {
+      return null;
+    }
   };
+  mkdir(path.dirname(file));
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      write(file, JSON.stringify({ pid, boot }), { flag: "wx" });
+      return {
+        ok: true,
+        release: () => {
+          const cur = readLock();
+          if (cur && cur.pid === pid) {
+            try {
+              remove(file);
+            } catch {
+              /* ya no está */
+            }
+          }
+        },
+      };
+    } catch (e) {
+      if (!e || e.code !== "EEXIST") throw e;
+    }
+    // Existe: ¿sigue vivo ese runner? Mismo arranque del sistema Y pid vivo; si no, es un bloqueo viejo y se retira.
+    const other = readLock();
+    const sameBoot = other && typeof other.boot === "number" ? Math.abs(other.boot - boot) <= BOOT_TOLERANCE_S : false;
+    if (other && other.pid !== pid && sameBoot && alive(other.pid)) return { ok: false, pid: other.pid };
+    try {
+      remove(file);
+    } catch {
+      /* otro runner lo retiró primero */
+    }
+  }
+  return { ok: false, pid: null }; // perdió la carrera dos veces: otro runner está arrancando
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -263,7 +294,14 @@ export function resolveClaudeCommand({ config, env = process.env, platform = pro
       if (exists(candidate)) return { file: candidate, args: [] };
     }
   }
-  return { error: 'No encuentro claude en el PATH. Pon su ruta en claudeCommand de claude-runner.json (p. ej. "C:\\\\Users\\\\tu\\\\.local\\\\bin\\\\claude.exe").' };
+  // Windows con la instalación de npm: en el PATH solo hay un shim sin extensión (claude / claude.cmd) que spawn sin shell no
+  // encuentra (ENOENT). El ejecutable real está dentro del paquete.
+  if (platform === "win32" && env.APPDATA) {
+    const npmExe = path.win32.join(env.APPDATA, "npm", "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe");
+    if (exists(npmExe)) return { file: npmExe, args: [] };
+  }
+  const hint = platform === "win32" ? " Tampoco está en %APPDATA%\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe." : "";
+  return { error: `No encuentro claude.exe en el PATH.${hint} Pon su ruta en claudeCommand de claude-runner.json (p. ej. "C:\\Users\\tu\\.local\\bin\\claude.exe").` };
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -336,8 +374,9 @@ export class StreamTracker {
 // ---------------------------------------------------------------------------------------------------------
 
 // Mata el proceso y sus hijos (claude lanza bash/node). Windows: taskkill /T; resto: grupo de procesos.
-export function killTree(child, { platform = process.platform, spawnImpl = nodeSpawn } = {}) {
-  if (!child || child.exitCode !== null || child.pid === undefined) return;
+export function killTree(child, { platform = process.platform, spawnImpl = nodeSpawn, force = false } = {}) {
+  // `force`: segundo intento tras un cierre que no llegó; aunque el hijo directo ya no responda, se vuelve a ir por el árbol.
+  if (!child || (!force && child.exitCode !== null) || child.pid === undefined) return;
   try {
     if (platform === "win32") {
       const killer = spawnImpl("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true, shell: false });
@@ -380,6 +419,7 @@ export async function runTask({
   maxBudgetUsd = DEFAULT_MAX_BUDGET_USD,
   signal,
   forceAfterMs = FORCE_AFTER_KILL_MS,
+  forceSettleMs = FORCE_SETTLE_MS,
 }) {
   const startedAt = Date.now();
   const sessionId = randomUUID();
@@ -435,6 +475,9 @@ export async function runTask({
     if (forceTimer) return;
     forceTimer = setTimeout(() => {
       forced = true;
+      // Segundo intento sobre el árbol (taskkill /T /F en Windows; SIGTERM+SIGKILL al grupo en el resto), y se deja registro.
+      log(`el proceso (pid ${child.pid}) no cerró ${Math.round(forceAfterMs / 1000)} s después de detenerlo: se vuelve a matar el árbol`);
+      killImpl(child, { platform, force: true });
       try {
         child.kill();
       } catch {
@@ -481,6 +524,7 @@ export async function runTask({
   if (forceTimer) clearTimeout(forceTimer);
   signal?.removeEventListener("abort", onAbort);
   if (buffered.trim()) tracker.feed(buffered);
+  if (forced) await new Promise((r) => setTimeout(r, forceSettleMs));
 
   const base = { sessionId: tracker.sessionId ?? sessionId, durationMs: Date.now() - startedAt };
   if (forced) return { outcome: "fallida", error: `claude no terminó tras detenerlo (${Math.round(forceAfterMs / 1000)} s): se forzó el cierre`, ...base };

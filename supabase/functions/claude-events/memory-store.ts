@@ -292,18 +292,22 @@ export class MemoryStore implements Store {
   }
 
   async sweepTasks(userId: string, deviceId: string, nowIso: string, staleIso: string) {
+    const changed: TaskRow[] = [];
     for (const t of this.tasks.values()) {
       if (t.user_id !== userId) continue;
       if (t.status === "en_cola" && t.expires_at <= nowIso) {
         t.status = "vencida";
         t.finished_at = nowIso;
         t.updated_at = nowIso;
+        changed.push({ ...t });
       } else if (t.status === "ejecutando" && t.device_id === deviceId && t.updated_at < staleIso) {
         t.status = "fallida";
         t.error = "El runner dejó de responder";
         t.finished_at = nowIso;
         t.updated_at = nowIso;
+        changed.push({ ...t });
       }
     }
+    return changed;
   }
 }

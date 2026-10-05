@@ -167,6 +167,17 @@ test("CLI: WABID_CLAUDE_SETTINGS apunta al archivo de ejemplo y --dry-run no esc
   assert.equal(readFileSync(path.join(bin, "wabid-hook.mjs"), "utf8"), readFileSync(fileURLToPath(new URL("./wabid-hook.mjs", import.meta.url)), "utf8"));
 });
 
+test("CLI: con un settings.json roto no copia nada a bin y sale con error", () => {
+  const f = file("roto-cli.json");
+  writeFileSync(f, "{ no es json");
+  const bin = file("bin-roto");
+  const r = spawnSync(process.execPath, [CLI], { env: { ...process.env, WABID_CLAUDE_SETTINGS: f, WABID_BIN_DIR: bin }, encoding: "utf8" });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /no es un JSON válido/);
+  assert.equal(existsSync(bin), false, "nada se copió");
+  assert.equal(readFileSync(f, "utf8"), "{ no es json");
+});
+
 test("binDir: variable de entorno, Windows y Linux", () => {
   assert.equal(binDir({ WABID_BIN_DIR: "X:\\bin" }), "X:\\bin");
   assert.equal(binDir({ LOCALAPPDATA: "C:\\Users\\D\\AppData\\Local" }, "win32"), "C:\\Users\\D\\AppData\\Local\\Wabid\\bin");

@@ -113,10 +113,29 @@ export function installHooks({ settingsFile, script, dryRun = false, now = new D
   return { status: "written", settingsFile, backup, ...changes };
 }
 
+// Lee y valida el settings.json SIN escribir nada: ok si no existe, está vacío o es un objeto JSON.
+export function validateSettings(settingsFile) {
+  if (!existsSync(settingsFile)) return true;
+  const raw = readFileSync(settingsFile, "utf8").replace(/^\uFEFF/, "");
+  if (!raw.trim()) return true;
+  try {
+    const v = JSON.parse(raw);
+    return !!v && typeof v === "object" && !Array.isArray(v);
+  } catch {
+    return false;
+  }
+}
+
 function main() {
   const srcDir = path.dirname(fileURLToPath(import.meta.url));
   const dryRun = process.argv.includes("--dry-run");
   const destDir = binDir();
+  // Primero validar: con un settings.json roto no se copia nada a bin ni se toca nada.
+  if (!validateSettings(settingsPath())) {
+    console.error(`${settingsPath()} no es un JSON válido (o no es un objeto): no copié ni cambié nada. Arréglalo y vuelve a correr.`);
+    process.exitCode = 1;
+    return;
+  }
   // Los hooks apuntan a la copia en %LOCALAPPDATA%\Wabid\bin (fuera del repo), no a finapp.
   const script = path.join(destDir, "wabid-hook.mjs").replace(/\\/g, "/");
   if (path.resolve(srcDir) !== path.resolve(destDir)) {

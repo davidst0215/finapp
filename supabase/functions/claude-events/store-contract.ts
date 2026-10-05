@@ -457,7 +457,8 @@ export function defineStoreContract(label: string, make: () => Promise<StoreFixt
     const old = await f.store.insertTask(task(U1, d.device_id, "vieja", 0, 60));
     const run = await f.store.insertTask(task(U1, d.device_id, "corriendo", 100, 3600));
     await f.store.claimNextTask(U1, d.device_id, iso(100));
-    await f.store.sweepTasks(U1, d.device_id, iso(1000), iso(900));
+    const changed = await f.store.sweepTasks(U1, d.device_id, iso(1000), iso(900));
+    assert.deepEqual(changed.map((t) => t.status).sort(), ["fallida", "vencida"], "devuelve las filas que cambió");
     assert.equal((await f.store.findTask(U1, old.task_id))!.status, "vencida");
     const swept = await f.store.findTask(U1, run.task_id);
     assert.equal(swept!.status, "fallida");

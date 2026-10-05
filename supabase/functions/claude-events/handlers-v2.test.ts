@@ -343,6 +343,27 @@ test("una tarea sin latido del runner se da por fallida; una en cola que nadie r
   assert.equal(later.tasks.find((x: Json) => x.id === b.id).status, "vencida");
 });
 
+test("las tareas vencidas o sin latido también pierden el prompt completo (resumen redactado)", async () => {
+  const t = setup();
+  const d = await t.pair();
+  await d.next(["finapp"]);
+  const long = "usa sk-ant-api03-abcdefghijklmnopqrstuvwxyz " + "z".repeat(900);
+  const a = (await t.call("POST", "/ui/tasks", { project: "finapp", prompt: long })).body.task;
+  await d.next(["finapp"]); // a: ejecutando
+  t.tick(LIMITS.task.staleMs + 1000);
+  await t.call("GET", "/ui/overview"); // a: fallida por falta de latido
+  await d.next(["finapp"]);
+  const b = (await t.call("POST", "/ui/tasks", { project: "finapp", prompt: long })).body.task;
+  t.tick(LIMITS.task.queueTtlMs + 1000);
+  await t.call("GET", "/ui/overview"); // b: vencida
+  for (const id of [a.id, b.id]) {
+    const row = (await t.store.findTask(DAVID, id))!;
+    assert.ok(["fallida", "vencida"].includes(row.status));
+    assert.ok(row.prompt.length <= LIMITS.task.promptSummaryMax, row.status);
+    assert.ok(!row.prompt.includes("sk-ant"));
+  }
+});
+
 test("el runner solo reporta nombres válidos y el servidor los muestra en el dispositivo", async () => {
   const t = setup();
   const d = await t.pair();

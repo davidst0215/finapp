@@ -157,7 +157,8 @@ export interface Store {
   updateTask(userId: string, taskId: string, patch: TaskPatch, onlyIfStatus: TaskStatus[]): Promise<TaskRow | null>;
   /**
    * Barrido de tareas: en cola vencidas -> 'vencida'; 'ejecutando' del dispositivo sin latido desde `staleIso`
-   * -> 'fallida' ("el runner dejó de responder").
+   * -> 'fallida' ("el runner dejó de responder"). Devuelve las filas que cambió: el handler les reduce el prompt a un
+   * resumen redactado (la redacción vive en el servidor, no en SQL).
    */
-  sweepTasks(userId: string, deviceId: string, nowIso: string, staleIso: string): Promise<void>;
+  sweepTasks(userId: string, deviceId: string, nowIso: string, staleIso: string): Promise<TaskRow[]>;
 }
