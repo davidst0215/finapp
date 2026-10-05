@@ -114,6 +114,8 @@ export interface Store {
   findApproval(userId: string, approvalId: string): Promise<ApprovalRow | null>;
   /** Más recientes primero. */
   listApprovals(userId: string, opts: { statuses: ApprovalStatus[]; sinceIso?: string; limit: number }): Promise<ApprovalRow[]>;
+  /** De cualquier estado, de una sola sesión, más recientes primero (013). */
+  listSessionApprovals(userId: string, sessionId: string, limit: number): Promise<ApprovalRow[]>;
   /**
    * Transición atómica pendiente → aprobada|denegada, solo si sigue pendiente y no venció.
    * Devuelve la fila actualizada, o null si no hubo transición (no existe, ya decidida o vencida).
@@ -133,7 +135,7 @@ export interface Store {
    * (UPDATE condicional status = 'en_cola'; el texto sigue guardado hasta la confirmación). Devuelve el texto o null.
    */
   claimNextMessage(userId: string, sessionId: string, nowIso: string): Promise<{ messageId: string; text: string } | null>;
-  /** Fase 2: el hook ya escribió el texto. 'entregando' -> 'entregado' y se borra el texto. false si no hubo transición. */
+  /** Fase 2: el hook ya escribió el texto. 'entregando' -> 'entregado'. El texto se CONSERVA (013: lo muestra el chat). false si no hubo transición. */
   ackMessage(userId: string, messageId: string, deviceId: string, nowIso: string): Promise<boolean>;
   /** Reclamos sin confirmar desde `olderThanIso` vuelven a la cola. */
   requeueStaleMessages(userId: string, olderThanIso: string): Promise<void>;
@@ -141,6 +143,8 @@ export interface Store {
   expireMessages(userId: string, nowIso: string): Promise<void>;
   /** Más recientes primero. Nunca devuelve el texto. */
   listMessages(userId: string, limit: number): Promise<MessageRow[]>;
+  /** Más recientes primero, CON texto (013): solo para la línea de tiempo de una sesión; nunca va a la vista general. */
+  listSessionMessages(userId: string, sessionId: string, limit: number): Promise<MessageRow[]>;
 
   // --- v2 (012): tareas --------------------------------------------------------------------------------------
   countQueuedTasks(userId: string, nowIso: string): Promise<number>;

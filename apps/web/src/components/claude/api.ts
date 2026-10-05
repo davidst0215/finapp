@@ -1,5 +1,5 @@
 import { functionUrl, supabase } from '@/lib/supabase';
-import type { ApprovalView, Decision, DeviceView, EventView, MessageView, Overview, PairedDevice, TaskView } from './types';
+import type { ApprovalView, Decision, DeviceView, MessageView, Overview, PairedDevice, TaskView, TimelineResponse } from './types';
 
 // Rutas /ui/* de la edge function claude-events: van con el JWT del usuario. La laptop usa otras rutas (/device/*).
 // Siempre por functionUrl: sin la región fijada cada llamada tardaba ~1.9 s en vez de ~0.7 s (medido 5-oct).
@@ -48,8 +48,9 @@ async function request<T>(method: string, path: string, body?: unknown, signal?:
 export const claudeApi = {
   overview: (signal?: AbortSignal) => request<Overview>('GET', '/ui/overview', undefined, signal),
 
-  sessionEvents: (sessionId: string, signal?: AbortSignal) =>
-    request<{ events: EventView[] }>('GET', `/ui/sessions/${encodeURIComponent(sessionId)}/events`, undefined, signal),
+  /** Los últimos `limit` elementos de la conversación (chat) de una sesión. */
+  sessionTimeline: (sessionId: string, limit: number, signal?: AbortSignal) =>
+    request<TimelineResponse>('GET', `/ui/sessions/${encodeURIComponent(sessionId)}/timeline?limit=${limit}`, undefined, signal),
 
   pair: (name: string) => request<PairedDevice>('POST', '/ui/devices', { name }),
 

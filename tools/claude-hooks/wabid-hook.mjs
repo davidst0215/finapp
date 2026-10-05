@@ -122,6 +122,8 @@ function clipText(text, max) {
 const toOneLine = (text, max) => clipText(text.replace(/\s+/g, " ").trim(), max);
 
 const INPUT_CAP = { max: 8000, head: 5000, tail: 3000 };
+// Texto de chat (respuesta de Claude y lo que escribes en la laptop): conserva los saltos de línea. Espejo de CHAT_LIMITS en events.ts.
+const CHAT_LIMITS = { max: 1900, head: 1400, tail: 450 };
 
 // Acotar → unificar saltos → redactar → marcar invisibles → recortar. Se redacta ANTES de recortar.
 function normalizeForSending(text, limits) {
@@ -130,6 +132,9 @@ function normalizeForSending(text, limits) {
   const clipped = clipMiddle(clean, limits.max, limits.head, limits.tail);
   return { text: clipped.text, truncated: capped.truncated || clipped.truncated };
 }
+
+// Texto de varias líneas, redactado y recortado; "" si no hay nada que mostrar.
+const chatText = (value) => (typeof value === "string" ? normalizeForSending(value, CHAT_LIMITS).text.trim() : "");
 
 const oneLine = (value, max) => (typeof value === "string" ? toOneLine(sanitizeText(redactSecrets(value)), max) : "");
 
@@ -233,6 +238,7 @@ const TERMINAL_ONLY_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
 // En estos modos Claude Code no muestra diálogo de permiso: no hay nada que esperar.
 const NO_PROMPT_MODES = new Set(["bypassPermissions", "auto", "dontAsk"]);
 const SESSION_ID_RE = /^[A-Za-z0-9._:-]{1,100}$/;
+const SLASH_COMMAND_RE = /^\/[\w:.-]+$/;
 
 const token = (value, max) => (typeof value === "string" ? value.replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, max) : "");
 
@@ -261,8 +267,14 @@ export function mapHookInput(input, { home } = {}) {
     case "SessionEnd":
       return withDetail("session_end", token(input.reason, 40));
     case "Stop": {
-      const message = oneLine(input.last_assistant_message, 280);
+      const message = chatText(input.last_assistant_message);
       return withDetail("stop", "", message ? { message } : {});
+    }
+    case "UserPromptSubmit": {
+      // Lo que escribes en la laptop, para verlo en el chat del celular. Un comando suelto (/clear, /model) es ruido.
+      const message = chatText(input.prompt);
+      if (!message || SLASH_COMMAND_RE.test(message)) return null;
+      return withDetail("user_prompt", "", { message });
     }
     case "StopFailure": {
       const message = oneLine(input.last_assistant_message || input.error_details, 200);
@@ -366,6 +378,9 @@ export const STOP_HOOK_TIMEOUT_SECONDS = 900;
 const CLAIM_TIMEOUT_MS = 5000;
 // El aviso inicial del Stop es síncrono (bloquea el fin del turno): si Wabid tarda más, se sigue sin esperar nada.
 const STOP_POST_TIMEOUT_MS = 3000;
+// UserPromptSubmit no admite async: bloquea tu mensaje hasta que el hook termina. Por eso el tope es corto: si Wabid
+// tarda más, el mensaje sigue su camino sin registrarse en el celular.
+export const PROMPT_POST_TIMEOUT_MS = 2500;
 const ACK_TRIES = 3;
 const ACK_RETRY_MS = 250;
 const CLAIM_MAX_CONSECUTIVE_ERRORS = 3;
@@ -507,6 +522,9 @@ export async function runHook({ raw, config, fetchImpl = fetch, home, now = Date
     return null;
   }
 
+  // Una tarea lanzada desde el celular ya muestra su encargo en el chat: no se repite como "escrito en la laptop".
+  if (event.type === "user_prompt" && env.WABID_RUNNER === "1") return null;
+
   const isPermission = event.type === "permission_request";
   let response;
   try {
@@ -514,7 +532,13 @@ export async function runHook({ raw, config, fetchImpl = fetch, home, now = Date
       config,
       fetchImpl,
       event,
-      isPermission ? PERMISSION_POST_TIMEOUT_MS : event.type === "stop" ? STOP_POST_TIMEOUT_MS : EVENT_TIMEOUT_MS,
+      isPermission
+        ? PERMISSION_POST_TIMEOUT_MS
+        : event.type === "stop"
+          ? STOP_POST_TIMEOUT_MS
+          : event.type === "user_prompt"
+            ? PROMPT_POST_TIMEOUT_MS
+            : EVENT_TIMEOUT_MS,
     );
   } catch (e) {
     log(`no se pudo enviar el evento: ${e instanceof Error ? e.message : "error"}`);

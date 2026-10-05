@@ -35,7 +35,7 @@ test("Stop queda síncrono (sin async) y con timeout mayor que la espera máxima
 
 test("sobre una instalación v1 actualiza Stop y no cambia el resto", () => {
   const { settings, added, updated } = mergeWabidHooks({ hooks: v1() }, SCRIPT);
-  assert.equal(added, 0);
+  assert.equal(added, 1, "UserPromptSubmit es nuevo");
   assert.equal(updated, 1);
   assert.deepEqual(settings.hooks.Stop, [{ hooks: [{ type: "command", command: "node", args: [SCRIPT], timeout: 900 }] }]);
   assert.deepEqual(settings.hooks.Notification, v1().Notification);
@@ -48,10 +48,10 @@ test("es idempotente: una segunda pasada no cambia nada ni duplica", () => {
   assert.deepEqual(twice.settings, once.settings);
 });
 
-test("desde cero agrega los seis hooks", () => {
+test("desde cero agrega los siete hooks", () => {
   const { settings, added } = mergeWabidHooks({}, SCRIPT);
-  assert.equal(added, 6);
-  assert.deepEqual(Object.keys(settings.hooks).sort(), ["Notification", "PermissionRequest", "SessionEnd", "SessionStart", "Stop", "StopFailure"]);
+  assert.equal(added, 7);
+  assert.deepEqual(Object.keys(settings.hooks).sort(), ["Notification", "PermissionRequest", "SessionEnd", "SessionStart", "Stop", "StopFailure", "UserPromptSubmit"]);
 });
 
 test("no toca hooks ajenos ni otras claves, ni los que comparten grupo con uno de Wabid", () => {
@@ -83,7 +83,7 @@ test("reconoce el hook de Wabid aunque la ruta tenga otro estilo o carpeta", () 
   const input = { hooks: { Stop: [{ hooks: [{ type: "command", command: "node", args: ["D:\\otro\\tools\\claude-hooks\\wabid-hook.mjs"], async: true }] }] } };
   const { settings, added } = mergeWabidHooks(input, SCRIPT);
   assert.equal(settings.hooks.Stop.length, 1);
-  assert.equal(added, 5, "Stop se actualizó, los otros cinco se agregaron");
+  assert.equal(added, 6, "Stop se actualizó, los otros seis se agregaron");
   assert.deepEqual(settings.hooks.Stop[0].hooks[0].args, [SCRIPT]);
 });
 
@@ -102,6 +102,7 @@ test("installHooks: actualiza el archivo de ejemplo, deja respaldo con el origin
   const first = installHooks({ settingsFile: f, script: SCRIPT, now: new Date("2026-10-05T12:00:00Z") });
   assert.equal(first.status, "written");
   assert.equal(first.updated, 1);
+  assert.equal(first.added, 1);
   assert.equal(readFileSync(first.backup, "utf8"), original, "el respaldo es el original");
   const after = JSON.parse(readFileSync(f, "utf8"));
   assert.equal(after.theme, "dark");
@@ -158,7 +159,7 @@ test("CLI: WABID_CLAUDE_SETTINGS apunta al archivo de ejemplo y --dry-run no esc
   assert.equal(existsSync(bin), false, "--dry-run no copia nada");
   const real = spawnSync(process.execPath, [CLI], { env, encoding: "utf8" });
   assert.equal(real.status, 0);
-  assert.match(real.stdout, /0 agregados, 6 actualizados/, "la ruta del script de esta copia difiere de la del ejemplo: se corrige en los seis");
+  assert.match(real.stdout, /1 agregados, 6 actualizados/, "la ruta del script de esta copia difiere de la del ejemplo: se corrige en los seis, y UserPromptSubmit se agrega");
   const after = JSON.parse(readFileSync(f, "utf8"));
   assert.equal(after.hooks.Stop[0].hooks[0].timeout, 900);
   const expectedScript = path.join(bin, "wabid-hook.mjs").replace(/\\/g, "/");
@@ -193,6 +194,27 @@ test("installHooks: si el respaldo con ese sello ya existe, agrega sufijo y no l
   assert.equal(r.backup, `${f}.antes-de-wabid-20261005T120000-1`);
   assert.equal(readFileSync(`${f}.antes-de-wabid-20261005T120000`, "utf8"), "respaldo anterior");
   assert.equal(readdirSync(tmp).some((n) => n.includes("wabid-tmp")), false, "el temporal se renombró encima");
+});
+
+test("UserPromptSubmit: síncrono (no admite async) con timeout corto, y no toca el UserPromptSubmit de otra herramienta", () => {
+  const want = desiredHooks(SCRIPT).UserPromptSubmit.hooks[0];
+  assert.equal(want.async, undefined);
+  assert.ok(want.timeout <= 10);
+  const foreign = { matcher: "", hooks: [{ type: "command", command: "node", args: ["C:/otro/prompt-log.js"] }] };
+  const { settings } = mergeWabidHooks({ hooks: { ...v1(), UserPromptSubmit: [foreign] } }, SCRIPT);
+  assert.equal(settings.hooks.UserPromptSubmit.length, 2);
+  assert.deepEqual(settings.hooks.UserPromptSubmit[0], foreign, "el ajeno queda intacto y primero");
+  assert.deepEqual(settings.hooks.UserPromptSubmit[1], desiredHooks(SCRIPT).UserPromptSubmit);
+  const again = mergeWabidHooks(settings, SCRIPT);
+  assert.deepEqual([again.added, again.updated, again.removedDuplicates], [0, 0, 0], "idempotente");
+});
+
+test("la instalación v2 ya hecha solo agrega UserPromptSubmit y deja lo demás igual", () => {
+  const v2 = mergeWabidHooks({ hooks: v1() }, SCRIPT).settings;
+  delete v2.hooks.UserPromptSubmit;
+  const { settings, added, updated } = mergeWabidHooks(v2, SCRIPT);
+  assert.deepEqual([added, updated], [1, 0]);
+  for (const event of ["PermissionRequest", "Notification", "Stop", "StopFailure", "SessionStart", "SessionEnd"]) assert.deepEqual(settings.hooks[event], v2.hooks[event], event);
 });
 
 test.after(() => rmSync(tmp, { recursive: true, force: true }));

@@ -147,6 +147,14 @@ export class MemoryStore implements Store {
       .map((a) => ({ ...a }));
   }
 
+  async listSessionApprovals(userId: string, sessionId: string, limit: number) {
+    return [...this.approvals.values()]
+      .filter((a) => a.user_id === userId && a.session_id === sessionId)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .slice(0, limit)
+      .map((a) => ({ ...a }));
+  }
+
   async decideApproval(userId: string, approvalId: string, status: "aprobada" | "denegada", byUserId: string, nowIso: string) {
     const a = this.approvals.get(approvalId);
     if (!a || a.user_id !== userId || a.status !== "pendiente" || a.expires_at <= nowIso) return null;
@@ -203,7 +211,6 @@ export class MemoryStore implements Store {
     const m = this.messages.get(messageId);
     if (!m || m.user_id !== userId || m.device_id !== deviceId || m.status !== "entregando") return false;
     m.status = "entregado";
-    m.body = null;
     m.claimed_at = null;
     m.delivered_at = nowIso;
     return true;
@@ -234,6 +241,14 @@ export class MemoryStore implements Store {
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
       .slice(0, limit)
       .map((m) => ({ ...m, body: null })); // el contrato: el texto nunca sale de aquí
+  }
+
+  async listSessionMessages(userId: string, sessionId: string, limit: number) {
+    return [...this.messages.values()]
+      .filter((m) => m.user_id === userId && m.session_id === sessionId)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .slice(0, limit)
+      .map((m) => ({ ...m }));
   }
 
   // --- v2: tareas

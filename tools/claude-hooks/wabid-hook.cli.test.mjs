@@ -222,3 +222,18 @@ test("`setup` con datos inválidos no guarda nada y falla", async () => {
   assert.equal(r.code, 1);
   assert.throws(() => readFileSync(file, "utf8"));
 });
+
+test("UserPromptSubmit: el ejecutable real manda user_prompt y no imprime NADA por stdout; dentro del runner no manda nada", async () => {
+  requests = [];
+  const r = await run({ config: writeConfig(), stdin: input({ hook_event_name: "UserPromptSubmit", prompt: "revisa el login\ncon calma", turn_number: 1 }) });
+  assert.equal(r.code, 0);
+  assert.equal(r.stdout, "", "el stdout de UserPromptSubmit se agrega al contexto de Claude");
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].body.type, "user_prompt");
+  assert.equal(requests[0].body.message, "revisa el login\ncon calma");
+
+  requests = [];
+  const inRunner = await run({ config: writeConfig(), stdin: input({ hook_event_name: "UserPromptSubmit", prompt: "tarea" }), extraEnv: { WABID_RUNNER: "1" } });
+  assert.equal(inRunner.stdout, "");
+  assert.equal(requests.length, 0);
+});

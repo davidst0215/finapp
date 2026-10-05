@@ -2,7 +2,9 @@
 // Solo tipos: sin globals de Deno ni imports de jsr (las pruebas corren en Node).
 
 export type SessionStatus = "trabajando" | "esperando" | "terminada" | "error";
-export type EventKind = "session_start" | "session_end" | "stop" | "stop_failure" | "notification" | "permission_request";
+export type EventKind = "session_start" | "session_end" | "stop" | "stop_failure" | "notification" | "permission_request" | "user_prompt";
+/** Quién habló último en la sesión (013). */
+export type SessionRole = "usuario" | "claude";
 export type ApprovalStatus = "pendiente" | "aprobada" | "denegada" | "vencida";
 
 export const EVENT_KINDS: readonly EventKind[] = [
@@ -12,6 +14,7 @@ export const EVENT_KINDS: readonly EventKind[] = [
   "stop_failure",
   "notification",
   "permission_request",
+  "user_prompt",
 ];
 
 // --- Filas de la base (migración 008) ---------------------------------------------------------------------
@@ -38,6 +41,8 @@ export interface SessionRow {
   cwd: string | null;
   status: SessionStatus;
   last_summary: string | null;
+  /** null en sesiones anteriores a 013. */
+  last_role: SessionRole | null;
   started_at: string;
   last_event_at: string;
   ended_at: string | null;
@@ -104,6 +109,7 @@ export interface SessionView {
   cwd: string | null;
   status: SessionStatus;
   summary: string | null;
+  last_role: SessionRole | null;
   started_at: string;
   last_event_at: string;
   ended_at: string | null;
@@ -139,6 +145,8 @@ export interface ApiRequest {
   method: string;
   /** Ruta ya sin consulta (?...). Puede traer el prefijo /claude-events. */
   path: string;
+  /** Consulta (?limit=...) sin el signo de interrogación. Opcional: las rutas que no la usan no la miran. */
+  query?: string;
   headers: Headers;
   /** Cuerpo en texto (vacío si no hay). Index.ts ya aplicó el tope de tamaño. */
   body: string;

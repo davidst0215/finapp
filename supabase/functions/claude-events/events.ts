@@ -9,6 +9,11 @@ import type { EventKind, ParsedEvent, SessionRow, SessionStatus } from "./types.
 const SESSION_ID_RE = /^[A-Za-z0-9._:-]{1,100}$/;
 const TOOL_NAME_RE = /^[A-Za-z0-9_.:-]{1,100}$/;
 const PREVIEW_LIMITS = { max: 2000, head: 1400, tail: 500 };
+// Texto de chat (respuesta de Claude y lo que David escribe en la laptop): conserva saltos de línea. Sube de 300 a ~2000 (013);
+// el tope deja margen para el aviso de recorte (~40) dentro del VARCHAR(2000) de claude_events.summary.
+const CHAT_LIMITS = { max: 1900, head: 1400, tail: 450 };
+/** Largo de la vista previa de la lista de conversaciones (claude_sessions.last_summary es VARCHAR(300)). */
+const PREVIEW_LINE = 300;
 
 const asString = (v: unknown) => (typeof v === "string" ? v : "");
 
@@ -29,7 +34,7 @@ export function parseDeviceEvent(body: unknown): { ok: true; event: ParsedEvent 
     project: cleanLine(asString(b.project), 100),
     cwd: cwd || null,
     detail: asString(b.detail).replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 60),
-    message: cleanLine(asString(b.message), 300),
+    message: type === "stop" || type === "user_prompt" ? normalizeForStorage(asString(b.message), CHAT_LIMITS).text.trim() : cleanLine(asString(b.message), 300),
     toolName: "",
     preview: "",
     previewTruncated: false,
@@ -72,6 +77,8 @@ export function summarizeEvent(e: ParsedEvent): string {
       return END_LABELS[e.detail] ?? "Sesión terminada";
     case "stop":
       return e.message || "Terminó de responder";
+    case "user_prompt":
+      return e.message || "Mensaje";
     case "stop_failure": {
       const head = e.detail ? `Falló (${e.detail})` : "Falló";
       return e.message ? `${head}: ${e.message}` : head;
@@ -93,6 +100,7 @@ function statusFor(e: ParsedEvent): SessionStatus | null {
   switch (e.type) {
     case "session_start":
     case "permission_request":
+    case "user_prompt":
       return "trabajando";
     case "session_end":
       return "terminada";
@@ -119,7 +127,7 @@ export function mergeSession(existing: SessionRow | null, e: ParsedEvent, ctx: M
   if (existing?.ended_at && e.type !== "session_start") return existing;
 
   const next = statusFor(e);
-  const keepsSummary = e.type === "stop" || e.type === "stop_failure";
+  const keepsSummary = e.type === "stop" || e.type === "stop_failure" || e.type === "user_prompt";
   return {
     user_id: ctx.userId,
     session_id: e.sessionId,
@@ -127,7 +135,8 @@ export function mergeSession(existing: SessionRow | null, e: ParsedEvent, ctx: M
     project: e.project || existing?.project || "",
     cwd: e.cwd ?? existing?.cwd ?? null,
     status: next ?? existing?.status ?? "trabajando",
-    last_summary: keepsSummary ? ctx.summary : (existing?.last_summary ?? null),
+    last_summary: keepsSummary ? toOneLine(ctx.summary, PREVIEW_LINE) : (existing?.last_summary ?? null),
+    last_role: keepsSummary ? (e.type === "user_prompt" ? "usuario" : "claude") : (existing?.last_role ?? null),
     started_at: existing?.started_at ?? ctx.atIso,
     last_event_at: ctx.atIso,
     ended_at: e.type === "session_end" ? ctx.atIso : e.type === "session_start" ? null : (existing?.ended_at ?? null),

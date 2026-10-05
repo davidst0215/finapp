@@ -11,6 +11,7 @@ export type Route =
   | { name: "device.taskEvent"; id: string }
   | { name: "ui.overview" }
   | { name: "ui.sessionEvents"; sessionId: string }
+  | { name: "ui.sessionTimeline"; sessionId: string }
   | { name: "ui.deviceCreate" }
   | { name: "ui.devicePatch"; id: string }
   | { name: "ui.deviceRevoke"; id: string }
@@ -33,6 +34,7 @@ const TABLE: ReadonlyArray<readonly [string, RegExp, (m: RegExpExecArray) => Rou
   ["POST", new RegExp(`^/device/tasks/(${UUID})/events$`), (m) => ({ name: "device.taskEvent", id: m[1]! })],
   ["GET", /^\/ui\/overview$/, () => ({ name: "ui.overview" })],
   ["GET", new RegExp(`^/ui/sessions/(${SESSION})/events$`), (m) => ({ name: "ui.sessionEvents", sessionId: m[1]! })],
+  ["GET", new RegExp(`^/ui/sessions/(${SESSION})/timeline$`), (m) => ({ name: "ui.sessionTimeline", sessionId: m[1]! })],
   ["POST", /^\/ui\/devices$/, () => ({ name: "ui.deviceCreate" })],
   ["PATCH", new RegExp(`^/ui/devices/(${UUID})$`), (m) => ({ name: "ui.devicePatch", id: m[1]! })],
   ["DELETE", new RegExp(`^/ui/devices/(${UUID})$`), (m) => ({ name: "ui.deviceRevoke", id: m[1]! })],

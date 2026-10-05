@@ -29,6 +29,10 @@ export const desiredHooks = (script) => {
     StopFailure: hook({ async: true }),
     SessionStart: hook({ async: true }),
     SessionEnd: hook({ timeout: 5 }),
+    // Registra en el chat del celular lo que escribes en la laptop. UserPromptSubmit NO admite async (corre antes de que
+    // Claude reciba tu mensaje), así que va síncrono con timeout corto; el hook pone 2,5 s al envío y nunca imprime nada
+    // (el stdout de este evento se agrega al contexto de Claude).
+    UserPromptSubmit: hook({ timeout: 5 }),
   };
 };
 

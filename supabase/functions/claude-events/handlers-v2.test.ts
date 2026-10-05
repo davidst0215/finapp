@@ -69,7 +69,7 @@ test("el evento stop responde si el modo ausente está activo", async () => {
   assert.deepEqual((await d.stop()).body, { ok: true, away: true });
 });
 
-test("un mensaje se entrega una sola vez, en orden, y su texto se borra", async () => {
+test("un mensaje se entrega una sola vez, en orden, y su texto se conserva para el chat", async () => {
   const t = setup();
   const d = await t.pair();
   await d.start();
@@ -88,7 +88,8 @@ test("un mensaje se entrega una sola vez, en orden, y su texto se borra", async 
   const rows = [...t.store.messages.values()];
   assert.ok(rows.every((m) => m.status === "entregando" && m.body !== null));
   for (const m of rows) assert.equal((await d.ack(m.message_id)).status, 200);
-  assert.ok([...t.store.messages.values()].every((m) => m.status === "entregado" && m.body === null), "sin texto tras el ack");
+  // 013: el texto se conserva tras la entrega (lo muestra el chat), pero la vista general nunca lo trae.
+  assert.ok([...t.store.messages.values()].every((m) => m.status === "entregado" && m.body !== null), "con texto tras el ack");
   assert.equal(JSON.stringify((await t.call("GET", "/ui/overview")).body).includes("migración"), false);
 });
 
@@ -122,7 +123,7 @@ test("el ack exige el dispositivo dueño y una sesión propia", async () => {
   assert.equal((await a.ack(id)).status, 200);
 });
 
-test("el estado 'entregando' se ve en el overview y no trae texto", async () => {
+test("el estado 'entregando' se ve en el overview; la lista de mensajes no trae texto (solo la vista previa de la sesión)", async () => {
   const t = setup();
   const d = await t.pair();
   await d.start();
@@ -130,7 +131,10 @@ test("el estado 'entregando' se ve en el overview y no trae texto", async () => 
   await d.claim();
   const o = (await t.call("GET", "/ui/overview")).body;
   assert.equal(o.messages[0].status, "entregando");
-  assert.equal(JSON.stringify(o).includes("texto privado"), false);
+  assert.equal(JSON.stringify(o.messages).includes("texto privado"), false);
+  // 013: la lista de conversaciones muestra lo último que se dijo, también lo que David mandó desde el celular.
+  assert.equal(o.sessions[0].summary, "texto privado");
+  assert.equal(o.sessions[0].last_role, "usuario");
 });
 
 test("retención: al terminar una tarea el prompt queda como resumen redactado y el resultado recortado", async () => {

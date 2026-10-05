@@ -37,6 +37,7 @@ export const toSessionView = (s: SessionRow): SessionView => ({
   cwd: s.cwd,
   status: s.status,
   summary: s.last_summary,
+  last_role: s.last_role ?? null,
   started_at: s.started_at,
   last_event_at: s.last_event_at,
   ended_at: s.ended_at,

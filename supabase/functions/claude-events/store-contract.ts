@@ -43,6 +43,7 @@ export function defineStoreContract(label: string, make: () => Promise<StoreFixt
     cwd: "~/finapp",
     status: "trabajando",
     last_summary: null,
+    last_role: null,
     started_at: iso(0),
     last_event_at: iso(0),
     ended_at: null,
@@ -365,6 +366,36 @@ export function defineStoreContract(label: string, make: () => Promise<StoreFixt
     const listed = await f.store.listMessages(U1, 10);
     assert.deepEqual(listed.map((m) => m.status).sort(), ["entregado", "entregando"]);
     assert.ok(listed.every((m) => m.body === null), "el texto nunca sale de listMessages");
+  });
+
+  T("013: listSessionMessages trae el texto (también tras entregar) solo de esa sesión y de ese usuario; vencer lo borra", async (f) => {
+    const d = await withSession(f);
+    await f.store.saveSession(session(U1, d.device_id, "s2"));
+    await f.store.insertMessage(msg(U1, d.device_id, "s1", "uno", 0, 60));
+    await f.store.insertMessage(msg(U1, d.device_id, "s1", "dos", 1));
+    await f.store.insertMessage(msg(U1, d.device_id, "s2", "de otra sesión", 2));
+    const claimed = await f.store.claimNextMessage(U1, "s1", iso(3));
+    assert.equal(await f.store.ackMessage(U1, claimed!.messageId, d.device_id, iso(4)), true);
+    const rows = await f.store.listSessionMessages(U1, "s1", 10);
+    assert.deepEqual(rows.map((m) => [m.body, m.status]), [["dos", "en_cola"], ["uno", "entregado"]], "el entregado conserva el texto");
+    await f.seedUser(U2);
+    assert.deepEqual(await f.store.listSessionMessages(U2, "s1", 10), []);
+    assert.equal((await f.store.listSessionMessages(U1, "s1", 1)).length, 1, "respeta el límite");
+    await f.store.expireMessages(U1, iso(4000));
+    assert.ok((await f.store.listSessionMessages(U1, "s1", 10)).every((m) => m.status === "entregado" || m.body === null));
+  });
+
+  T("013: listSessionApprovals trae todos los estados de una sesión, más recientes primero, sin mezclar usuarios", async (f) => {
+    const d = await withSession(f);
+    await f.store.saveSession(session(U1, d.device_id, "s2"));
+    const a = await f.store.insertApproval(approval(U1, d.device_id, "s1", 0));
+    await f.store.insertApproval(approval(U1, d.device_id, "s1", 5));
+    await f.store.insertApproval(approval(U1, d.device_id, "s2", 6));
+    await f.store.decideApproval(U1, a.approval_id, "aprobada", U1, iso(10));
+    const rows = await f.store.listSessionApprovals(U1, "s1", 10);
+    assert.deepEqual(rows.map((r) => r.status), ["pendiente", "aprobada"]);
+    await f.seedUser(U2);
+    assert.deepEqual(await f.store.listSessionApprovals(U2, "s1", 10), []);
   });
 
   T("mensajes: un reclamo sin ack vuelve a la cola pasado el plazo y se puede reclamar otra vez", async (f) => {

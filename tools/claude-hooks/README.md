@@ -39,6 +39,9 @@ nada y Claude Code te pregunta en la terminal como siempre. Los secretos obvios 
        ],
        "SessionEnd": [
          { "hooks": [ { "type": "command", "command": "node", "args": ["C:/Users/Dsalg/finapp/tools/claude-hooks/wabid-hook.mjs"], "timeout": 5 } ] }
+       ],
+       "UserPromptSubmit": [
+         { "hooks": [ { "type": "command", "command": "node", "args": ["C:/Users/Dsalg/finapp/tools/claude-hooks/wabid-hook.mjs"], "timeout": 5 } ] }
        ]
      }
    }
@@ -112,3 +115,27 @@ Qué aplica y qué no:
 - Al terminar, el servidor reduce el prompt a un resumen redactado (≤ 120) y recorta el resultado (≤ 600). Las tareas vencidas o fallidas por falta de latido conservan el prompt hasta la poda (14 días).
 
 Pruebas: `node --experimental-strip-types --test tools/claude-hooks/*.test.mjs supabase/functions/claude-events/*.test.ts`.
+
+## v3: Claude Code como chat (migración 013)
+
+La pestaña Claude Code es una lista de conversaciones: cada sesión es un chat con lo que escribiste (en la laptop o en el celular), las respuestas de Claude, los permisos y los avisos.
+
+**Hook nuevo `UserPromptSubmit`**: manda lo que escribes en la laptop (redactado y recortado a ~2000 caracteres) para verlo en el chat. Vuelve a correr el instalador para agregarlo (los demás hooks siguen igual):
+```powershell
+node tools/claude-hooks/instalar-hooks.mjs --dry-run   # debe decir "agregaría 1"
+node tools/claude-hooks/instalar-hooks.mjs
+```
+Reinicia Claude Code. Verificado en https://code.claude.com/docs/en/hooks (5-oct-2026):
+- Entrada: `prompt`, `turn_number`, `prompt_id`, `session_id`, `cwd`, `permission_mode`, `transcript_path`, `hook_event_name`.
+- **No admite `async: true`**: corre antes de que Claude reciba tu mensaje. Por eso es síncrono con `timeout: 5` y el envío tiene tope de 2,5 s; si Wabid no contesta, tu mensaje sigue su camino sin registrarse. Cuesta lo que tarde esa consulta (~0,5 s con Wabid arriba).
+- **No imprime nada por stdout** (en este evento todo lo que salga se agrega al contexto de Claude) ni bloquea nunca el mensaje.
+- Un comando suelto (`/clear`, `/model`) no se envía. Dentro de una tarea del runner (`WABID_RUNNER=1`) tampoco: el encargo ya aparece como mensaje «tarea».
+- Hasta que vuelvas a correr el instalador todo sigue funcionando: solo faltan en el chat los mensajes que escribes en la laptop.
+
+**Respuestas de Claude completas**: el hook Stop ahora envía el último mensaje del asistente con saltos de línea, redactado y de hasta ~2000 caracteres (antes 280). Los demás avisos siguen en una línea de 300.
+
+**Retención (cambia respecto de v2)**: el texto de un mensaje enviado desde el celular **ya no se borra al entregarlo**: el chat lo necesita. Se conserva hasta la poda (14 días, igual que eventos y tareas); solo se borra si vence sin entregarse. Lo escrito en la laptop se guarda como evento (14 días). La lista de mensajes de la vista general sigue sin traer texto; la vista previa de la lista de conversaciones sí muestra el último mensaje (300 caracteres). Lo que David escribió pasa por las reglas de secretos al mostrarse en el chat.
+
+**Endpoint**: `GET /ui/sessions/:id/timeline?limit=60` (máx. 200), solo el dueño (JWT + `WABID_OWNER_ID`). Devuelve los últimos N elementos en orden (`user` laptop/celular/tarea, `claude`, `system`, `approval`) y `has_more`.
+
+**Despliegue (lo hace el hilo principal, en este orden)**: aplicar `supabase/migrations/013_claude_chat.sql` y luego desplegar `claude-events`. Un servidor viejo rechaza el tipo `user_prompt` con 400 (el hook lo ignora); un hook viejo funciona con el servidor nuevo.

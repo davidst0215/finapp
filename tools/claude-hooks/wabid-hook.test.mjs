@@ -44,11 +44,11 @@ test("SessionEnd → session_end con el motivo", () => {
   assert.equal(ev.detail, "prompt_input_exit");
 });
 
-test("Stop → stop con el último mensaje recortado y sin secretos", () => {
+test("Stop → stop con el último mensaje redactado y recortado a ~2000", () => {
   const long = "Listo, actualicé los archivos. " + "x".repeat(600) + " token=abcd1234efgh";
   const ev = hook.mapHookInput({ ...base, hook_event_name: "Stop", stop_hook_active: false, last_assistant_message: long }, { home: HOME });
   assert.equal(ev.type, "stop");
-  assert.ok(ev.message.length <= 280, `mensaje de ${ev.message.length} caracteres`);
+  assert.ok(ev.message.length <= 2000, `mensaje de ${ev.message.length} caracteres`);
   assert.ok(ev.message.startsWith("Listo, actualicé"));
 });
 
@@ -524,4 +524,60 @@ test("configPath respeta WABID_HOOK_CONFIG y usa carpetas de usuario fuera del r
   assert.ok(win.startsWith(HOME));
   const nix = hook.configPath({}, "linux", "/home/david");
   assert.match(nix, /\.config[\\/]wabid[\\/]claude-hook\.json$/);
+});
+
+// --- UserPromptSubmit: lo que escribes en la laptop (013) --------------------------------------------------------------
+
+test("UserPromptSubmit → user_prompt con el texto redactado, con saltos de línea y recortado a ~2000", () => {
+  const prompt = "Arregla el login\ny usa la llave sk-ant-api03-AbCdEf0123456789xyzXYZ para probar\n" + "z".repeat(5000);
+  const ev = hook.mapHookInput({ ...base, hook_event_name: "UserPromptSubmit", prompt, prompt_id: "p1", turn_number: 3, permission_mode: "default" }, { home: HOME });
+  assert.equal(ev.type, "user_prompt");
+  assert.equal(ev.session_id, "abc123");
+  assert.equal(ev.project, "finapp");
+  assert.ok(ev.message.startsWith("Arregla el login\n"), "conserva los saltos de línea");
+  assert.ok(!ev.message.includes("sk-ant"), "los secretos se redactan antes de salir de la laptop");
+  assert.ok(ev.message.length <= 2000, `mensaje de ${ev.message.length} caracteres`);
+});
+
+test("UserPromptSubmit: sin texto, solo espacios o un comando suelto (/clear, /model) no genera evento; una ruta o un comando con argumentos sí", () => {
+  const map = (prompt) => hook.mapHookInput({ ...base, hook_event_name: "UserPromptSubmit", prompt }, { home: HOME });
+  for (const prompt of [undefined, "", "   \n ", "/clear", "/model", "/compact"]) assert.equal(map(prompt), null, String(prompt));
+  assert.equal(map("/review revisa el diff").message, "/review revisa el diff");
+  assert.equal(map("hola").message, "hola");
+});
+
+test("Stop: la respuesta de Claude llega completa (≤ ~2000, con saltos de línea) y redactada", () => {
+  const ev = hook.mapHookInput({ ...base, hook_event_name: "Stop", last_assistant_message: "Primero.\nSegundo.\n" + "y".repeat(4000) + " token=abcd1234efgh" }, { home: HOME });
+  assert.ok(ev.message.startsWith("Primero.\nSegundo.\n"));
+  assert.ok(ev.message.length > 280 && ev.message.length <= 2000, `mensaje de ${ev.message.length}`);
+  assert.equal(hook.mapHookInput({ ...base, hook_event_name: "Stop", last_assistant_message: "   " }, { home: HOME }).message, undefined);
+});
+
+test("runHook UserPromptSubmit: envía el evento con tope corto y NO imprime nada (su stdout iría al contexto de Claude)", async () => {
+  const { fetchImpl, calls } = makeFetch({ "POST /device/events": { body: { ok: true } } });
+  const out = await hook.runHook({
+    raw: JSON.stringify({ ...base, hook_event_name: "UserPromptSubmit", prompt: "hola Claude" }),
+    config: CONFIG, fetchImpl, home: HOME, env: {}, ...fakeClock(),
+  });
+  assert.equal(out, null);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].body.type, "user_prompt");
+  assert.equal(calls[0].body.message, "hola Claude");
+  assert.ok(hook.PROMPT_POST_TIMEOUT_MS <= 3000, "bloquea tu mensaje mientras corre: tope corto");
+});
+
+test("runHook UserPromptSubmit: si Wabid no contesta, no imprime nada ni lanza (tu mensaje sigue su camino)", async () => {
+  const { fetchImpl } = makeFetch({ "POST /device/events": new Error("timeout") });
+  const out = await hook.runHook({ raw: JSON.stringify({ ...base, hook_event_name: "UserPromptSubmit", prompt: "hola" }), config: CONFIG, fetchImpl, home: HOME, env: {}, ...fakeClock() });
+  assert.equal(out, null);
+});
+
+test("runHook UserPromptSubmit dentro de una tarea del runner (WABID_RUNNER=1) no se repite en el chat", async () => {
+  const { fetchImpl, calls } = makeFetch({ "POST /device/events": { body: { ok: true } } });
+  const out = await hook.runHook({
+    raw: JSON.stringify({ ...base, hook_event_name: "UserPromptSubmit", prompt: "el encargo de la tarea" }),
+    config: CONFIG, fetchImpl, home: HOME, env: { WABID_RUNNER: "1" }, ...fakeClock(),
+  });
+  assert.equal(out, null);
+  assert.equal(calls.length, 0);
 });

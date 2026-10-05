@@ -2,7 +2,7 @@
 // Es .mjs a propósito: `tsc -b` no incluye .mjs, así que no necesita @types/node en la app web.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { countdown, describeSession, isTaskActive, limaClock, limaDayClock, messageStatusLabel, taskDuration, taskStatusLabel, timeAgo, toolLabel } from "./format.ts";
+import { countdown, dayLabel, isTaskActive, listTime, limaClock, limaDayClock, messageStatusLabel, taskDuration, taskStatusLabel, timeAgo, toolLabel } from "./format.ts";
 
 const NOW = Date.parse("2026-10-04T19:30:00.000Z"); // 14:30 en Lima
 
@@ -47,32 +47,6 @@ test("toolLabel nombra la acción en español y las herramientas MCP por su serv
   assert.equal(toolLabel("AlgoNuevo"), "Usar AlgoNuevo");
 });
 
-const session = (over = {}) => ({
-  id: "s", device_id: "d", project: "finapp", cwd: null, status: "trabajando", summary: null,
-  started_at: "2026-10-04T18:00:00.000Z", last_event_at: "2026-10-04T19:18:00.000Z", ended_at: null, ...over,
-});
-
-test("describeSession cubre cada estado", () => {
-  assert.deepEqual(describeSession(session(), undefined, NOW), { tone: "active", text: "Trabajando · hace 12 min" });
-  assert.deepEqual(describeSession(session({ status: "esperando" }), undefined, NOW), { tone: "waiting", text: "Esperando tu instrucción · hace 12 min" });
-  assert.deepEqual(
-    describeSession(session({ status: "terminada", ended_at: "2026-10-04T19:20:00.000Z" }), undefined, NOW),
-    { tone: "done", text: "Terminó 14:20" },
-  );
-  assert.deepEqual(describeSession(session({ status: "error", last_event_at: "2026-10-04T18:05:00.000Z" }), undefined, NOW), { tone: "error", text: "Falló · 13:05" });
-});
-
-test("una aprobación pendiente manda sobre el estado guardado", () => {
-  assert.deepEqual(describeSession(session({ status: "esperando" }), { id: "a" }, NOW), { tone: "asking", text: "Pide permiso" });
-});
-
-test("una sesión sin señal por más de 6 h ya no figura como trabajando", () => {
-  const old = session({ last_event_at: "2026-10-04T10:00:00.000Z" });
-  assert.deepEqual(describeSession(old, undefined, NOW), { tone: "stale", text: "Sin actividad desde 05:00" });
-  assert.equal(describeSession({ ...old, status: "esperando" }, undefined, NOW).tone, "stale");
-  assert.equal(describeSession({ ...old, status: "error" }, undefined, NOW).tone, "error", "una falla no se disfraza de inactividad");
-});
-
 test("taskDuration: segundos, minutos y horas; viva cuenta hasta ahora; sin inicio, vacío", () => {
   const at = (ms) => new Date(NOW - ms).toISOString();
   assert.equal(taskDuration({ started_at: null, finished_at: null }, NOW), "");
@@ -83,10 +57,26 @@ test("taskDuration: segundos, minutos y horas; viva cuenta hasta ahora; sin inic
 
 test("etiquetas de estado y tareas vivas", () => {
   assert.equal(messageStatusLabel("en_cola"), "En cola");
-  assert.equal(messageStatusLabel("vencido"), "Vencido");
+  assert.equal(messageStatusLabel("vencido"), "No se entregó");
   assert.equal(messageStatusLabel("entregando"), "Entregando…");
   assert.equal(taskStatusLabel("rechazada"), "Rechazada por la laptop");
   assert.equal(isTaskActive("ejecutando"), true);
   assert.equal(isTaskActive("en_cola"), true);
   assert.equal(isTaskActive("terminada"), false);
+});
+
+test("listTime: como en un chat (Ahora, hora de hoy, Ayer, día de la semana, fecha)", () => {
+  const at = (iso) => listTime(iso, NOW);
+  assert.equal(at(new Date(NOW - 20_000).toISOString()), "Ahora");
+  assert.equal(at("2026-10-04T19:20:00.000Z"), "14:20");
+  assert.equal(at("2026-10-03T22:00:00.000Z"), "Ayer");
+  assert.equal(at("2026-10-04T04:00:00.000Z"), "Ayer", "23:00 del 3 en Lima");
+  assert.equal(at("2026-10-01T15:00:00.000Z"), "jue");
+  assert.equal(at("2026-09-20T15:00:00.000Z"), "20 set");
+});
+
+test("dayLabel: Hoy, Ayer o el día completo", () => {
+  assert.equal(dayLabel("2026-10-04T14:00:00.000Z", NOW), "Hoy");
+  assert.equal(dayLabel("2026-10-03T22:00:00.000Z", NOW), "Ayer");
+  assert.match(dayLabel("2026-09-29T15:00:00.000Z", NOW), /^martes,? 29 set/);
 });
