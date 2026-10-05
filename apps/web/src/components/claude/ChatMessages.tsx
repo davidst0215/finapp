@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Check, CheckCheck, Clock, Laptop, ListTodo, TriangleAlert, X } from 'lucide-react';
+import { Check, CheckCheck, Clock, Laptop, ListTodo, Loader2, Square, TriangleAlert, Volume2, X } from 'lucide-react';
+import { alternarVoz, useEstadoVoz } from '@/lib/hablar';
 import { cn } from '@/lib/utils';
 import { deliveryOf, type Row } from './chatModel';
 import { limaClock } from './format';
@@ -110,6 +111,8 @@ function UserBubble({ item, spacing, showMeta }: { item: UserItem; spacing: stri
 
 function ClaudeBubble({ item, spacing, showMeta }: { item: ClaudeItem; spacing: string; showMeta: boolean }) {
   const [open, setOpen] = useState(false);
+  const voz = useEstadoVoz();
+  const mia = voz.id === item.id;
   const long = item.text.length > CLAMP_CHARS || item.text.split('\n').length > CLAMP_LINES;
   const error = item.tone === 'error';
   return (
@@ -134,15 +137,32 @@ function ClaudeBubble({ item, spacing, showMeta }: { item: ClaudeItem; spacing: 
         >
           {item.text}
         </p>
-        {long && (
-          <button
-            type="button"
-            onClick={() => setOpen((v) => !v)}
-            aria-expanded={open}
-            className="-mb-1 mt-1 min-h-[44px] pr-2 text-[14px] font-semibold text-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
-          >
-            {open ? 'Ver menos' : 'Ver todo'}
-          </button>
+        {(long || !error) && (
+          <div className="-mb-1 mt-0.5 flex flex-wrap items-center gap-x-1">
+            {!error && item.tone !== 'notice' && (
+              <button
+                type="button"
+                onClick={() => alternarVoz(item.id, item.text)}
+                aria-pressed={mia}
+                aria-label={mia ? 'Detener la lectura' : 'Escuchar esta respuesta'}
+                className="flex min-h-[44px] items-center gap-1.5 rounded-full pr-2 text-[14px] font-semibold text-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+              >
+                {mia ? (voz.fase === 'cargando' ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Square size={14} fill="currentColor" aria-hidden="true" />) : <Volume2 size={17} strokeWidth={1.9} aria-hidden="true" />}
+                {mia ? (voz.fase === 'cargando' ? 'Preparando…' : 'Detener') : 'Escuchar'}
+              </button>
+            )}
+            {long && (
+              <button
+                type="button"
+                onClick={() => setOpen((v) => !v)}
+                aria-expanded={open}
+                className="min-h-[44px] px-2 text-[14px] font-semibold text-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+              >
+                {open ? 'Ver menos' : 'Ver todo'}
+              </button>
+            )}
+            {mia && voz.recortado && <span className="text-[13px] text-slate-400">(leo el inicio)</span>}
+          </div>
         )}
       </div>
       {showMeta && (

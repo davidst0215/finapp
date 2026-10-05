@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowDown, Loader2, TriangleAlert } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { calentarFunciones } from '@/lib/supabase';
+import { detenerVoz } from '@/lib/hablar';
 import { ChatItem, Chip } from './ChatMessages';
 import type { Row } from './chatModel';
 import type { ConversationTone } from './conversations';
@@ -37,6 +39,12 @@ export function ChatScreen({ title, subtitle, tone, onBack, headerRight, rows, f
   const stick = useRef(true);
   const lastKey = useRef<string | null>(null);
   const [newBelow, setNewBelow] = useState(false);
+
+  // "Escuchar" va por la función tts: se precalienta al abrir y se corta la voz al salir de la conversación.
+  useEffect(() => {
+    calentarFunciones('tts');
+    return detenerVoz;
+  }, []);
 
   const toBottom = (smooth: boolean) => scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: smooth && !reducedMotion() ? 'smooth' : 'auto' });
 

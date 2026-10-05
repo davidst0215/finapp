@@ -1,5 +1,8 @@
-import { useLayoutEffect, useRef, useState } from 'react';
-import { ArrowUp } from 'lucide-react';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
+import { ArrowUp, Mic, MicOff } from 'lucide-react';
+import { useDictado, type ErrorDictado } from '@/hooks/useDictado';
+import { detenerVoz } from '@/lib/hablar';
+import { unirDictado } from '@/lib/vozTexto';
 import { cn } from '@/lib/utils';
 
 interface Props {
@@ -16,6 +19,15 @@ interface Props {
 }
 
 const MAX_HEIGHT = 144; // ~6 líneas
+const TOQUE_CORTO_MS = 400; // menos que esto no es "mantener presionado"
+
+const AVISOS_VOZ: Record<ErrorDictado, string> = {
+  permiso: 'El micrófono está bloqueado. Permítelo en los ajustes del navegador para dictar.',
+  'sin-voz': 'No te escuché. Mantén presionado el orbe y habla.',
+  'sin-microfono': 'No encuentro un micrófono en este dispositivo.',
+  red: 'Dictar necesita conexión. Revisa tu internet.',
+  otro: 'No pude dictar esta vez. Intenta de nuevo o escribe.',
+};
 
 // Compositor fijo al pie, como en un chat. En el celular Enter agrega un salto de línea (se envía con el botón); en
 // escritorio Enter envía y Mayús+Enter agrega el salto.
@@ -24,6 +36,14 @@ export function Composer({ placeholder = 'Escríbele a Claude…', maxLength, di
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const field = useRef<HTMLTextAreaElement>(null);
+  // Voz: lo que había en el campo al empezar a dictar (lo dictado se agrega al final) y desde cuándo se mantiene presionado.
+  const base = useRef('');
+  const desde = useRef(0);
+  const [aviso, setAviso] = useState<string | null>(null);
+  const dictado = useDictado({
+    onTexto: useCallback((t: string) => setText(unirDictado(base.current, t).slice(0, maxLength)), [maxLength]),
+    onError: useCallback((e: ErrorDictado) => setAviso(AVISOS_VOZ[e]), []),
+  });
   const trimmed = text.trim();
 
   // Crece con el texto hasta ~6 líneas y de ahí se desplaza por dentro.
@@ -49,6 +69,21 @@ export function Composer({ placeholder = 'Escríbele a Claude…', maxLength, di
     }
   };
 
+  const empezarDictado = () => {
+    if (dictado.escuchando || sending) return;
+    detenerVoz(); // si Claude estaba leyendo, el micrófono no debe oírlo
+    base.current = text;
+    desde.current = Date.now();
+    setAviso(null);
+    dictado.iniciar();
+  };
+  const soltarDictado = () => {
+    if (desde.current === 0) return;
+    if (Date.now() - desde.current < TOQUE_CORTO_MS) setAviso('Mantén presionado el orbe mientras hablas; al soltar, el texto queda en el campo.');
+    desde.current = 0;
+    dictado.detener();
+  };
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key !== 'Enter' || e.nativeEvent.isComposing) return;
     const finePointer = window.matchMedia('(pointer: fine)').matches;
@@ -67,6 +102,18 @@ export function Composer({ placeholder = 'Escríbele a Claude…', maxLength, di
       ) : (
         <>
           {hint && <div className="mb-2 px-1 text-[13px] leading-snug text-slate-400">{hint}</div>}
+          {dictado.escuchando && (
+            <p role="status" className="mb-2 flex items-center gap-2 px-1 text-[13px] font-semibold text-slate-200">
+              <span className="h-2 w-2 rounded-full bg-slate-200" aria-hidden="true" />
+              Escuchando… suelta para terminar
+            </p>
+          )}
+          {!dictado.escuchando && (aviso || !dictado.soportado) && (
+            <p role="status" className="mb-2 flex items-start gap-1.5 px-1 text-[13px] leading-snug text-slate-300">
+              <MicOff size={14} strokeWidth={1.9} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+              {aviso ?? 'Este navegador no permite dictar por voz. Escribe tu mensaje.'}
+            </p>
+          )}
           {error && (
             <p role="alert" className="mb-2 px-1 text-[13px] font-semibold text-expense">
               {error}
@@ -77,15 +124,33 @@ export function Composer({ placeholder = 'Escríbele a Claude…', maxLength, di
               ref={field}
               aria-label={label}
               value={text}
+              readOnly={dictado.escuchando}
               rows={1}
               maxLength={maxLength}
               autoFocus={autoFocus}
-              placeholder={placeholder}
+              placeholder={dictado.escuchando ? 'Habla ahora…' : placeholder}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={onKeyDown}
               enterKeyHint="enter"
               className="max-h-36 min-h-[48px] flex-1 resize-none rounded-3xl border border-slate-700 bg-slate-800 px-4 py-3 text-base leading-snug text-slate-100 placeholder-slate-400 focus:border-slate-400 focus:outline-none focus:ring-1 focus:ring-slate-400"
             />
+            {dictado.soportado && (
+              <button
+                type="button"
+                aria-label={dictado.escuchando ? 'Escuchando. Suelta para terminar de dictar' : 'Dictar mensaje. Mantén presionado'}
+                aria-pressed={dictado.escuchando}
+                disabled={sending}
+                onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); empezarDictado(); }}
+                onPointerUp={soltarDictado}
+                onPointerCancel={soltarDictado}
+                onContextMenu={(e) => e.preventDefault()}
+                // Teclado y lector de pantalla: un toque alterna (sin mantener).
+                onClick={(e) => { if (e.detail === 0) { if (dictado.escuchando) dictado.detener(); else empezarDictado(); } }}
+                className={cn('orb-dictar flex-shrink-0 touch-none select-none', dictado.escuchando && 'listening', sending && 'opacity-40')}
+              >
+                <Mic size={21} strokeWidth={2} aria-hidden="true" />
+              </button>
+            )}
             <button
               type="button"
               onClick={() => void submit()}
