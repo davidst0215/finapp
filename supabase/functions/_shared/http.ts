@@ -1,10 +1,15 @@
 // Base de toda edge function nueva de Wabid: CORS, respuestas JSON y usuario autenticado.
 import { createClient, type SupabaseClient, type User } from "jsr:@supabase/supabase-js@2";
 
+// Max-Age: sin él Chrome recuerda el preflight solo 5 s y casi cada llamada pagaba un OPTIONS extra
+// hasta us-west-2 (~0.5 s p50 en los logs del 5-oct). 7200 s es el tope que respeta Chrome.
+export const CORS_MAX_AGE = "7200";
+
 export const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Max-Age": CORS_MAX_AGE,
 };
 
 export const json = (data: unknown, status = 200) =>
