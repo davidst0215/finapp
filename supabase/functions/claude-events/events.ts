@@ -152,7 +152,8 @@ export interface NoticeContext {
   hasPendingApproval: boolean;
 }
 
-const NOTICE_URL = "/claude";
+// El aviso abre la conversación de esa sesión (/claude/s/:id), no la lista. Solo ruta interna: notify y el service worker rechazan lo demás.
+const noticeUrl = (sessionId: string) => `/claude/s/${encodeURIComponent(sessionId)}`;
 
 export function planNotice(e: ParsedEvent, ctx: NoticeContext): Notice | null {
   const where = e.project || "Claude Code";
@@ -160,7 +161,7 @@ export function planNotice(e: ParsedEvent, ctx: NoticeContext): Notice | null {
     kind: "claude",
     title: toOneLine(title, 120),
     body: toOneLine(body, 120),
-    url: NOTICE_URL,
+    url: noticeUrl(e.sessionId),
   });
 
   switch (e.type) {

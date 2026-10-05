@@ -97,6 +97,8 @@ export interface Store {
   /** Inserta o reemplaza por (user_id, session_id). */
   saveSession(row: SessionRow): Promise<void>;
   insertEvent(row: NewEvent): Promise<void>;
+  /** Cambia SOLO la vista previa de la lista (last_summary y last_role); no toca estado, fechas ni nada más (013). */
+  touchSessionPreview(userId: string, sessionId: string, summary: string, role: "usuario" | "claude"): Promise<void>;
   /** Eventos del dispositivo desde la fecha; con `kinds`, solo de esos tipos. */
   countEventsSince(deviceId: string, sinceIso: string, kinds?: EventKind[]): Promise<number>;
   /** Sesiones que este dispositivo creó (started_at) desde la fecha. */

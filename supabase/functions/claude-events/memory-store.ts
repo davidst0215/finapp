@@ -88,6 +88,14 @@ export class MemoryStore implements Store {
       .map((s) => ({ ...s }));
   }
 
+  async touchSessionPreview(userId: string, sessionId: string, summary: string, role: "usuario" | "claude") {
+    const s = this.sessions.get(sessionKey(userId, sessionId));
+    if (s) {
+      s.last_summary = summary;
+      s.last_role = role;
+    }
+  }
+
   async listEvents(userId: string, sessionId: string, limit: number) {
     return this.events
       .filter((e) => e.user_id === userId && e.session_id === sessionId)

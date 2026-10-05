@@ -72,7 +72,17 @@ export function SessionChat({ sessionId, api }: { sessionId: string; api: Claude
 
   let disabledReason: React.ReactNode = null;
   let hint: React.ReactNode = null;
-  if (session && ended) {
+  if (overview && !session) {
+    // La sesión se podó (o nunca fue de esta cuenta): no hay a quién escribirle.
+    disabledReason = (
+      <>
+        Esta conversación ya no existe, así que no se le puede escribir.{' '}
+        <Link to="/claude" replace className="font-semibold text-slate-100 underline underline-offset-2">
+          Volver a las conversaciones
+        </Link>
+      </>
+    );
+  } else if (session && ended) {
     disabledReason = (
       <>
         Esta conversación terminó. Para seguir con el proyecto, lanza una tarea nueva.{' '}

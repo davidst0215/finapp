@@ -332,7 +332,7 @@ test("punta a punta: tarea del celular -> runner -> claude falso -> resultado y 
   assert.ok(row.session_id);
   assert.equal(b.notices.length, 1);
   assert.equal(b.notices[0].kind, "claude");
-  assert.equal(b.notices[0].url, "/claude");
+  assert.equal(b.notices[0].url, `/claude/s/${encodeURIComponent(row.session_id)}`, "el aviso abre la conversación de la tarea");
   assert.equal(logs.join("\n").includes("haz el build"), false, "el prompt nunca va al log");
 });
 

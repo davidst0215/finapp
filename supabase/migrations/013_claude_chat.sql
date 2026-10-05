@@ -27,6 +27,7 @@ $$ LANGUAGE plpgsql;
 -- 1 y 2. Eventos: tipo nuevo y texto largo
 -- ------------------------------------------------------------
 SELECT pg_temp.drop_checks('claude_events', 'permission_request');
+ALTER TABLE claude_events DROP CONSTRAINT IF EXISTS claude_events_kind_check;  -- idempotente: si ya corrió, el de arriba también la quitó
 ALTER TABLE claude_events
     ADD CONSTRAINT claude_events_kind_check CHECK (kind IN (
         'session_start', 'session_end', 'stop', 'stop_failure', 'notification', 'permission_request', 'user_prompt'
@@ -46,6 +47,9 @@ ALTER TABLE claude_sessions
 --    ausente solo si venció sin entregarse (los ya entregados antes de esta migración quedan sin texto).
 -- ------------------------------------------------------------
 SELECT pg_temp.drop_checks('claude_messages', 'body IS NOT NULL');
+ALTER TABLE claude_messages
+    DROP CONSTRAINT IF EXISTS claude_messages_body_queued_check,
+    DROP CONSTRAINT IF EXISTS claude_messages_body_expired_check;  -- idempotente: se pueden volver a correr los ADD de abajo
 ALTER TABLE claude_messages
     ADD CONSTRAINT claude_messages_body_queued_check CHECK (status NOT IN ('en_cola', 'entregando') OR body IS NOT NULL),
     ADD CONSTRAINT claude_messages_body_expired_check CHECK (status <> 'vencido' OR body IS NULL);

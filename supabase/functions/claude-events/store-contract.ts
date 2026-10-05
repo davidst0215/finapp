@@ -368,6 +368,17 @@ export function defineStoreContract(label: string, make: () => Promise<StoreFixt
     assert.ok(listed.every((m) => m.body === null), "el texto nunca sale de listMessages");
   });
 
+  T("013: touchSessionPreview cambia solo last_summary y last_role", async (f) => {
+    const d = await withSession(f);
+    await f.store.saveSession(session(U1, d.device_id, "s1", { status: "esperando", last_event_at: iso(30), last_summary: "viejo" }));
+    await f.store.touchSessionPreview(U1, "s1", "nuevo", "usuario");
+    const s = (await f.store.getSession(U1, "s1"))!;
+    assert.deepEqual([s.last_summary, s.last_role, s.status, s.last_event_at], ["nuevo", "usuario", "esperando", iso(30)]);
+    await f.seedUser(U2);
+    await f.store.touchSessionPreview(U2, "s1", "ajeno", "claude");
+    assert.equal((await f.store.getSession(U1, "s1"))!.last_summary, "nuevo", "no cruza usuarios");
+  });
+
   T("013: listSessionMessages trae el texto (también tras entregar) solo de esa sesión y de ese usuario; vencer lo borra", async (f) => {
     const d = await withSession(f);
     await f.store.saveSession(session(U1, d.device_id, "s2"));

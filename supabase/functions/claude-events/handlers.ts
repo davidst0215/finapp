@@ -7,7 +7,7 @@
 
 import type { Notice } from "../_shared/notify.ts";
 import { mergeSession, parseDeviceEvent, planNotice, summarizeEvent } from "./events.ts";
-import { cleanLine, normalizeForStorage, sanitizeText, toOneLine } from "./redact.ts";
+import { clipText, cleanLine, normalizeForStorage, redactSecrets, sanitizeText } from "./redact.ts";
 import { buildTimeline } from "./timeline.ts";
 import { matchRoute } from "./routes.ts";
 import type { Cutoffs, Store } from "./store.ts";
@@ -541,7 +541,13 @@ async function deviceTaskEvent(taskId: string, req: ApiRequest, deps: ApiDeps, d
     const detail = updated.status === "terminada" ? updated.result : updated.error || updated.result;
     const title = updated.status === "terminada" ? `Tarea terminada · ${updated.project}` : `Tarea ${updated.status} · ${updated.project}`;
     await bestEffort("notify", () =>
-      deps.notify(userId, { kind: "claude", title: cleanLine(title, 120), body: cleanLine(detail ?? "", 120), url: "/claude" })
+      deps.notify(userId, {
+        kind: "claude",
+        title: cleanLine(title, 120),
+        body: cleanLine(detail ?? "", 120),
+        // La conversación de la tarea: su sesión si ya abrió una, o la propia tarea.
+        url: updated.session_id ? `/claude/s/${encodeURIComponent(updated.session_id)}` : `/claude/t/${encodeURIComponent(updated.task_id)}`,
+      })
     );
   }
   return ok({ ok: true, cancel_requested: updated.cancel_requested });
@@ -583,6 +589,9 @@ async function uiMessageCreate(sessionId: string, req: ApiRequest, deps: ApiDeps
   if (!json.ok) return fail(400, "JSON inválido");
   const text = parseUserText(asObject(json.value).text, LIMITS.message.maxChars);
   if (text === null) return fail(400, `El mensaje debe tener entre 1 y ${LIMITS.message.maxChars} caracteres`);
+  // Un mensaje del celular no debe transportar secretos: se redacta AL GUARDAR, así que Claude recibe el texto ya redactado (igual
+  // que el chat y la vista previa). Una llave pegada por error llega como [oculto]; es mejor que viaje y se guarde 14 días.
+  const body = clipText(redactSecrets(text), LIMITS.message.maxChars);
 
   const now = deps.now();
   const nowIso = now.toISOString();
@@ -602,13 +611,14 @@ async function uiMessageCreate(sessionId: string, req: ApiRequest, deps: ApiDeps
     user_id: userId,
     session_id: sessionId,
     device_id: session.device_id,
-    body: text,
+    body,
     created_at: nowIso,
     expires_at: new Date(now.getTime() + LIMITS.message.ttlMs).toISOString(),
   });
   // Vista previa de la lista de conversaciones: lo último que se dijo en el chat. No toca last_event_at (eso es
   // actividad de Claude Code y gobierna "trabajando"/"sin actividad").
-  await bestEffort("preview", () => store.saveSession({ ...session, last_summary: toOneLine(text, 300), last_role: "usuario" }));
+  // Actualización parcial (solo esas dos columnas): un evento del dispositivo que llegue en medio no pierde su estado.
+  await bestEffort("preview", () => store.touchSessionPreview(userId, sessionId, cleanLine(body, 300), "usuario"));
   return ok({ message: toMessageView(row) }, 201);
 }
 

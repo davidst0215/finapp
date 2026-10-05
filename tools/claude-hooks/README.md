@@ -129,6 +129,8 @@ Reinicia Claude Code. Verificado en https://code.claude.com/docs/en/hooks (5-oct
 - Entrada: `prompt`, `turn_number`, `prompt_id`, `session_id`, `cwd`, `permission_mode`, `transcript_path`, `hook_event_name`.
 - **No admite `async: true`**: corre antes de que Claude reciba tu mensaje. Por eso es síncrono con `timeout: 5` y el envío tiene tope de 2,5 s; si Wabid no contesta, tu mensaje sigue su camino sin registrarse. Cuesta lo que tarde esa consulta (~0,5 s con Wabid arriba).
 - **No imprime nada por stdout** (en este evento todo lo que salga se agrega al contexto de Claude) ni bloquea nunca el mensaje.
+- Disyuntor: si un envío falla (Wabid caído, timeout, error HTTP), los siguientes se saltan 60 s para no sumar 2,5 s a cada mensaje. Estado: archivo `prompt-breaker` junto a `claude-hook.json`.
+- Los mensajes que escribes desde el celular se redactan (secretos → `[oculto]`) al guardarse; Claude recibe el texto redactado. Los push de permisos, fallos y tareas abren la conversación (`/claude/s/:id`).
 - Un comando suelto (`/clear`, `/model`) no se envía. Dentro de una tarea del runner (`WABID_RUNNER=1`) tampoco: el encargo ya aparece como mensaje «tarea».
 - Hasta que vuelvas a correr el instalador todo sigue funcionando: solo faltan en el chat los mensajes que escribes en la laptop.
 

@@ -1,7 +1,9 @@
 // Pruebas del hook de la laptop. Correr con: node --test tools/claude-hooks/
 // El módulo no ejecuta nada al importarse si WABID_HOOK_TEST=1.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 
 process.env.WABID_HOOK_TEST = "1";
@@ -580,4 +582,61 @@ test("runHook UserPromptSubmit dentro de una tarea del runner (WABID_RUNNER=1) n
   });
   assert.equal(out, null);
   assert.equal(calls.length, 0);
+});
+
+// --- Disyuntor del envío de prompts ----------------------------------------------------------------------------------------
+
+test("disyuntor: tras un fallo de red los prompts siguientes se saltan 60 s, sin tocar la red; luego se reintenta y un éxito lo limpia", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "wabid-breaker-"));
+  const breakerFile = path.join(dir, "prompt-breaker");
+  try {
+    const raw = JSON.stringify({ ...base, hook_event_name: "UserPromptSubmit", prompt: "hola" });
+    let clock = 1_000_000;
+    const now = () => clock;
+    const down = makeFetch({ "POST /device/events": new Error("timeout") });
+    const up = makeFetch({ "POST /device/events": { body: { ok: true } } });
+    const run = (f) => hook.runHook({ raw, config: CONFIG, fetchImpl: f.fetchImpl, home: HOME, env: {}, now, sleep: async () => {}, breakerFile });
+
+    assert.equal(await run(down), null);
+    assert.equal(down.calls.length, 1, "el primer fallo sí intentó enviar");
+    assert.ok(existsSync(breakerFile), "deja constancia del fallo");
+
+    clock += 30_000;
+    assert.equal(await run(up), null);
+    assert.equal(up.calls.length, 0, "dentro de los 60 s no se toca la red");
+
+    clock += 31_000;
+    assert.equal(await run(up), null);
+    assert.equal(up.calls.length, 1, "pasado el minuto se reintenta");
+    assert.equal(existsSync(breakerFile), false, "un envío exitoso limpia el disyuntor");
+
+    // Un 5xx también cuenta como fallo; un archivo corrupto o con hora futura no bloquea.
+    const down500 = makeFetch({ "POST /device/events": { status: 500 } });
+    await run(down500);
+    assert.ok(existsSync(breakerFile));
+    writeFileSync(breakerFile, "basura");
+    assert.equal(hook.breakerOpen(breakerFile, clock), false);
+    writeFileSync(breakerFile, String(clock + 999_999));
+    assert.equal(hook.breakerOpen(breakerFile, clock), false, "un reloj retrocedido no deja el disyuntor abierto para siempre");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("disyuntor: solo aplica a user_prompt (un Stop o un permiso siguen enviándose)", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "wabid-breaker-"));
+  const breakerFile = path.join(dir, "prompt-breaker");
+  try {
+    writeFileSync(breakerFile, String(Date.now()));
+    const f = makeFetch({ "POST /device/events": { body: { ok: true } } });
+    await hook.runHook({ raw: JSON.stringify({ ...base, hook_event_name: "SessionEnd", reason: "other" }), config: CONFIG, fetchImpl: f.fetchImpl, home: HOME, env: {}, breakerFile, ...fakeClock() });
+    assert.equal(f.calls.length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("breakerPath vive junto a la configuración (fuera del repo)", () => {
+  assert.equal(hook.breakerPath({ WABID_HOOK_CONFIG: "D:\\datos\\c.json" }, "win32", HOME), "D:\\datos\\prompt-breaker");
+  assert.match(hook.breakerPath({ LOCALAPPDATA: `${HOME}\\AppData\\Local` }, "win32", HOME), /Wabid[\\/]prompt-breaker$/);
 });

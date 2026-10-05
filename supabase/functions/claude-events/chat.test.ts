@@ -3,7 +3,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Notice } from "../_shared/notify.ts";
-import { mergeSession, parseDeviceEvent, summarizeEvent } from "./events.ts";
+import { isSafeAppPath } from "../_shared/webpush-core.ts";
+import { mergeSession, parseDeviceEvent, planNotice, summarizeEvent } from "./events.ts";
 import { handleApi } from "./handlers.ts";
 import type { ApiDeps } from "./handlers.ts";
 import { MemoryStore } from "./memory-store.ts";
@@ -182,7 +183,7 @@ function setup(opts: { ownerId?: string | null } = {}) {
     return await handleApi({ method, path: `/claude-events${path}`, query, headers, body: body === undefined ? "" : JSON.stringify(body) }, deps);
   };
   const tick = (ms: number) => { nowMs += ms; };
-  return { store, state, call, tick };
+  return { store, state, call, tick, notices };
 }
 
 async function pair(t: ReturnType<typeof setup>) {
@@ -256,4 +257,58 @@ test("compatibilidad: el hook viejo (stop de 280 caracteres, sin user_prompt) si
   assert.equal(o.last_role, "claude");
   const items = (await t.call("GET", `/ui/sessions/${SESSION}/timeline`)).body.items;
   assert.equal(items[0].text, "Listo, actualicé los archivos.");
+});
+
+// --- Revisión: avisos a la conversación, redacción al guardar, actualización parcial de la vista previa -----------------------------
+
+test("el push de permiso, de fallo y de espera abre la conversación de esa sesión, con una ruta interna válida", () => {
+  const e = (over: Record<string, unknown>) => parse({ session_id: "sess:1.a", project: "finapp", ...over });
+  const notices = [
+    planNotice(e({ type: "permission_request", tool_name: "Bash", preview: "ls" }), { approvalCreated: true, hasPendingApproval: false }),
+    planNotice(e({ type: "stop_failure", detail: "rate_limit" }), { approvalCreated: false, hasPendingApproval: false }),
+    planNotice(e({ type: "notification", detail: "idle_prompt", message: "x" }), { approvalCreated: false, hasPendingApproval: false }),
+  ];
+  for (const n of notices) {
+    assert.equal(n?.url, "/claude/s/sess%3A1.a");
+    assert.ok(isSafeAppPath(n!.url), "notify y el service worker solo aceptan rutas internas");
+  }
+});
+
+test("un mensaje del celular se redacta AL GUARDAR: Claude, el chat y la vista previa reciben [oculto]", async () => {
+  const t = setup();
+  const d = await pair(t);
+  await d.event({ type: "session_start" });
+  const key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz";
+  assert.equal((await t.call("POST", `/ui/sessions/${SESSION}/messages`, { text: `usa la llave ${key} y sigue` })).status, 201);
+  assert.ok(![...t.store.messages.values()].some((m) => m.body!.includes("sk-ant")), "no se guarda la llave");
+  const overview = (await t.call("GET", "/ui/overview")).body;
+  assert.ok(overview.sessions[0].summary.includes("[oculto]") && !JSON.stringify(overview).includes("sk-ant"));
+  const claimed = await t.call("POST", `/device/sessions/${SESSION}/messages/next`, {}, d.token);
+  assert.equal(claimed.body.message.text, "usa la llave [oculto] y sigue");
+});
+
+test("touchSessionPreview cambia solo la vista previa: no pisa el estado que dejó un evento del dispositivo", async () => {
+  const t = setup();
+  const d = await pair(t);
+  await d.event({ type: "session_start" });
+  const before = await t.store.getSession(DAVID, SESSION);
+  await d.event({ type: "session_end", detail: "other" }); // llega "en medio"
+  await t.store.touchSessionPreview(DAVID, SESSION, "hola", "usuario");
+  const after = (await t.store.getSession(DAVID, SESSION))!;
+  assert.equal(after.status, "terminada");
+  assert.ok(after.ended_at);
+  assert.deepEqual([after.last_summary, after.last_role], ["hola", "usuario"]);
+  assert.equal(after.started_at, before!.started_at);
+});
+
+test("la tarea terminada avisa y abre su conversación (la sesión que abrió, o la propia tarea)", async () => {
+  const t = setup();
+  const d = await pair(t);
+  await t.call("POST", "/device/tasks/next", { projects: ["finapp"] }, d.token);
+  const task = (await t.call("POST", "/ui/tasks", { project: "finapp", prompt: "haz" })).body.task;
+  await t.call("POST", "/device/tasks/next", { projects: ["finapp"] }, d.token);
+  await t.call("POST", `/device/tasks/${task.id}/events`, { type: "finish", outcome: "fallida", error: "x" }, d.token);
+  assert.equal(t.notices.length, 1);
+  assert.equal(t.notices[0]!.url, `/claude/t/${task.id}`);
+  assert.ok(isSafeAppPath(t.notices[0]!.url));
 });

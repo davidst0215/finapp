@@ -14,7 +14,7 @@
 //
 // Formato de entrada y salida: https://code.claude.com/docs/en/hooks
 
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -381,6 +381,40 @@ const STOP_POST_TIMEOUT_MS = 3000;
 // UserPromptSubmit no admite async: bloquea tu mensaje hasta que el hook termina. Por eso el tope es corto: si Wabid
 // tarda más, el mensaje sigue su camino sin registrarse en el celular.
 export const PROMPT_POST_TIMEOUT_MS = 2500;
+
+// Disyuntor del envío de prompts: si el último envío falló (red caída, timeout, 4xx/5xx), los siguientes se saltan durante
+// 60 s para no sumar hasta 2,5 s a CADA mensaje que escribes con Wabid caído. El estado es un archivo diminuto (la hora del
+// último fallo) junto a la configuración, porque cada hook es un proceso nuevo. Cualquier error de disco = disyuntor cerrado.
+export const PROMPT_BREAKER_MS = 60_000;
+
+export const breakerPath = (env = process.env, platform = process.platform, home = os.homedir()) =>
+  (platform === "win32" ? path.win32 : path.posix).join((platform === "win32" ? path.win32 : path.posix).dirname(configPath(env, platform, home)), "prompt-breaker");
+
+export function breakerOpen(file, nowMs) {
+  try {
+    const failedAt = Number(readFileSync(file, "utf8").trim());
+    return Number.isFinite(failedAt) && nowMs >= failedAt && nowMs - failedAt < PROMPT_BREAKER_MS;
+  } catch {
+    return false;
+  }
+}
+
+export function tripBreaker(file, nowMs) {
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, String(nowMs));
+  } catch {
+    /* sin disco no hay disyuntor: lo peor es el costo de siempre */
+  }
+}
+
+function resetBreaker(file) {
+  try {
+    unlinkSync(file);
+  } catch {
+    /* no existía */
+  }
+}
 const ACK_TRIES = 3;
 const ACK_RETRY_MS = 250;
 const CLAIM_MAX_CONSECUTIVE_ERRORS = 3;
@@ -508,7 +542,8 @@ export async function waitForDecision({
 }
 
 // Procesa un evento de hook. Devuelve la línea JSON a imprimir en stdout, o null (no imprimir nada).
-export async function runHook({ raw, config, fetchImpl = fetch, home, now = Date.now, sleep = defaultSleep, log = () => {}, env = process.env, onOutput }) {
+// `breakerFile`: solo la línea de comandos lo pasa (las pruebas no tocan el disco real).
+export async function runHook({ raw, config, fetchImpl = fetch, home, now = Date.now, sleep = defaultSleep, log = () => {}, env = process.env, onOutput, breakerFile }) {
   let input;
   try {
     input = JSON.parse(stripBom(raw));
@@ -524,6 +559,9 @@ export async function runHook({ raw, config, fetchImpl = fetch, home, now = Date
 
   // Una tarea lanzada desde el celular ya muestra su encargo en el chat: no se repite como "escrito en la laptop".
   if (event.type === "user_prompt" && env.WABID_RUNNER === "1") return null;
+
+  const guarded = event.type === "user_prompt" && breakerFile;
+  if (guarded && breakerOpen(breakerFile, now())) return null;
 
   const isPermission = event.type === "permission_request";
   let response;
@@ -542,8 +580,10 @@ export async function runHook({ raw, config, fetchImpl = fetch, home, now = Date
     );
   } catch (e) {
     log(`no se pudo enviar el evento: ${e instanceof Error ? e.message : "error"}`);
+    if (guarded) tripBreaker(breakerFile, now());
     return null;
   }
+  if (guarded) resetBreaker(breakerFile);
   if (event.type === "stop") {
     const delivery = await handleStop({ sessionId: event.session_id, away: response && response.away === true, config, fetchImpl, now, sleep, env });
     if (!delivery) return null;
@@ -621,6 +661,7 @@ async function hookMode() {
     config,
     home: os.homedir(),
     log,
+    breakerFile: breakerPath(),
     onOutput: async (line) => {
       wrote = true;
       await writeStdout(line + "\n");

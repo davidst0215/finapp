@@ -19,39 +19,65 @@ export function useTimeline(sessionId: string | null) {
   const [loading, setLoading] = useState(() => data === null);
   const [limit, setLimit] = useState(PAGE);
   const [local, setLocal] = useState<TimelineItem[]>([]);
-  const inFlight = useRef<AbortController | null>(null);
+  const controller = useRef<AbortController | null>(null);
+  const busy = useRef(false);
+  const again = useRef(false);
+  const stopped = useRef(false);
+  const timer = useRef<number | null>(null);
 
+  // Una consulta a la vez: si hay una en vuelo, el sondeo salta ese tick (no la aborta, así una red lenta no deja la
+  // conversación sin actualizarse nunca) y una acción de David (enviar, decidir) pide una vuelta más al terminar.
+  // Solo se aborta al desmontar o al cambiar el límite. Un 404 (sesión podada) detiene el sondeo: no volverá.
   const refresh = useCallback(async () => {
-    if (!sessionId) return;
-    inFlight.current?.abort();
-    const controller = new AbortController();
-    inFlight.current = controller;
+    if (!sessionId || stopped.current) return;
+    if (busy.current) {
+      again.current = true;
+      return;
+    }
+    const mine = new AbortController();
+    controller.current = mine;
+    busy.current = true;
     try {
-      const res = await claudeApi.sessionTimeline(sessionId, limit, controller.signal);
-      if (controller.signal.aborted) return;
-      setData(res);
-      setFetchedAt(performance.now());
-      writeCache(cacheKey, res);
-      setError(null);
-    } catch (e) {
-      if (controller.signal.aborted) return;
-      setError(e instanceof ApiError ? e.message : 'No se pudo cargar la conversación.');
+      do {
+        again.current = false;
+        try {
+          const res = await claudeApi.sessionTimeline(sessionId, limit, mine.signal);
+          if (mine.signal.aborted) return;
+          setData(res);
+          setFetchedAt(performance.now());
+          writeCache(cacheKey, res);
+          setError(null);
+        } catch (e) {
+          if (mine.signal.aborted) return;
+          if (e instanceof ApiError && e.status === 404) {
+            stopped.current = true;
+            if (timer.current !== null) window.clearInterval(timer.current);
+            setError('Esta conversación ya no existe.');
+            return;
+          }
+          setError(e instanceof ApiError ? e.message : 'No se pudo cargar la conversación.');
+        } finally {
+          if (!mine.signal.aborted) setLoading(false);
+        }
+      } while (again.current && !mine.signal.aborted);
     } finally {
-      if (!controller.signal.aborted) setLoading(false);
+      if (controller.current === mine) busy.current = false;
     }
   }, [sessionId, limit, cacheKey]);
 
   useEffect(() => {
+    stopped.current = false;
     void refresh();
     const tick = () => {
       if (document.visibilityState === 'visible') void refresh();
     };
-    const id = window.setInterval(tick, POLL_MS);
+    timer.current = window.setInterval(tick, POLL_MS);
     document.addEventListener('visibilitychange', tick);
     return () => {
-      window.clearInterval(id);
+      if (timer.current !== null) window.clearInterval(timer.current);
       document.removeEventListener('visibilitychange', tick);
-      inFlight.current?.abort();
+      controller.current?.abort();
+      busy.current = false;
     };
   }, [refresh]);
 

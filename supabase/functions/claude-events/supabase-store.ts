@@ -83,6 +83,13 @@ export function createSupabaseStore(db: SupabaseClient): Store {
       must(await db.from("claude_events").insert(row), "insertEvent");
     },
 
+    async touchSessionPreview(userId, sessionId, summary, role) {
+      must(
+        await db.from("claude_sessions").update({ last_summary: summary, last_role: role }).eq("user_id", userId).eq("session_id", sessionId),
+        "touchSessionPreview",
+      );
+    },
+
     async countSessionsSince(deviceId, sinceIso) {
       const res = await db
         .from("claude_sessions")

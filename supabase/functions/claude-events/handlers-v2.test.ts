@@ -293,7 +293,7 @@ test("ciclo completo: en cola → reclamada → avance → fin con aviso", async
   assert.equal(row.result, "Listo, el build pasa.");
   assert.ok(row.finished_at);
   assert.equal(t.notices.length, 1);
-  assert.deepEqual({ kind: t.notices[0]!.kind, url: t.notices[0]!.url }, { kind: "claude", url: "/claude" });
+  assert.deepEqual({ kind: t.notices[0]!.kind, url: t.notices[0]!.url }, { kind: "claude", url: "/claude/s/abc-123" });
   assert.match(t.notices[0]!.title, /Tarea terminada · finapp/);
 
   assert.equal((await d.taskEvent(created.id, { type: "progress", message: "tarde" })).body.cancel_requested, true, "ya no está ejecutándose: el runner debe parar");
