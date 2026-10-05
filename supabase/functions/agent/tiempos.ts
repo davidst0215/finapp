@@ -18,13 +18,23 @@ export class Tiempos {
     }
   }
 
+  // Con reintentos se suman: el costo real es el de todas las llamadas.
   tokens(uso: Usage | undefined) {
-    this.uso = uso ?? null;
+    if (!uso) return;
+    const prev = this.uso;
+    this.uso = !prev ? uso : {
+      prompt_tokens: (prev.prompt_tokens ?? 0) + (uso.prompt_tokens ?? 0),
+      completion_tokens: (prev.completion_tokens ?? 0) + (uso.completion_tokens ?? 0),
+      prompt_tokens_details: {
+        cached_tokens: (prev.prompt_tokens_details?.cached_tokens ?? 0) + (uso.prompt_tokens_details?.cached_tokens ?? 0),
+      },
+    };
   }
 
   resumen() {
     return {
-      ...Object.fromEntries(this.fases),
+      // Una fase repetida (reintento) suma su duración.
+      ...this.fases.reduce<Record<string, number>>((acc, [f, ms]) => ({ ...acc, [f]: (acc[f] ?? 0) + ms }), {}),
       total: Math.round(performance.now() - this.inicio),
       ...(this.uso
         ? { tok_in: this.uso.prompt_tokens, tok_cache: this.uso.prompt_tokens_details?.cached_tokens ?? 0, tok_out: this.uso.completion_tokens }

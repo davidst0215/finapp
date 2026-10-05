@@ -20,3 +20,16 @@ test("Tiempos registra la fase aunque la promesa falle", async () => {
   await assert.rejects(t.medir("llm", Promise.reject(new Error("x"))));
   assert.match(t.header(), /^llm;dur=\d+, total;dur=\d+$/);
 });
+
+test("Tiempos suma fases repetidas y tokens de reintentos", async () => {
+  const t = new Tiempos();
+  await t.medir("llm", new Promise((r) => setTimeout(r, 20)));
+  await t.medir("llm", new Promise((r) => setTimeout(r, 20)));
+  t.tokens({ prompt_tokens: 100, completion_tokens: 10, prompt_tokens_details: { cached_tokens: 80 } });
+  t.tokens({ prompt_tokens: 100, completion_tokens: 5 });
+  const r = t.resumen() as Record<string, number>;
+  assert.ok(r.llm >= 35, JSON.stringify(r));
+  assert.equal(r.tok_in, 200);
+  assert.equal(r.tok_out, 15);
+  assert.equal(r.tok_cache, 80);
+});

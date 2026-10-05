@@ -4,6 +4,7 @@ import { llmConfigured, llmFetch } from "../_shared/llm.ts";
 import { PERSONA } from "./prompt.ts";
 import { MODULES } from "./registry.ts";
 import { bearer, jwtSub } from "../_shared/jwt.ts";
+import { argumentos, respuestaInservible } from "./respuesta.ts";
 import { Tiempos } from "./tiempos.ts";
 import type { AgentContext } from "./types.ts";
 
@@ -77,7 +78,7 @@ Deno.serve(async (req: Request) => {
 
     // OpenRouter manda los headers de inmediato y el cuerpo cuando el modelo termina:
     // la fase incluye leer el cuerpo.
-    const llm = await t.medir("llm", llmFetch({
+    const pedirAlModelo = () => t.medir("llm", llmFetch({
       messages: [
         { role: "system", content: SISTEMA },
         { role: "system", content: contextMsg },
@@ -95,19 +96,28 @@ Deno.serve(async (req: Request) => {
       max_tokens: 500,
     }).then(async (r) => ({ ok: r.ok, status: r.status, cuerpo: await r.text() })));
 
-    if (!llm.ok) {
-      console.error("agent modelo:", llm.status, llm.cuerpo.slice(0, 300));
-      return json({ error: "El modelo no respondió. Intenta de nuevo." }, 502);
+    // Una respuesta sin tool o con el texto a decir vacío se pide una vez más antes de ejecutar nada.
+    let call: { function: { name: string; arguments?: string } } | undefined;
+    for (let intento = 0; intento < 2; intento++) {
+      const llm = await pedirAlModelo();
+      if (!llm.ok) {
+        console.error("agent modelo:", llm.status, llm.cuerpo.slice(0, 300));
+        return json({ error: "El modelo no respondió. Intenta de nuevo." }, 502);
+      }
+      const data = JSON.parse(llm.cuerpo);
+      t.tokens(data.usage);
+      call = data.choices?.[0]?.message?.tool_calls?.[0];
+      if (!respuestaInservible(call)) break;
+      console.error(`agent: respuesta inservible del modelo (intento ${intento + 1})`);
     }
-
-    const data = JSON.parse(llm.cuerpo);
-    t.tokens(data.usage);
-    const call = data.choices?.[0]?.message?.tool_calls?.[0];
-    if (!call) return json({ error: "No se pudo interpretar" }, 500);
+    if (respuestaInservible(call) || !call) {
+      console.log(JSON.stringify({ evt: "agent", tool: "(inservible)", ...t.resumen() }));
+      return json({ action: "query", message: "No me salió la respuesta. ¿Me lo repites?" });
+    }
 
     const owner = OWNER.get(call.function.name);
     if (!owner) return json({ action: "unknown", message: "No entendí. Intenta de nuevo." });
-    const args = JSON.parse(call.function.arguments || "{}");
+    const args = argumentos(call) ?? {};
     const result = await t.medir("tool", owner.handlers[call.function.name](args, ctx, dataByModule.get(owner.id)));
     // Una línea por pedido, sin contenido de David: sirve para seguir el p50 en los logs.
     console.log(JSON.stringify({ evt: "agent", tool: call.function.name, ...t.resumen() }));
