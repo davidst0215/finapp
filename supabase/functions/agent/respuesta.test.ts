@@ -31,13 +31,13 @@ test("argumentos devuelve objeto o null", () => {
 });
 
 test("rellenos del modelo se reintentan", () => {
-  for (const a of ["placeholder", "Placeholder", "...", "…", "Revisando tus pagos pendientes...", "déjame revisar", "ok"]) {
+  for (const a of ["placeholder", "Placeholder", "...", "…", "Revisando tus pagos pendientes...", "déjame revisar", "x"]) {
     assert.equal(respuestaInservible(call("analyze_finances", { answer: a })), true, a);
   }
 });
 
 test("respuestas reales cortas o que mencionan 'revisando' en medio no se reintentan", () => {
-  for (const a of ["Sí, ya lo anoté.", "Llevas S/ 20.50 este mes.", "Estoy revisando que todo cuadre: vas bien."]) {
+  for (const a of ["Sí, ya lo anoté.", "Llevas S/ 20.50 este mes.", "Estoy revisando que todo cuadre: vas bien.", "Sí", "No", "Ok", "Revisando tus gastos: gastaste S/ 450 en comida este mes.", "Déjame ver… tienes 3 deudas activas"]) {
     assert.equal(respuestaInservible(call("query", { answer: a })), false, a);
   }
 });
