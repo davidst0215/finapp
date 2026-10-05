@@ -6,9 +6,14 @@ import { spawn } from "node:child_process";
 import { appendFileSync, writeFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
+if (args.includes("--version")) {
+  process.stdout.write((process.env.FAKE_CLAUDE_VERSION ?? "2.1.280") + " (Claude Code)\n");
+  process.exit(0);
+}
 const sid = args[args.indexOf("--session-id") + 1] ?? "sin-session";
-let prompt = "";
-for await (const chunk of process.stdin) prompt += chunk;
+// El prompt es el único argumento posicional, después de `--` (stdin va cerrado).
+const dashdash = args.indexOf("--");
+const prompt = dashdash >= 0 ? (args[dashdash + 1] ?? "") : "";
 const mode = prompt.split("\n")[0].trim();
 
 if (process.env.FAKE_CLAUDE_LOG) {

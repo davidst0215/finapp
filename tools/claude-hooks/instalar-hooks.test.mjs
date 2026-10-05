@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { binDir } from "./bin-copy.mjs";
 import { desiredHooks, installHooks, mergeWabidHooks, STOP_TIMEOUT_SECONDS } from "./instalar-hooks.mjs";
 
 const SCRIPT = "C:/Users/Dsalg/finapp/tools/claude-hooks/wabid-hook.mjs";
@@ -148,15 +149,39 @@ test("CLI: WABID_CLAUDE_SETTINGS apunta al archivo de ejemplo y --dry-run no esc
   const f = file("cli.json");
   writeFileSync(f, JSON.stringify({ hooks: v1() }));
   const before = readFileSync(f, "utf8");
-  const env = { ...process.env, WABID_CLAUDE_SETTINGS: f };
+  const bin = file("bin");
+  const env = { ...process.env, WABID_CLAUDE_SETTINGS: f, WABID_BIN_DIR: bin };
   const dry = spawnSync(process.execPath, [CLI, "--dry-run"], { env, encoding: "utf8" });
   assert.equal(dry.status, 0);
   assert.match(dry.stdout, /dry-run/);
   assert.equal(readFileSync(f, "utf8"), before);
+  assert.equal(existsSync(bin), false, "--dry-run no copia nada");
   const real = spawnSync(process.execPath, [CLI], { env, encoding: "utf8" });
   assert.equal(real.status, 0);
   assert.match(real.stdout, /0 agregados, 6 actualizados/, "la ruta del script de esta copia difiere de la del ejemplo: se corrige en los seis");
-  assert.equal(JSON.parse(readFileSync(f, "utf8")).hooks.Stop[0].hooks[0].timeout, 900);
+  const after = JSON.parse(readFileSync(f, "utf8"));
+  assert.equal(after.hooks.Stop[0].hooks[0].timeout, 900);
+  const expectedScript = path.join(bin, "wabid-hook.mjs").replace(/\\/g, "/");
+  assert.deepEqual(after.hooks.Stop[0].hooks[0].args, [expectedScript], "los hooks apuntan a la copia en bin, no al repo");
+  assert.ok(existsSync(path.join(bin, "wabid-hook.mjs")) && existsSync(path.join(bin, "wabid-runner.mjs")));
+  assert.equal(readFileSync(path.join(bin, "wabid-hook.mjs"), "utf8"), readFileSync(fileURLToPath(new URL("./wabid-hook.mjs", import.meta.url)), "utf8"));
+});
+
+test("binDir: variable de entorno, Windows y Linux", () => {
+  assert.equal(binDir({ WABID_BIN_DIR: "X:\\bin" }), "X:\\bin");
+  assert.equal(binDir({ LOCALAPPDATA: "C:\\Users\\D\\AppData\\Local" }, "win32"), "C:\\Users\\D\\AppData\\Local\\Wabid\\bin");
+  assert.equal(binDir({}, "linux", "/home/d"), "/home/d/.local/share/wabid/bin");
+});
+
+test("installHooks: si el respaldo con ese sello ya existe, agrega sufijo y no lo pisa; la escritura no deja temporales", () => {
+  const f = file("sufijo.json");
+  writeFileSync(f, JSON.stringify({ hooks: v1() }));
+  const now = new Date("2026-10-05T12:00:00Z");
+  writeFileSync(`${f}.antes-de-wabid-20261005T120000`, "respaldo anterior");
+  const r = installHooks({ settingsFile: f, script: SCRIPT, now });
+  assert.equal(r.backup, `${f}.antes-de-wabid-20261005T120000-1`);
+  assert.equal(readFileSync(`${f}.antes-de-wabid-20261005T120000`, "utf8"), "respaldo anterior");
+  assert.equal(readdirSync(tmp).some((n) => n.includes("wabid-tmp")), false, "el temporal se renombró encima");
 });
 
 test.after(() => rmSync(tmp, { recursive: true, force: true }));

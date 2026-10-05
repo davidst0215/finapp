@@ -53,7 +53,7 @@ export function SessionMessageBox({ session, messages, now, onSend }: Props) {
           />
           <div className="flex items-center gap-3">
             <p className="min-w-0 flex-1 text-[13px] text-slate-400">
-              Se entrega cuando Claude termine su turno. Con «Aprobar desde el celular» activo, la laptop espera tu mensaje.
+              Se entrega cuando Claude termine su turno. Con «Aprobar desde el celular» activo, la laptop espera tu mensaje unos 2 min.
             </p>
             <span className="text-[13px] tabular-nums text-slate-400" aria-hidden="true">
               {text.length}/{MAX}
@@ -74,6 +74,7 @@ export function SessionMessageBox({ session, messages, now, onSend }: Props) {
                 className={cn(
                   'h-2 w-2 flex-shrink-0 rounded-full',
                   m.status === 'en_cola' && 'border-2 border-slate-100',
+                  m.status === 'entregando' && 'border-2 border-slate-100 bg-slate-500',
                   m.status === 'entregado' && 'bg-slate-100',
                   m.status === 'vencido' && 'border border-dashed border-slate-400',
                 )}

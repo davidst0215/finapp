@@ -2,7 +2,7 @@
 // Incluye una prueba de punta a punta contra la lógica real de la función claude-events (en memoria).
 // Correr con: node --experimental-strip-types --test tools/claude-hooks/wabid-runner.test.mjs
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
@@ -81,13 +81,20 @@ test("isValidPrompt: 1 a 4000 caracteres, sin NUL", () => {
 
 // --- Argumentos de claude ------------------------------------------------------------------------------------
 
-test("buildClaudeArgs: stream-json, modo default, sin prompt en los argumentos y sin saltarse permisos", () => {
+test("buildClaudeArgs: flags fijos, topes, solo user settings, prompt único tras `--`, sin saltarse permisos", () => {
   const sid = crypto.randomUUID();
-  const args = runner.buildClaudeArgs({ sessionId: sid });
-  assert.deepEqual(args, ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", "--permission-prompts", "none", "--session-id", sid]);
-  const text = args.join(" ");
-  for (const banned of ["dangerously", "bypassPermissions", "dontAsk", "acceptEdits", "--allowedTools", "auto"]) assert.equal(text.includes(banned), false, banned);
-  assert.throws(() => runner.buildClaudeArgs({ sessionId: "no-uuid; rm -rf /" }));
+  const args = runner.buildClaudeArgs({ sessionId: sid, prompt: "--dangerously-skip-permissions" });
+  assert.deepEqual(args, [
+    "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", "--permission-prompts", "none",
+    "--setting-sources", "user", "--max-turns", "40", "--max-budget-usd", "2", "--session-id", sid, "--", "--dangerously-skip-permissions",
+  ]);
+  const flags = args.slice(0, args.indexOf("--")).join(" ");
+  for (const banned of ["dangerously", "bypassPermissions", "dontAsk", "acceptEdits", "--allowedTools", "auto"]) assert.equal(flags.includes(banned), false, banned);
+  assert.equal(args.at(-2), "--", "el prompt va después de `--`: no puede leerse como flag");
+  const custom = runner.buildClaudeArgs({ sessionId: sid, prompt: "x", maxTurns: 5, maxBudgetUsd: 0.5 });
+  assert.ok(custom.join(" ").includes("--max-turns 5 --max-budget-usd 0.5"));
+  assert.throws(() => runner.buildClaudeArgs({ sessionId: "no-uuid; rm -rf /", prompt: "x" }));
+  assert.throws(() => runner.buildClaudeArgs({ sessionId: sid, prompt: "" }));
 });
 
 test("resolveClaudeCommand: PATH, .cmd rechazado, claudeCommand explícito", () => {
@@ -144,8 +151,9 @@ test("OK: termina, redacta el resultado y manda avances redactados", async () =>
   assert.ok(progress.length >= 1);
   assert.ok(progress.every((m) => !m.includes("sk-ant-api03")), progress.join("|"));
   const seen = JSON.parse(readFileSync(log, "utf8").trim().split("\n")[0]);
-  assert.equal(seen.prompt, "OK\nhaz el build", "el prompt llega por stdin");
-  assert.equal(seen.args.includes("OK\nhaz el build"), false, "y nunca como argumento");
+  assert.equal(seen.prompt, "OK\nhaz el build", "el prompt llega como argumento posicional tras --");
+  assert.equal(seen.args.at(-1), "OK\nhaz el build");
+  assert.ok(seen.args.includes("--setting-sources") && seen.args.includes("--max-turns") && seen.args.includes("--max-budget-usd"));
   assert.equal(seen.cwd.toLowerCase(), projectDir.toLowerCase());
   assert.equal(seen.wabidRunner, "1");
   assert.match(r.sessionId, /^[0-9a-f-]{36}$/);
@@ -220,7 +228,7 @@ test("un fallo de red en el latido no mata la tarea", async () => {
   assert.ok(n >= 1);
 });
 
-test("sin shell: spawn recibe un arreglo de argumentos, shell:false y el prompt no está en ellos", async () => {
+test("sin shell: spawn recibe un arreglo, shell:false, stdin cerrado y el prompt es solo el último argumento", async () => {
   let seen;
   const { spawn } = await import("node:child_process");
   const wrapped = (file, args, opts) => {
@@ -232,8 +240,10 @@ test("sin shell: spawn recibe un arreglo de argumentos, shell:false y el prompt 
   assert.equal(r.outcome, "terminada");
   assert.equal(seen.opts.shell, false);
   assert.ok(Array.isArray(seen.args));
-  assert.equal(seen.args.some((a) => a.includes("rm -rf") || a.includes("whoami")), false);
-  assert.equal(seen.args.filter((a) => a.includes("dangerously")).length, 0, "ni siquiera el prompt malicioso llega como flag");
+  assert.equal(seen.opts.stdio[0], "ignore");
+  assert.equal(seen.args.at(-1), prompt);
+  assert.equal(seen.args.at(-2), "--");
+  assert.equal(seen.args.slice(0, -1).some((a) => a.includes("rm -rf") || a.includes("whoami") || a.includes("dangerously")), false, "el prompt malicioso solo aparece como último argumento");
   assert.equal(seen.opts.env.WABID_RUNNER, "1");
 });
 
@@ -248,6 +258,8 @@ test("validateTask: usa solo la ruta de la allowlist y rechaza el resto", () => 
   assert.ok(runner.validateTask(task("hola", { project: "C:\\Windows" }), c).error);
   assert.ok(runner.validateTask(task(""), c).error);
   assert.ok(runner.validateTask(task("x".repeat(4001)), c).error);
+  assert.ok(runner.validateTask(task("--dangerously-skip-permissions"), c).error, "un prompt que empieza con - se rechaza");
+  assert.ok(runner.validateTask(task("  -p"), c).error);
   assert.ok(runner.validateTask({ id: "no-uuid", project: "demo", prompt: "x" }, c).error);
   const missing = runner.parseRunnerConfig(JSON.stringify({ projects: { demo: path.join(tmp, "borrada") } }));
   assert.ok(runner.validateTask(task("hola"), missing).error);
@@ -364,4 +376,158 @@ test("el bucle se recupera de un fallo de red y sigue consultando", async () => 
   assert.ok(sleeps[0] > sleeps[1], "primero espera por el error, luego el intervalo normal");
   assert.equal(sleeps[1], 3000);
   assert.ok(logs.some((l) => l.includes("no se pudo consultar")));
+});
+
+// --- Allowlist en caliente ---------------------------------------------------------------------------------------------------
+
+test("createConfigReloader: relee cuando cambia el archivo; sin archivo o roto, falla cerrado", () => {
+  const file = path.join(tmp, "reload.json");
+  const get = runner.createConfigReloader(file);
+  assert.equal(get().projects.size, 0, "sin archivo no hay proyectos");
+  writeFileSync(file, JSON.stringify({ projects: { demo: projectDir } }));
+  assert.equal(runner.resolveProject(get(), "demo"), projectDir);
+  const same = get();
+  assert.equal(get(), same, "sin cambios devuelve la misma configuración (no relee)");
+  writeFileSync(file, JSON.stringify({ projects: {} }));
+  const later = new Date(Date.now() + 5000);
+  utimesSync(file, later, later);
+  assert.equal(runner.resolveProject(get(), "demo"), null, "remove revoca sin reiniciar");
+  writeFileSync(file, "{ roto");
+  const later2 = new Date(Date.now() + 10_000);
+  utimesSync(file, later2, later2);
+  assert.equal(get().projects.size, 0);
+  rmSync(file);
+  assert.equal(get().projects.size, 0);
+});
+
+test("una tarea ya en cola para un proyecto quitado de la allowlist se rechaza en la laptop", async () => {
+  const b = backend();
+  const hook = await pairRunner(b);
+  const file = path.join(tmp, "revoke.json");
+  writeFileSync(file, JSON.stringify({ projects: { demo: projectDir }, claudeCommand: [process.execPath, FAKE] }));
+  const getConfig = runner.createConfigReloader(file);
+  await b.call("POST", "/device/tasks/next", { projects: ["demo"] }, hook.token);
+  const created = (await b.call("POST", "/ui/tasks", { project: "demo", prompt: "OK" })).body.task;
+  // David hace `remove` entre la creación y el reclamo.
+  writeFileSync(file, JSON.stringify({ projects: {}, claudeCommand: [process.execPath, FAKE] }));
+  const later = new Date(Date.now() + 5000);
+  utimesSync(file, later, later);
+  await runner.runnerLoop({ getConfig, hookConfig: hook.hookConfig, fetchImpl: b.fetchImpl, sleep: async () => {}, log: () => {}, env: fakeEnv(), maxIterations: 2 });
+  assert.equal(b.store.tasks.get(created.id).status, "rechazada");
+});
+
+test("el runner reporta a Wabid la allowlist ACTUAL en cada vuelta", async () => {
+  const b = backend();
+  const hook = await pairRunner(b);
+  const sent = [];
+  const fetchImpl = async (url, init) => {
+    if (url.endsWith("/device/tasks/next")) sent.push(JSON.parse(init.body).projects);
+    return b.fetchImpl(url, init);
+  };
+  let n = 0;
+  const getConfig = () => runner.parseRunnerConfig(JSON.stringify({ projects: n++ < 2 ? { a: projectDir } : { b: projectDir }, claudeCommand: [process.execPath, FAKE] }));
+  await runner.runnerLoop({ getConfig, hookConfig: hook.hookConfig, fetchImpl, sleep: async () => {}, log: () => {}, env: fakeEnv(), maxIterations: 3 });
+  assert.equal(sent.length, 3);
+  assert.deepEqual(sent[0], ["a"]);
+  assert.deepEqual(sent[2], ["b"], "la última vuelta ya reporta la allowlist nueva");
+});
+
+// --- Versión de claude ------------------------------------------------------------------------------------------------------
+
+test("parseClaudeVersion / versionAtLeast", () => {
+  assert.deepEqual(runner.parseClaudeVersion("2.1.280 (Claude Code)"), [2, 1, 280]);
+  assert.equal(runner.parseClaudeVersion("sin versión"), null);
+  assert.equal(runner.versionAtLeast([2, 1, 259]), true);
+  assert.equal(runner.versionAtLeast([2, 1, 258]), false);
+  assert.equal(runner.versionAtLeast([2, 2, 0]), true);
+  assert.equal(runner.versionAtLeast([3, 0, 0]), true);
+  assert.equal(runner.versionAtLeast([1, 9, 999]), false);
+  assert.equal(runner.versionAtLeast(null), false);
+});
+
+test("checkClaudeVersion: ok, versión vieja y ejecutable inexistente", async () => {
+  assert.equal((await runner.checkClaudeVersion(COMMAND)).ok, true);
+  process.env.FAKE_CLAUDE_VERSION = "2.1.200";
+  try {
+    const old = await runner.checkClaudeVersion(COMMAND);
+    assert.equal(old.ok, false);
+    assert.match(old.error, /2\.1\.200 es muy viejo.*2\.1\.259/);
+  } finally {
+    delete process.env.FAKE_CLAUDE_VERSION;
+  }
+  const missing = await runner.checkClaudeVersion({ file: path.join(tmp, "no-existe.exe"), args: [] });
+  assert.equal(missing.ok, false);
+});
+
+test("una tarea con claude viejo falla con un error claro y claude no ejecuta la tarea", async () => {
+  const b = backend();
+  const hook = await pairRunner(b);
+  await b.call("POST", "/device/tasks/next", { projects: ["demo"] }, hook.token);
+  const created = (await b.call("POST", "/ui/tasks", { project: "demo", prompt: "OK" })).body.task;
+  const log = path.join(tmp, "viejo.log");
+  process.env.FAKE_CLAUDE_VERSION = "2.1.100";
+  try {
+    const cfg = runner.parseRunnerConfig(JSON.stringify({ projects: { demo: projectDir }, claudeCommand: [process.execPath, FAKE] }));
+    await runner.runnerLoop({ config: cfg, hookConfig: hook.hookConfig, fetchImpl: b.fetchImpl, sleep: async () => {}, log: () => {}, env: fakeEnv({ FAKE_CLAUDE_LOG: log }), maxIterations: 2 });
+  } finally {
+    delete process.env.FAKE_CLAUDE_VERSION;
+  }
+  const row = b.store.tasks.get(created.id);
+  assert.equal(row.status, "fallida");
+  assert.match(row.error, /muy viejo/);
+  assert.throws(() => readFileSync(log), "la tarea nunca llegó a ejecutarse");
+});
+
+// --- Cierre forzado y señales -----------------------------------------------------------------------------------------------
+
+test("si close no llega tras matar, se fuerza, se reporta fallida y se sigue", async () => {
+  const pidFile = path.join(tmp, "stuck.pid");
+  let child;
+  const started = Date.now();
+  const r = await runner.runTask({
+    task: task("HANG"),
+    cwd: projectDir,
+    command: COMMAND,
+    env: fakeEnv({ FAKE_PID_FILE: pidFile }),
+    maxMs: 300,
+    forceAfterMs: 400,
+    heartbeatMs: 1000,
+    report: async () => ({}),
+    killImpl: () => {}, // el kill "no funciona": close nunca llega solo
+    onChild: (c) => (child = c),
+  });
+  assert.equal(r.outcome, "fallida");
+  assert.match(r.error, /se forzó el cierre/);
+  assert.ok(Date.now() - started < 5000);
+  await new Promise((res) => setTimeout(res, 200));
+  assert.ok(await waitDead(child.pid), "child.kill() lo terminó");
+  runner.killTree({ pid: Number(readFileSync(pidFile, "utf8")), exitCode: null });
+});
+
+test("abortar el runner (SIGHUP/cierre de sesión) mata la tarea y la reporta fallida", async () => {
+  const pidFile = path.join(tmp, "abort.pid");
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 400);
+  const r = await runner.runTask({ task: task("HANG"), cwd: projectDir, command: COMMAND, env: fakeEnv({ FAKE_PID_FILE: pidFile }), maxMs: 30_000, heartbeatMs: 1000, report: async () => ({}), signal: controller.signal });
+  assert.equal(r.outcome, "fallida");
+  assert.match(r.error, /runner se detuvo/);
+  assert.ok(await waitDead(Number(readFileSync(pidFile, "utf8"))));
+});
+
+// --- Un solo runner --------------------------------------------------------------------------------------------------------
+
+test("acquireLock: toma el bloqueo, rechaza un segundo runner vivo y recupera uno viejo", () => {
+  const file = path.join(tmp, "runner.lock");
+  const a = runner.acquireLock(file, { pid: 1111, isAlive: () => false });
+  assert.equal(a.ok, true);
+  assert.equal(readFileSync(file, "utf8"), "1111");
+  const b = runner.acquireLock(file, { pid: 2222, isAlive: (p) => p === 1111 });
+  assert.deepEqual([b.ok, b.pid], [false, 1111]);
+  const c = runner.acquireLock(file, { pid: 3333, isAlive: () => false });
+  assert.equal(c.ok, true, "el pid anterior ya no existe: bloqueo viejo");
+  c.release();
+  assert.equal(existsSync(file), false);
+  const own = runner.acquireLock(file, { pid: 4444, isAlive: () => true });
+  assert.equal(own.ok, true);
+  own.release();
 });

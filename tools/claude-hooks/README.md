@@ -70,25 +70,45 @@ nada y Claude Code te pregunta en la terminal como siempre. Los secretos obvios 
 
 Especificación y formatos verificados: `SPEC-claude-code-v2.md` (raíz del repo).
 
-**Actualizar los hooks (Stop pasa a síncrono, timeout 900 s)**
+**Instalar / actualizar los hooks (Stop pasa a síncrono, timeout 900 s)**
 ```powershell
-node tools/claude-hooks/instalar-hooks.mjs --dry-run   # muestra qué cambiaría
-node tools/claude-hooks/instalar-hooks.mjs             # actualiza solo los hooks de Wabid; respaldo settings.json.antes-de-wabid-<fecha>
+node tools/claude-hooks/instalar-hooks.mjs --dry-run   # muestra qué cambiaría; no copia ni escribe nada
+node tools/claude-hooks/instalar-hooks.mjs             # copia los scripts a %LOCALAPPDATA%\Wabid\bin y actualiza solo los hooks de Wabid
 ```
-Reinicia Claude Code. Es idempotente y no toca hooks ajenos. (`WABID_CLAUDE_SETTINGS=<ruta>` apunta a otro settings.json, para probar.)
+Reinicia Claude Code. Es idempotente, no toca hooks ajenos, hace respaldo (`settings.json.antes-de-wabid-<fecha>`, con sufijo si ya existe) y escribe de forma atómica.
+Los hooks apuntan a la **copia en `%LOCALAPPDATA%\Wabid\bin`**, no al repo: una tarea con permiso de edición sobre `finapp` no puede reescribir el código que corre en
+cada sesión. Tras actualizar `finapp`, vuelve a correr el instalador. **No agregues `finapp` ni esa carpeta `bin` a la allowlist del runner.**
+(`WABID_CLAUDE_SETTINGS=<ruta>` y `WABID_BIN_DIR=<carpeta>` apuntan a otro settings.json / carpeta, para probar.)
 
-**Escribirle a una sesión**: en la app, abre la sesión y usa «Escríbele» (máx. 2000 caracteres). Se entrega una sola vez cuando Claude termina su turno (hook Stop,
-`{"decision":"block","reason":...}`). Con «Aprobar desde el celular» activo, el Stop espera tu mensaje (sondeo cada 3 s) hasta `stop_wait_minutes`
-(en `claude-hook.json`, defecto 10, máximo 14, 0 = no esperar); con el modo apagado solo entrega lo que ya estaba en cola. Los mensajes vencen a las 6 h
-y su texto se borra al entregarse o vencer. Tope oficial de Claude Code: 8 continuaciones seguidas sin usar herramientas.
+**Escribirle a una sesión**: en la app, abre la sesión y usa «Escríbele» (máx. 2000 caracteres). Se entrega una sola vez cuando Claude termina su turno
+(hook Stop, `{"decision":"block","reason":...}`) y en dos fases: el hook reclama el mensaje (estado «Entregando…»), lo escribe en stdout y recién entonces lo
+confirma (ack) → «Entregado» y se borra el texto. Sin ack en 60 s vuelve a la cola. Los mensajes sin recoger vencen a las 6 h (el texto se borra).
+
+- **Con «Aprobar desde el celular» activo, CADA turno de Claude espera hasta 2 min (`stop_wait_minutes` en `claude-hook.json`, máx. 14, `0` = no esperar)** a que
+  llegue un mensaje (sondeo cada 3 s) antes de terminar. Con el modo apagado no espera: solo entrega lo que ya estaba en cola.
+- El aviso inicial del Stop tiene timeout de 3 s; si Wabid no responde, el turno termina normal.
+- `stop_hook_active` **se ignora a propósito**: cada mensaje es de un solo uso (cola ≤ 5 por sesión), así que entregar no puede hacer un bucle; el respaldo es el
+  tope oficial de Claude Code de 8 continuaciones seguidas sin usar herramientas.
 
 **Lanzar tareas**
 1. Permite proyectos (nombre -> ruta) en esta laptop; nunca se editan desde el celular:
-   `node tools/claude-hooks/wabid-runner.mjs add finapp C:\Users\Dsalg\finapp` (`list`, `remove`, `check`). Archivo: `%LOCALAPPDATA%\Wabid\claude-runner.json`
-   (opcionales: `claudeCommand` (ruta de claude.exe o `["node","...\\cli.js"]`; un `.cmd` no se puede lanzar sin shell), `maxMinutes` (30), `pollSeconds` (10)).
-2. Arranque al iniciar sesión (oculto): `node tools/claude-hooks/instalar-runner.mjs --dry-run`, luego sin `--dry-run`. Quitar: `--quitar`.
-3. Requiere `WABID_OWNER_ID` en los secretos de la función y la migración 012 aplicada antes de desplegar.
+   `node tools/claude-hooks/wabid-runner.mjs add finapp-demo C:\ruta\al\proyecto` (`list`, `remove`, `check`). Archivo: `%LOCALAPPDATA%\Wabid\claude-runner.json`.
+   El runner **relee el archivo en cada vuelta** (por fecha de modificación): `remove` revoca un proyecto sin reiniciar, incluso para tareas ya en cola.
+   Opcionales: `claudeCommand` (ruta de claude.exe o `["node","...\\cli.js"]`; un `.cmd` no se puede lanzar sin shell), `maxMinutes` (30), `pollSeconds` (10),
+   `maxTurns` (40) y `maxBudgetUsd` (2).
+2. `node tools/claude-hooks/wabid-runner.mjs check` verifica la conexión, encuentra `claude` y exige **Claude Code ≥ 2.1.259** (`--permission-prompts`).
+3. Arranque al iniciar sesión (oculto): `node tools/claude-hooks/instalar-runner.mjs --dry-run`, luego sin `--dry-run` (copia a `bin` y crea la tarea). Quitar: `--quitar`.
+4. Requiere `WABID_OWNER_ID` en los secretos de la función y la migración 012 aplicada antes de desplegar.
 
-Seguridad: una tarea a la vez, 30 min máximo (se mata el árbol de procesos), `claude -p --permission-mode default --permission-prompts none` con el prompt por stdin,
-sin saltar permisos. Lo que pida permiso pasa por el hook PermissionRequest (tarjeta en el celular, requiere modo ausente); sin respuesta, se deniega.
+Cómo se ejecuta cada tarea (sin shell; un solo runner por laptop, con archivo de bloqueo; una tarea a la vez):
+`claude -p --output-format stream-json --verbose --permission-mode default --permission-prompts none --setting-sources user --max-turns N --max-budget-usd X --session-id <uuid> -- "<prompt>"`
+con stdin cerrado. El prompt es el único argumento posicional y va tras `--` (`claude -p "query"` es la forma documentada; `--` es la convención estándar de
+CLIs y no aparece en la referencia oficial, por eso además se rechazan prompts que empiecen con `-`).
+
+Qué aplica y qué no:
+- `--setting-sources user`: no se cargan hooks, MCP ni permisos del `.claude/` del proyecto. **Sí aplican tus reglas `allow` globales de `~/.claude/settings.json`: lo
+  que ya permites ahí se ejecuta sin tarjeta en el celular.** Lo demás pasa por el hook PermissionRequest (tarjeta, requiere modo ausente); sin respuesta, se deniega.
+- Tiempo máximo 30 min: se mata el árbol de procesos; si el proceso no cierra en 10 s se fuerza y se reporta fallida. Ctrl+C, cierre de sesión (SIGHUP) o apagado hacen lo mismo.
+- Al terminar, el servidor reduce el prompt a un resumen redactado (≤ 120) y recorta el resultado (≤ 600). Las tareas vencidas o fallidas por falta de latido conservan el prompt hasta la poda (14 días).
+
 Pruebas: `node --experimental-strip-types --test tools/claude-hooks/*.test.mjs supabase/functions/claude-events/*.test.ts`.

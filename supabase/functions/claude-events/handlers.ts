@@ -39,6 +39,8 @@ export const LIMITS = {
     /** Un mensaje que nadie recogió en este tiempo vence (y pierde el texto): no debe ejecutarse mucho después. */
     ttlMs: 6 * HOUR,
     maxQueuedPerSession: 5,
+    /** Un reclamo del hook que no se confirma (ack) en este tiempo vuelve a la cola: el hook murió antes de entregar. */
+    claimTtlMs: 60_000,
   },
   task: {
     maxPromptChars: 4000,
@@ -48,7 +50,9 @@ export const LIMITS = {
     /** Una tarea 'ejecutando' sin latido del runner en este tiempo se da por fallida. */
     staleMs: 3 * 60_000,
     maxRunnerProjects: 20,
-    resultMax: 1500,
+    resultMax: 600,
+    /** Al terminar, el prompt se reemplaza por un resumen redactado de este largo (retención mínima). */
+    promptSummaryMax: 120,
     progressMax: 300,
     errorMax: 300,
   },
@@ -115,6 +119,8 @@ export async function handleApi(req: ApiRequest, deps: ApiDeps): Promise<ApiResu
           return await deviceApproval(route.id, deps, device);
         case "device.messageNext":
           return await deviceMessageNext(route.sessionId, deps, device);
+        case "device.messageAck":
+          return await deviceMessageAck(route.id, deps, device);
         case "device.taskNext":
           return await deviceTaskNext(req, deps, device);
         case "device.taskEvent":
@@ -411,6 +417,9 @@ function requireOwner(deps: ApiDeps, userId: string): ApiResult | null {
   return userId === deps.ownerId ? null : fail(403, "No autorizado");
 }
 
+// Retención mínima: al terminar una tarea el prompt completo se reemplaza por un resumen redactado y corto.
+const promptSummary = (prompt: string) => cleanLine(prompt, LIMITS.task.promptSummaryMax) || "(sin texto)";
+
 const PROJECT_NAME_RE = /^[A-Za-z0-9._ -]{1,60}$/;
 
 // Texto de David: no se redacta (cambiaría lo que quiso decir), pero se unifican saltos y se marcan los
@@ -431,12 +440,20 @@ async function deviceMessageNext(sessionId: string, deps: ApiDeps, device: Devic
   // La sesión es de un solo dispositivo: otro token no puede leer sus mensajes.
   if (!session || session.device_id !== device.device_id) return fail(404, "No existe");
 
+  // Un reclamo viejo sin confirmar (el hook murió antes de entregar) vuelve a la cola; luego se vence lo que pasó su plazo.
+  await deps.store.requeueStaleMessages(userId, new Date(now.getTime() - LIMITS.message.claimTtlMs).toISOString());
   await deps.store.expireMessages(userId, nowIso);
   const claimed = await deps.store.claimNextMessage(userId, sessionId, nowIso);
   if (!claimed) return ok({ message: null, away: device.approvals_enabled });
-  // Entregado: Claude vuelve a trabajar. (Nunca se registra el texto.)
+  // Reclamado ('entregando'): el hook confirma con /device/messages/:id/ack tras escribirlo. (Nunca se registra el texto.)
   if (!session.ended_at) await deps.store.saveSession({ ...session, status: "trabajando", last_event_at: nowIso });
   return ok({ message: { id: claimed.messageId, text: claimed.text }, away: device.approvals_enabled });
+}
+
+// Fase 2: el hook ya escribió el texto en stdout. Se borra el texto y el mensaje queda 'entregado'.
+async function deviceMessageAck(messageId: string, deps: ApiDeps, device: DeviceRow): Promise<ApiResult> {
+  const done = await deps.store.ackMessage(device.user_id, messageId, device.device_id, deps.now().toISOString());
+  return done ? ok({ ok: true }) : fail(404, "No existe o ya estaba confirmado");
 }
 
 // --- Dispositivo: runner de tareas ---------------------------------------------------------------------------------------
@@ -497,7 +514,8 @@ async function deviceTaskEvent(taskId: string, req: ApiRequest, deps: ApiDeps, d
     patch.status = outcome as TaskRow["status"];
     patch.finished_at = nowIso;
     const result = typeof body.result === "string" ? body.result : "";
-    if (result.trim()) patch.result = normalizeForStorage(result, { max: LIMITS.task.resultMax, head: 1000, tail: 400 }).text;
+    if (result.trim()) patch.result = normalizeForStorage(result, { max: LIMITS.task.resultMax, head: 400, tail: 150 }).text;
+    patch.prompt = promptSummary(task.prompt);
     const error = cleanLine(typeof body.error === "string" ? body.error : "", LIMITS.task.errorMax);
     if (error) patch.error = error;
     patch.progress = null;
@@ -596,12 +614,17 @@ async function uiTaskCancel(taskId: string, deps: ApiDeps, userId: string): Prom
   const { store } = deps;
 
   // En cola: se cancela al instante. Ejecutándose: se marca y el runner la mata en su próximo latido.
-  const queued = await store.updateTask(userId, taskId, { status: "cancelada", finished_at: nowIso, updated_at: nowIso }, ["en_cola"]);
+  const current = await store.findTask(userId, taskId);
+  const queued = await store.updateTask(
+    userId,
+    taskId,
+    { status: "cancelada", finished_at: nowIso, updated_at: nowIso, ...(current ? { prompt: promptSummary(current.prompt) } : {}) },
+    ["en_cola"],
+  );
   if (queued) return ok({ task: toTaskView(queued) });
   const running = await store.updateTask(userId, taskId, { cancel_requested: true }, ["ejecutando"]);
   if (running) return ok({ task: toTaskView(running) });
 
-  const current = await store.findTask(userId, taskId);
   if (!current) return fail(404, "No existe");
-  return fail(409, "Esa tarea ya terminó", { status: current.status });
+  return fail(409, "Esa tarea ya terminó", { status: (await store.findTask(userId, taskId))?.status ?? current.status });
 }

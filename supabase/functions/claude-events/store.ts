@@ -57,6 +57,8 @@ export interface NewTask {
 /** Campos que el runner o la app pueden cambiar en una tarea. */
 export interface TaskPatch {
   status?: TaskStatus;
+  /** Al terminar la tarea se reemplaza por un resumen redactado y corto (retención mínima). */
+  prompt?: string;
   cancel_requested?: boolean;
   session_id?: string | null;
   progress?: string | null;
@@ -127,11 +129,15 @@ export interface Store {
   countQueuedMessages(userId: string, sessionId: string, nowIso: string): Promise<number>;
   insertMessage(row: NewMessage): Promise<MessageRow>;
   /**
-   * Reclamo atómico del mensaje en cola más antiguo de la sesión: pasa a 'entregado' y se borra su texto en
-   * la MISMA sentencia condicional (status = 'en_cola'). Devuelve el texto una sola vez, o null.
+   * Fase 1 de la entrega. Reclamo atómico del mensaje en cola más antiguo de la sesión: pasa a 'entregando'
+   * (UPDATE condicional status = 'en_cola'; el texto sigue guardado hasta la confirmación). Devuelve el texto o null.
    */
   claimNextMessage(userId: string, sessionId: string, nowIso: string): Promise<{ messageId: string; text: string } | null>;
-  /** Mensajes en cola con expires_at <= ahora pasan a 'vencido' y pierden el texto. */
+  /** Fase 2: el hook ya escribió el texto. 'entregando' -> 'entregado' y se borra el texto. false si no hubo transición. */
+  ackMessage(userId: string, messageId: string, deviceId: string, nowIso: string): Promise<boolean>;
+  /** Reclamos sin confirmar desde `olderThanIso` vuelven a la cola. */
+  requeueStaleMessages(userId: string, olderThanIso: string): Promise<void>;
+  /** Mensajes sin confirmar (en cola o entregando) con expires_at <= ahora pasan a 'vencido' y pierden el texto. */
   expireMessages(userId: string, nowIso: string): Promise<void>;
   /** Más recientes primero. Nunca devuelve el texto. */
   listMessages(userId: string, limit: number): Promise<MessageRow[]>;
@@ -142,7 +148,10 @@ export interface Store {
   findTask(userId: string, taskId: string): Promise<TaskRow | null>;
   /** Más recientes primero. */
   listTasks(userId: string, limit: number): Promise<TaskRow[]>;
-  /** Reclamo atómico de la tarea en cola más antigua del dispositivo: pasa a 'ejecutando'. */
+  /**
+   * Reclamo atómico de la tarea en cola más antigua del dispositivo: pasa a 'ejecutando'. Devuelve null si no hay
+   * o si el dispositivo ya tiene una ejecutándose (índice único parcial en la base).
+   */
   claimNextTask(userId: string, deviceId: string, nowIso: string): Promise<TaskRow | null>;
   /** Actualiza solo si la tarea está en uno de `onlyIfStatus`. Devuelve la fila nueva o null si no hubo transición. */
   updateTask(userId: string, taskId: string, patch: TaskPatch, onlyIfStatus: TaskStatus[]): Promise<TaskRow | null>;

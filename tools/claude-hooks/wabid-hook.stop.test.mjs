@@ -11,6 +11,8 @@ const URL_BASE = "https://proyecto.supabase.co/functions/v1/claude-events";
 const CONFIG = { url: URL_BASE, token: DEVICE_TOKEN };
 const base = { session_id: "abc123", cwd: `${HOME}\\finapp`, transcript_path: "x.jsonl" };
 const CLAIM = "POST /device/sessions/abc123/messages/next";
+const MID = "5b7a0c3e-1d2f-4a6b-8c9d-0e1f2a3b4c5d";
+const ACK = `POST /device/messages/${MID}/ack`;
 
 const stopInput = (extra = {}) => JSON.stringify({ ...base, hook_event_name: "Stop", stop_hook_active: false, last_assistant_message: "listo", ...extra });
 
@@ -43,14 +45,14 @@ test("buildStopOutput usa el formato oficial decision:block + reason", () => {
   assert.deepEqual(Object.keys(out).sort(), ["decision", "reason"]);
 });
 
-test("stopWaitMs: defecto 10 min, tope 14, 0 desactiva, inválido cae al defecto", () => {
-  assert.equal(hook.stopWaitMs({}), 600_000);
-  assert.equal(hook.stopWaitMs(null), 600_000);
+test("stopWaitMs: defecto 2 min, tope 14, 0 desactiva, inválido cae al defecto", () => {
+  assert.equal(hook.stopWaitMs({}), 120_000);
+  assert.equal(hook.stopWaitMs(null), 120_000);
   assert.equal(hook.stopWaitMs({ stopWaitMinutes: 3 }), 180_000);
   assert.equal(hook.stopWaitMs({ stopWaitMinutes: 99 }), 14 * 60_000);
   assert.equal(hook.stopWaitMs({ stopWaitMinutes: 0 }), 0);
-  assert.equal(hook.stopWaitMs({ stopWaitMinutes: -1 }), 600_000);
-  assert.equal(hook.stopWaitMs({ stopWaitMinutes: "5" }), 600_000);
+  assert.equal(hook.stopWaitMs({ stopWaitMinutes: -1 }), 120_000);
+  assert.equal(hook.stopWaitMs({ stopWaitMinutes: "5" }), 120_000);
 });
 
 test("parseConfig conserva stop_wait_minutes si es un número", () => {
@@ -69,13 +71,14 @@ test("hardLimitMs: Stop espera más que los otros eventos y nunca pasa del timeo
 test("con un mensaje ya en cola lo entrega aunque el modo ausente esté apagado (sin esperar)", async () => {
   const { fetchImpl, calls } = makeFetch({
     "POST /device/events": { body: { ok: true, away: false } },
-    [CLAIM]: { body: { message: { id: "m1", text: "ahora los tests" }, away: false } },
+    [CLAIM]: { body: { message: { id: MID, text: "ahora los tests" }, away: false } },
+    [ACK]: { body: { ok: true } },
   });
   const clock = fakeClock();
   const out = await run({ fetchImpl, ...clock });
   assert.deepEqual(JSON.parse(out), hook.buildStopOutput("ahora los tests"));
   assert.equal(clock.elapsed(), 0);
-  assert.deepEqual(calls.map((c) => c.key), ["POST /device/events", CLAIM]);
+  assert.deepEqual(calls.map((c) => c.key), ["POST /device/events", CLAIM, ACK], "reclama y, tras escribir, confirma");
 });
 
 test("modo ausente apagado y sin mensajes: una consulta y termina sin esperar", async () => {
@@ -90,10 +93,11 @@ test("modo ausente apagado y sin mensajes: una consulta y termina sin esperar", 
 });
 
 test("modo ausente: sondea cada 3 s y entrega el mensaje cuando llega", async () => {
-  const answers = [null, null, null, { id: "m1", text: "llegó tarde" }];
+  const answers = [null, null, null, { id: MID, text: "llegó tarde" }];
   const { fetchImpl, calls } = makeFetch({
     "POST /device/events": { body: { ok: true, away: true } },
     [CLAIM]: () => ({ body: { message: answers.shift() ?? null, away: true } }),
+    [ACK]: { body: { ok: true } },
   });
   const clock = fakeClock();
   assert.deepEqual(JSON.parse(await run({ fetchImpl, ...clock })), hook.buildStopOutput("llegó tarde"));
@@ -133,7 +137,7 @@ test("deja de esperar si el modo ausente se apaga mientras espera", async () => 
 test("entrega aunque stop_hook_active sea true (cada mensaje es de un solo uso: no hay bucle)", async () => {
   const { fetchImpl } = makeFetch({
     "POST /device/events": { body: { ok: true, away: false } },
-    [CLAIM]: { body: { message: { id: "m2", text: "otra cosa" }, away: false } },
+    [CLAIM]: { body: { message: { id: MID, text: "otra cosa" }, away: false } },
   });
   const out = await hook.runHook({ raw: stopInput({ stop_hook_active: true }), config: CONFIG, home: HOME, env: {}, fetchImpl, ...fakeClock() });
   assert.equal(JSON.parse(out).decision, "block");
@@ -155,7 +159,7 @@ test("si no se pudo avisar el stop (Wabid caído) no consulta mensajes", async (
 });
 
 test("dentro del runner (WABID_RUNNER=1) avisa el stop pero no reclama mensajes", async () => {
-  const { fetchImpl, calls } = makeFetch({ "POST /device/events": { body: { ok: true, away: true } }, [CLAIM]: { body: { message: { id: "m", text: "x" } } } });
+  const { fetchImpl, calls } = makeFetch({ "POST /device/events": { body: { ok: true, away: true } }, [CLAIM]: { body: { message: { id: MID, text: "x" } } } });
   assert.equal(await run({ fetchImpl, env: { WABID_RUNNER: "1" }, ...fakeClock() }), null);
   assert.deepEqual(calls.map((c) => c.key), ["POST /device/events"]);
 });
@@ -164,8 +168,51 @@ test("el texto del mensaje nunca se escribe en el log del hook", async () => {
   const logs = [];
   const { fetchImpl } = makeFetch({
     "POST /device/events": { body: { ok: true, away: false } },
-    [CLAIM]: { body: { message: { id: "m1", text: "clave: hunter2hunter2" }, away: false } },
+    [CLAIM]: { body: { message: { id: MID, text: "clave: hunter2hunter2" }, away: false } },
   });
   await run({ fetchImpl, log: (m) => logs.push(m), ...fakeClock() });
   assert.equal(logs.join("\n").includes("hunter2"), false);
+});
+
+test("entrega en dos fases: stdout se escribe ANTES de confirmar (ack)", async () => {
+  const order = [];
+  const { fetchImpl } = makeFetch({
+    "POST /device/events": { body: { ok: true, away: false } },
+    [CLAIM]: { body: { message: { id: MID, text: "hola" }, away: false } },
+    [ACK]: () => (order.push("ack"), { body: { ok: true } }),
+  });
+  const out = await run({ fetchImpl, onOutput: async () => void order.push("stdout"), ...fakeClock() });
+  assert.equal(JSON.parse(out).decision, "block");
+  assert.deepEqual(order, ["stdout", "ack"]);
+});
+
+test("si escribir stdout falla, no se confirma: Wabid reencola el mensaje a los 60 s", async () => {
+  const { fetchImpl, calls } = makeFetch({
+    "POST /device/events": { body: { ok: true, away: false } },
+    [CLAIM]: { body: { message: { id: MID, text: "hola" }, away: false } },
+    [ACK]: { body: { ok: true } },
+  });
+  await assert.rejects(run({ fetchImpl, onOutput: async () => { throw new Error("tubería rota"); }, ...fakeClock() }));
+  assert.equal(calls.some((c) => c.key === ACK), false);
+});
+
+test("un ack que falla se reintenta 3 veces y nunca rompe el hook", async () => {
+  const { fetchImpl, calls } = makeFetch({
+    "POST /device/events": { body: { ok: true, away: false } },
+    [CLAIM]: { body: { message: { id: MID, text: "hola" }, away: false } },
+    [ACK]: new Error("red"),
+  });
+  const out = await run({ fetchImpl, ...fakeClock() });
+  assert.equal(JSON.parse(out).decision, "block");
+  assert.equal(calls.filter((c) => c.key === ACK).length, 3);
+});
+
+test("el aviso inicial del Stop tiene timeout corto (3 s): si Wabid cuelga, termina sin esperar ni bloquear", async () => {
+  const fetchImpl = (url, init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(new Error("timeout"))));
+  const keepAlive = setInterval(() => {}, 100); // AbortSignal.timeout no mantiene vivo el proceso; el socket real sí
+  const started = Date.now();
+  assert.equal(await run({ fetchImpl, ...fakeClock() }), null);
+  clearInterval(keepAlive);
+  const ms = Date.now() - started;
+  assert.ok(ms >= 2500 && ms < 4000, `tardó ${ms} ms`);
 });

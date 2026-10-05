@@ -151,7 +151,7 @@ export interface ApiResult {
 
 // --- v2 (012): mensajes al celular -> sesión y tareas nuevas -------------------------------------------------
 
-export type MessageStatus = "en_cola" | "entregado" | "vencido";
+export type MessageStatus = "en_cola" | "entregando" | "entregado" | "vencido";
 export type TaskStatus = "en_cola" | "ejecutando" | "terminada" | "fallida" | "cancelada" | "rechazada" | "vencida";
 export const FINISHED_TASK_STATUSES: readonly TaskStatus[] = ["terminada", "fallida", "cancelada", "rechazada", "vencida"];
 
@@ -160,11 +160,13 @@ export interface MessageRow {
   user_id: string;
   session_id: string;
   device_id: string;
-  /** Solo mientras status = 'en_cola'; null al entregar o vencer. */
+  /** Solo mientras status sea 'en_cola' o 'entregando'; null al confirmar la entrega o vencer. */
   body: string | null;
   status: MessageStatus;
   created_at: string;
   expires_at: string;
+  /** Cuándo lo reclamó el hook (fase 1 de la entrega); null si no está 'entregando'. */
+  claimed_at: string | null;
   delivered_at: string | null;
 }
 

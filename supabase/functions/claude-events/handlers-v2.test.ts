@@ -47,6 +47,7 @@ function setup(opts: { ownerId?: string | null } = {}) {
       token,
       stop: (session = SESSION) => call("POST", "/device/events", { type: "stop", session_id: session, project: "finapp", message: "listo" }, token),
       start: (session = SESSION) => call("POST", "/device/events", { type: "session_start", session_id: session, project: "finapp" }, token),
+      ack: (id: string) => call("POST", `/device/messages/${id}/ack`, {}, token),
       claim: (session = SESSION) => call("POST", `/device/sessions/${session}/messages/next`, {}, token),
       next: (projects: string[]) => call("POST", "/device/tasks/next", { projects }, token),
       taskEvent: (id: string, body: unknown) => call("POST", `/device/tasks/${id}/events`, body, token),
@@ -83,9 +84,78 @@ test("un mensaje se entrega una sola vez, en orden, y su texto se borra", async 
   assert.equal((await d.claim()).body.message.text, "y luego los tests");
   assert.equal((await d.claim()).body.message, null);
 
-  const row = [...t.store.messages.values()];
-  assert.ok(row.every((m) => m.status === "entregado" && m.body === null), "sin texto tras entregar");
+  // Fase 1 hecha: reclamados, el texto sigue hasta que el hook confirme.
+  const rows = [...t.store.messages.values()];
+  assert.ok(rows.every((m) => m.status === "entregando" && m.body !== null));
+  for (const m of rows) assert.equal((await d.ack(m.message_id)).status, 200);
+  assert.ok([...t.store.messages.values()].every((m) => m.status === "entregado" && m.body === null), "sin texto tras el ack");
   assert.equal(JSON.stringify((await t.call("GET", "/ui/overview")).body).includes("migración"), false);
+});
+
+test("sin ack, el mensaje vuelve a la cola a los 60 s y se entrega de nuevo; con ack no", async () => {
+  const t = setup();
+  const d = await t.pair();
+  await d.start();
+  await t.call("POST", `/ui/sessions/${SESSION}/messages`, { text: "hola" });
+  const first = await d.claim();
+  assert.equal(first.body.message.text, "hola");
+  t.tick(30_000);
+  assert.equal((await d.claim()).body.message, null, "aún dentro del plazo de confirmación");
+  t.tick(31_000);
+  const again = await d.claim();
+  assert.equal(again.body.message.text, "hola", "el hook murió antes de entregar: se reentrega");
+  assert.equal((await d.ack(again.body.message.id)).status, 200);
+  t.tick(120_000);
+  assert.equal((await d.claim()).body.message, null);
+  assert.equal((await d.ack(again.body.message.id)).status, 404, "ack repetido");
+});
+
+test("el ack exige el dispositivo dueño y una sesión propia", async () => {
+  const t = setup();
+  const a = await t.pair();
+  const b = await t.pair();
+  await a.start();
+  await t.call("POST", `/ui/sessions/${SESSION}/messages`, { text: "hola" });
+  const id = (await a.claim()).body.message.id;
+  assert.equal((await b.ack(id)).status, 404);
+  assert.equal((await t.call("POST", `/device/messages/${id}/ack`, {})).status, 401);
+  assert.equal((await a.ack(id)).status, 200);
+});
+
+test("el estado 'entregando' se ve en el overview y no trae texto", async () => {
+  const t = setup();
+  const d = await t.pair();
+  await d.start();
+  await t.call("POST", `/ui/sessions/${SESSION}/messages`, { text: "texto privado" });
+  await d.claim();
+  const o = (await t.call("GET", "/ui/overview")).body;
+  assert.equal(o.messages[0].status, "entregando");
+  assert.equal(JSON.stringify(o).includes("texto privado"), false);
+});
+
+test("retención: al terminar una tarea el prompt queda como resumen redactado y el resultado recortado", async () => {
+  const t = setup();
+  const d = await t.pair();
+  await d.next(["finapp"]);
+  const secret = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz";
+  const prompt = `usa la llave ${secret} y ` + "x".repeat(3000);
+  const task = (await t.call("POST", "/ui/tasks", { project: "finapp", prompt })).body.task;
+  await d.next(["finapp"]);
+  assert.equal((await t.store.findTask(DAVID, task.id))!.prompt.length, prompt.length, "completo mientras corre");
+  await d.taskEvent(task.id, { type: "finish", outcome: "terminada", result: "r".repeat(3000) });
+  const row = (await t.store.findTask(DAVID, task.id))!;
+  assert.ok(row.prompt.length <= LIMITS.task.promptSummaryMax);
+  assert.ok(!row.prompt.includes("sk-ant"));
+  assert.ok(row.result!.length < 700);
+});
+
+test("cancelar una tarea en cola también reduce su prompt", async () => {
+  const t = setup();
+  const d = await t.pair();
+  await d.next(["finapp"]);
+  const task = (await t.call("POST", "/ui/tasks", { project: "finapp", prompt: "y".repeat(500) })).body.task;
+  await t.call("POST", `/ui/tasks/${task.id}/cancel`);
+  assert.ok((await t.store.findTask(DAVID, task.id))!.prompt.length <= LIMITS.task.promptSummaryMax);
 });
 
 test("entregar un mensaje devuelve la sesión a 'trabajando'", async () => {

@@ -61,7 +61,7 @@ export interface Overview {
   tasks: TaskView[];
 }
 
-export type MessageStatus = 'en_cola' | 'entregado' | 'vencido';
+export type MessageStatus = 'en_cola' | 'entregando' | 'entregado' | 'vencido';
 export type TaskStatus = 'en_cola' | 'ejecutando' | 'terminada' | 'fallida' | 'cancelada' | 'rechazada' | 'vencida';
 
 /** Nunca trae el texto: el servidor lo borra al entregar o vencer. */

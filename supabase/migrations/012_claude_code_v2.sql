@@ -16,8 +16,10 @@ ALTER TABLE claude_devices
 GRANT SELECT (runner_projects, runner_seen_at) ON claude_devices TO authenticated;
 
 -- ------------------------------------------------------------
--- Mensajes del celular a una sesión. El texto SOLO existe mientras el mensaje está en cola:
--- al entregarse o vencer se borra (el CHECK lo garantiza). Tras la entrega el texto ya vive en la
+-- Mensajes del celular a una sesión. Entrega en dos fases: el hook RECLAMA el mensaje (en_cola -> entregando, el
+-- texto sigue guardado) y lo CONFIRMA (ack) tras escribirlo en stdout (entregando -> entregado, texto borrado).
+-- Un reclamo sin ack en 60 s vuelve a la cola (si el hook murió antes de entregar). El texto SOLO existe mientras
+-- el mensaje no está confirmado ni vencido (el CHECK lo garantiza): tras la entrega el texto ya vive en la
 -- transcripción local de Claude Code; guardarlo en la nube no aporta nada.
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS claude_messages (
@@ -27,14 +29,16 @@ CREATE TABLE IF NOT EXISTS claude_messages (
     device_id     UUID NOT NULL REFERENCES claude_devices(device_id) ON DELETE CASCADE,
     body          VARCHAR(2000),
     status        VARCHAR(10) NOT NULL DEFAULT 'en_cola'
-                      CHECK (status IN ('en_cola', 'entregado', 'vencido')),
+                      CHECK (status IN ('en_cola', 'entregando', 'entregado', 'vencido')),
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at    TIMESTAMPTZ NOT NULL,
+    claimed_at    TIMESTAMPTZ,                                                -- cuándo lo reclamó el hook (fase 1)
     delivered_at  TIMESTAMPTZ,
     FOREIGN KEY (user_id, session_id) REFERENCES claude_sessions(user_id, session_id) ON DELETE CASCADE,
-    CHECK ((status = 'en_cola') = (body IS NOT NULL)),               -- texto solo mientras está en cola
+    CHECK ((status IN ('en_cola', 'entregando')) = (body IS NOT NULL)),  -- texto solo hasta la confirmación
     CHECK (body IS NULL OR char_length(body) BETWEEN 1 AND 2000),
-    CHECK ((status = 'entregado') = (delivered_at IS NOT NULL))
+    CHECK ((status = 'entregado') = (delivered_at IS NOT NULL)),
+    CHECK ((status = 'entregando') = (claimed_at IS NOT NULL))
 );
 
 CREATE INDEX IF NOT EXISTS idx_claude_messages_queue
@@ -50,13 +54,13 @@ CREATE TABLE IF NOT EXISTS claude_tasks (
     user_id           UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     device_id         UUID NOT NULL REFERENCES claude_devices(device_id) ON DELETE CASCADE,
     project           VARCHAR(60) NOT NULL,                  -- nombre de la allowlist local, no una ruta
-    prompt            VARCHAR(4000) NOT NULL CHECK (char_length(prompt) >= 1),
+    prompt            VARCHAR(4000) NOT NULL CHECK (char_length(prompt) >= 1),   -- completo mientras vive la tarea; al terminar se reduce a un resumen redactado (<= 120)
     status            VARCHAR(10) NOT NULL DEFAULT 'en_cola'
                           CHECK (status IN ('en_cola', 'ejecutando', 'terminada', 'fallida', 'cancelada', 'rechazada', 'vencida')),
     cancel_requested  BOOLEAN NOT NULL DEFAULT FALSE,
     session_id        VARCHAR(100),                          -- sesión de Claude Code que abrió la tarea
     progress          VARCHAR(300),                          -- último avance, redactado
-    result            VARCHAR(1500),                         -- último mensaje del asistente, redactado
+    result            VARCHAR(600),                          -- último mensaje del asistente, redactado y recortado
     error             VARCHAR(300),
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at        TIMESTAMPTZ NOT NULL,                  -- una tarea en cola que nadie reclamó vence (laptop apagada)
@@ -68,6 +72,8 @@ CREATE TABLE IF NOT EXISTS claude_tasks (
 
 CREATE INDEX IF NOT EXISTS idx_claude_tasks_user_recent ON claude_tasks(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_claude_tasks_device_status ON claude_tasks(device_id, status, created_at);
+-- Una sola tarea ejecutándose por dispositivo, garantizado por la base (dos reclamos simultáneos: uno falla con 23505).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_claude_tasks_one_running_per_device ON claude_tasks(device_id) WHERE status = 'ejecutando';
 
 -- ------------------------------------------------------------
 -- RLS y privilegios: solo lectura de lo propio. El texto de los mensajes no se lee ni por la API de datos.

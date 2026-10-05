@@ -4,13 +4,17 @@
 //   - Agrega los que falten y ACTUALIZA los de Wabid ya instalados (p. ej. Stop pasa de async a síncrono con
 //     timeout 900 s para poder entregar mensajes del celular). Un hook es "de Wabid" si su args apunta a wabid-hook.mjs.
 //   - Idempotente: si ya está todo como debe, no escribe nada.
-//   - Respaldo antes de escribir: settings.json.antes-de-wabid-<fecha> (uno por cambio real; nunca pisa uno anterior).
+//   - Respaldo antes de escribir: settings.json.antes-de-wabid-<fecha> (uno por cambio real; si ya existe, agrega -1, -2...).
+//   - Escritura atómica (archivo temporal + rename): un corte a medias no deja el settings.json truncado.
+//   - Copia wabid-hook.mjs (y el runner) a %LOCALAPPDATA%\Wabid\bin y apunta los hooks ahí: una tarea con permiso de
+//     edición sobre el repo finapp no puede reescribir el código que corre en cada sesión. Vuelve a correr esto tras actualizar finapp.
 //   - Si el settings.json no es JSON válido, no toca nada.
 //   - WABID_CLAUDE_SETTINGS cambia la ruta del settings.json (para probar contra un archivo de ejemplo).
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { binDir, copyToBin } from "./bin-copy.mjs";
 
 // Stop es síncrono (sin async): así puede devolver {"decision":"block"}. Su timeout (900 s) es mayor que la
 // espera máxima de mensajes (14 min = 840 s) más los márgenes del hook.
@@ -99,15 +103,26 @@ export function installHooks({ settingsFile, script, dryRun = false, now = new D
   let backup = null;
   if (exists) {
     backup = `${settingsFile}.antes-de-wabid-${stamp(now)}`;
+    for (let n = 1; existsSync(backup); n++) backup = `${settingsFile}.antes-de-wabid-${stamp(now)}-${n}`; // nunca pisa un respaldo
     copyFileSync(settingsFile, backup);
   }
-  writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + "\n");
+  // Atómico: se escribe a un temporal en la misma carpeta y se renombra encima.
+  const tmpFile = `${settingsFile}.wabid-tmp-${process.pid}`;
+  writeFileSync(tmpFile, JSON.stringify(settings, null, 2) + "\n");
+  renameSync(tmpFile, settingsFile);
   return { status: "written", settingsFile, backup, ...changes };
 }
 
 function main() {
-  const script = path.join(path.dirname(fileURLToPath(import.meta.url)), "wabid-hook.mjs").replace(/\\/g, "/");
+  const srcDir = path.dirname(fileURLToPath(import.meta.url));
   const dryRun = process.argv.includes("--dry-run");
+  const destDir = binDir();
+  // Los hooks apuntan a la copia en %LOCALAPPDATA%\Wabid\bin (fuera del repo), no a finapp.
+  const script = path.join(destDir, "wabid-hook.mjs").replace(/\\/g, "/");
+  if (path.resolve(srcDir) !== path.resolve(destDir)) {
+    const c = copyToBin({ srcDir, destDir, dryRun });
+    console.log(`${dryRun ? "--dry-run: copiaría" : "Copiado"} a ${destDir}: ${c.copied.join(", ") || "(nada nuevo)"}${c.unchanged.length ? `; sin cambios: ${c.unchanged.join(", ")}` : ""}`);
+  }
   const r = installHooks({ settingsFile: settingsPath(), script, dryRun });
   switch (r.status) {
     case "invalid":

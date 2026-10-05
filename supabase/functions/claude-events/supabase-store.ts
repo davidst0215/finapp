@@ -135,7 +135,7 @@ export function createSupabaseStore(db: SupabaseClient): Store {
         "prune approvals",
       );
       if (cutoffs.messages) {
-        must(await db.from("claude_messages").delete().eq("user_id", userId).neq("status", "en_cola").lt("created_at", cutoffs.messages), "prune messages");
+        must(await db.from("claude_messages").delete().eq("user_id", userId).in("status", ["entregado", "vencido"]).lt("created_at", cutoffs.messages), "prune messages");
       }
       if (cutoffs.tasks) {
         must(await db.from("claude_tasks").delete().eq("user_id", userId).not("finished_at", "is", null).lt("finished_at", cutoffs.tasks), "prune tasks");
@@ -209,7 +209,7 @@ export function createSupabaseStore(db: SupabaseClient): Store {
         .select("message_id", { count: "exact", head: true })
         .eq("user_id", userId)
         .eq("session_id", sessionId)
-        .eq("status", "en_cola")
+        .in("status", ["en_cola", "entregando"])
         .gt("expires_at", nowIso);
       if (res.error) throw new Error(`countQueuedMessages: ${res.error.message}`);
       return res.count ?? 0;
@@ -237,7 +237,7 @@ export function createSupabaseStore(db: SupabaseClient): Store {
         if (!candidate || candidate.body === null) return null;
         const won = await db
           .from("claude_messages")
-          .update({ status: "entregado", body: null, delivered_at: nowIso })
+          .update({ status: "entregando", claimed_at: nowIso })
           .eq("message_id", candidate.message_id)
           .eq("user_id", userId)
           .eq("status", "en_cola")
@@ -247,9 +247,33 @@ export function createSupabaseStore(db: SupabaseClient): Store {
       return null;
     },
 
+    async ackMessage(userId, messageId, deviceId, nowIso) {
+      const res = await db
+        .from("claude_messages")
+        .update({ status: "entregado", body: null, claimed_at: null, delivered_at: nowIso })
+        .eq("message_id", messageId)
+        .eq("user_id", userId)
+        .eq("device_id", deviceId)
+        .eq("status", "entregando")
+        .select("message_id");
+      return first(res as Result<{ message_id: string }[] | null>, "ackMessage") !== null;
+    },
+
+    async requeueStaleMessages(userId, olderThanIso) {
+      must(
+        await db.from("claude_messages").update({ status: "en_cola", claimed_at: null }).eq("user_id", userId).eq("status", "entregando").lt("claimed_at", olderThanIso),
+        "requeueStaleMessages",
+      );
+    },
+
     async expireMessages(userId, nowIso) {
       must(
-        await db.from("claude_messages").update({ status: "vencido", body: null }).eq("user_id", userId).eq("status", "en_cola").lte("expires_at", nowIso),
+        await db
+          .from("claude_messages")
+          .update({ status: "vencido", body: null, claimed_at: null })
+          .eq("user_id", userId)
+          .in("status", ["en_cola", "entregando"])
+          .lte("expires_at", nowIso),
         "expireMessages",
       );
     },
@@ -258,7 +282,7 @@ export function createSupabaseStore(db: SupabaseClient): Store {
       // Sin `body`: el texto nunca sale de la base hacia la app.
       const res = await db
         .from("claude_messages")
-        .select("message_id, user_id, session_id, device_id, status, created_at, expires_at, delivered_at")
+        .select("message_id, user_id, session_id, device_id, status, created_at, expires_at, claimed_at, delivered_at")
         .eq("user_id", userId)
         .order("created_at", { ascending: false })
         .limit(limit);
@@ -312,6 +336,8 @@ export function createSupabaseStore(db: SupabaseClient): Store {
           .eq("user_id", userId)
           .eq("status", "en_cola")
           .select("*");
+        // 23505: el índice único parcial (una tarea 'ejecutando' por dispositivo) dice que ya hay una en marcha.
+        if ((won as { error: { code?: string } | null }).error?.code === "23505") return null;
         const row = first(won as Result<TaskRow[] | null>, "claimNextTask");
         if (row) return row;
       }

@@ -84,6 +84,7 @@ test("taskDuration: segundos, minutos y horas; viva cuenta hasta ahora; sin inic
 test("etiquetas de estado y tareas vivas", () => {
   assert.equal(messageStatusLabel("en_cola"), "En cola");
   assert.equal(messageStatusLabel("vencido"), "Vencido");
+  assert.equal(messageStatusLabel("entregando"), "Entregando…");
   assert.equal(taskStatusLabel("rechazada"), "Rechazada por la laptop");
   assert.equal(isTaskActive("ejecutando"), true);
   assert.equal(isTaskActive("en_cola"), true);

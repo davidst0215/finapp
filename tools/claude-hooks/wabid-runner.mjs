@@ -21,7 +21,7 @@
 
 import { spawn as nodeSpawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +30,13 @@ import { api, clipMiddle, collapseHome, configPath, parseConfig, redactSecrets, 
 export const MAX_PROMPT_CHARS = 4000;
 export const DEFAULT_MAX_MINUTES = 30;
 export const DEFAULT_POLL_SECONDS = 10;
+// Topes por tarea (--max-turns / --max-budget-usd, ambos solo en modo -p). Conservadores; se suben en el json local.
+export const DEFAULT_MAX_TURNS = 40;
+export const DEFAULT_MAX_BUDGET_USD = 2;
+// --permission-prompts none existe desde esta versión de Claude Code (docs: cli-reference).
+export const MIN_CLAUDE_VERSION = [2, 1, 259];
+// Si tras matar el proceso `close` no llega en este tiempo, se fuerza y se sigue con la siguiente tarea.
+const FORCE_AFTER_KILL_MS = 10_000;
 const HEARTBEAT_MS = 5000;
 const NAME_RE = /^[A-Za-z0-9._ -]{1,60}$/;
 const SESSION_RE = /^[A-Za-z0-9._:-]{1,100}$/;
@@ -52,7 +59,15 @@ const clamp = (n, min, max, fallback) => (typeof n === "number" && Number.isFini
 // Devuelve { projects: Map(nombre -> ruta absoluta), claudeCommand, maxMinutes, pollSeconds, problems: string[] }.
 // Una entrada inválida se descarta (y se reporta en `problems`); nunca se "corrige" ni se adivina una ruta.
 export function parseRunnerConfig(raw) {
-  const out = { projects: new Map(), claudeCommand: null, maxMinutes: DEFAULT_MAX_MINUTES, pollSeconds: DEFAULT_POLL_SECONDS, problems: [] };
+  const out = {
+    projects: new Map(),
+    claudeCommand: null,
+    maxMinutes: DEFAULT_MAX_MINUTES,
+    pollSeconds: DEFAULT_POLL_SECONDS,
+    maxTurns: DEFAULT_MAX_TURNS,
+    maxBudgetUsd: DEFAULT_MAX_BUDGET_USD,
+    problems: [],
+  };
   let data;
   try {
     data = JSON.parse(typeof raw === "string" && raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
@@ -73,6 +88,8 @@ export function parseRunnerConfig(raw) {
   const cmd = data.claudeCommand;
   if (typeof cmd === "string" && cmd) out.claudeCommand = [cmd];
   else if (Array.isArray(cmd) && cmd.length > 0 && cmd.every((x) => typeof x === "string" && x)) out.claudeCommand = [...cmd];
+  out.maxTurns = Math.round(clamp(data.maxTurns, 1, 200, DEFAULT_MAX_TURNS));
+  out.maxBudgetUsd = clamp(data.maxBudgetUsd, 0.1, 50, DEFAULT_MAX_BUDGET_USD);
   out.maxMinutes = clamp(data.maxMinutes, 1, 120, DEFAULT_MAX_MINUTES);
   out.pollSeconds = clamp(data.pollSeconds, 3, 120, DEFAULT_POLL_SECONDS);
   return out;
@@ -83,18 +100,149 @@ export function resolveProject(config, name) {
   return typeof name === "string" && config.projects.has(name) ? config.projects.get(name) : null;
 }
 
-export const isValidPrompt = (p) => typeof p === "string" && p.trim().length >= 1 && p.length <= MAX_PROMPT_CHARS && !p.includes("\u0000");
+// Un prompt que empieza con "-" se rechaza además de ir detrás de `--` (defensa en profundidad contra inyección de flags).
+export const isValidPrompt = (p) =>
+  typeof p === "string" && p.trim().length >= 1 && p.length <= MAX_PROMPT_CHARS && !p.includes("\u0000") && !p.trimStart().startsWith("-");
+
+// --- Lectura en caliente de la allowlist ---------------------------------------------------------------------------
+// Se vuelve a leer el archivo cuando cambia (mtime/tamaño): `remove` revoca un proyecto sin reiniciar el runner.
+// Falla cerrado: sin archivo, o con un archivo roto, no hay proyectos permitidos.
+export function createConfigReloader(file, { stat = statSync, read = readFileSync, exists = existsSync } = {}) {
+  let sig = null;
+  let current = parseRunnerConfig("{}");
+  return function getConfig() {
+    if (!exists(file)) {
+      sig = null;
+      current = parseRunnerConfig("{}");
+      return current;
+    }
+    let s;
+    try {
+      s = stat(file);
+    } catch {
+      return current;
+    }
+    const next = `${s.mtimeMs}:${s.size}`;
+    if (next !== sig) {
+      try {
+        current = parseRunnerConfig(read(file, "utf8"));
+        sig = next;
+      } catch {
+        /* lectura a medias: se reintenta en la próxima vuelta */
+      }
+    }
+    return current;
+  };
+}
+
+// --- Versión de claude ------------------------------------------------------------------------------------------------
+export function parseClaudeVersion(text) {
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(String(text));
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+export function versionAtLeast(v, min = MIN_CLAUDE_VERSION) {
+  if (!v) return false;
+  for (let i = 0; i < 3; i++) if (v[i] !== min[i]) return v[i] > min[i];
+  return true;
+}
+
+// Corre `claude --version` (sin shell) y devuelve { ok, version?, error? }.
+export function checkClaudeVersion(command, { spawnImpl = nodeSpawn, timeoutMs = 15_000 } = {}) {
+  return new Promise((resolve) => {
+    if (!command || command.error) return resolve({ ok: false, error: command?.error ?? "claude no encontrado" });
+    let out = "";
+    let settled = false;
+    const done = (r) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        resolve(r);
+      }
+    };
+    let child;
+    try {
+      child = spawnImpl(command.file, [...command.args, "--version"], { stdio: ["ignore", "pipe", "ignore"], shell: false, windowsHide: true });
+    } catch (e) {
+      return resolve({ ok: false, error: `No se pudo ejecutar claude --version (${e?.code ?? "error"})` });
+    }
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        /* ya terminó */
+      }
+      done({ ok: false, error: "claude --version no respondió" });
+    }, timeoutMs);
+    child.stdout?.on("data", (c) => (out += c.toString("utf8")));
+    child.on("error", (e) => done({ ok: false, error: `No se pudo ejecutar claude --version (${e?.code ?? "error"})` }));
+    child.on("close", () => {
+      const v = parseClaudeVersion(out);
+      const need = MIN_CLAUDE_VERSION.join(".");
+      if (!v) return done({ ok: false, error: `No pude leer la versión de claude (se necesita ${need} o superior)` });
+      if (!versionAtLeast(v)) return done({ ok: false, version: v.join("."), error: `Claude Code ${v.join(".")} es muy viejo: se necesita ${need} o superior (--permission-prompts). Actualiza con \`claude update\`.` });
+      done({ ok: true, version: v.join(".") });
+    });
+  });
+}
+
+// --- Un solo runner a la vez ---------------------------------------------------------------------------------------------
+// Archivo de bloqueo con el pid. Si el pid anterior ya no existe, el bloqueo es viejo y se toma.
+export function acquireLock(file, { pid = process.pid, isAlive, read = readFileSync, write = writeFileSync, exists = existsSync, remove = unlinkSync, mkdir = (d) => mkdirSync(d, { recursive: true }) } = {}) {
+  const alive =
+    isAlive ??
+    ((p) => {
+      try {
+        process.kill(p, 0);
+        return true;
+      } catch (e) {
+        return e && e.code === "EPERM";
+      }
+    });
+  if (exists(file)) {
+    const other = Number.parseInt(String(read(file, "utf8")).trim(), 10);
+    if (Number.isInteger(other) && other !== pid && alive(other)) return { ok: false, pid: other };
+  }
+  mkdir(path.dirname(file));
+  write(file, String(pid));
+  return {
+    ok: true,
+    release: () => {
+      try {
+        if (Number.parseInt(String(read(file, "utf8")).trim(), 10) === pid) remove(file);
+      } catch {
+        /* ya no está */
+      }
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------------------------------------
 // Cómo se llama a claude
 // ---------------------------------------------------------------------------------------------------------
 
-// El prompt NO va aquí: entra por stdin. Fijos: stream-json para seguir el progreso, modo de permisos `default`
-// (sin esto un -p puede arrancar en `auto`) y `--permission-prompts none` (lo que pediría permiso se deniega y
-// Claude sabe que no debe reintentar; los hooks PermissionRequest siguen decidiendo antes).
-export function buildClaudeArgs({ sessionId }) {
+// Todo lo fijo va antes de `--`; el prompt es el ÚNICO argumento posicional y va después (`claude -p "query"` es la
+// forma documentada; `--` evita que un prompt se lea como flag). Spawn sin shell: sin interpolación.
+// Fijos: stream-json para seguir el progreso, modo de permisos `default` (sin esto un -p puede arrancar en `auto`),
+// `--permission-prompts none` (lo que pediría permiso se deniega y Claude sabe que no debe reintentar; los hooks
+// PermissionRequest siguen decidiendo antes), topes de turnos y de gasto, y `--setting-sources user`: no carga los
+// hooks, MCP ni permisos del .claude/ del proyecto (un repo no puede traer su propia configuración a la tarea).
+// Ojo: las reglas `allow` GLOBALES de ~/.claude/settings.json de David siguen aplicando sin tarjeta en el celular.
+export function buildClaudeArgs({ sessionId, prompt, maxTurns = DEFAULT_MAX_TURNS, maxBudgetUsd = DEFAULT_MAX_BUDGET_USD }) {
   if (!UUID_RE.test(sessionId)) throw new Error("sessionId debe ser un UUID");
-  return ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", "--permission-prompts", "none", "--session-id", sessionId];
+  if (typeof prompt !== "string" || prompt.length === 0) throw new Error("falta el prompt");
+  return [
+    "-p",
+    "--output-format", "stream-json",
+    "--verbose",
+    "--permission-mode", "default",
+    "--permission-prompts", "none",
+    "--setting-sources", "user",
+    "--max-turns", String(maxTurns),
+    "--max-budget-usd", String(maxBudgetUsd),
+    "--session-id", sessionId,
+    "--",
+    prompt,
+  ];
 }
 
 // Devuelve { file, args } (args = prefijo, para `node cli.js`) o { error }. Sin shell: un .cmd/.bat no se puede lanzar.
@@ -228,6 +376,10 @@ export async function runTask({
   killImpl = killTree,
   onChild = () => {},
   log = () => {},
+  maxTurns = DEFAULT_MAX_TURNS,
+  maxBudgetUsd = DEFAULT_MAX_BUDGET_USD,
+  signal,
+  forceAfterMs = FORCE_AFTER_KILL_MS,
 }) {
   const startedAt = Date.now();
   const sessionId = randomUUID();
@@ -236,20 +388,24 @@ export async function runTask({
   let timedOut = false;
   let cancelled = false;
   let spawnError = null;
+  let forced = false;
+  let aborted = false;
 
-  const args = [...command.args, ...buildClaudeArgs({ sessionId })];
+  const args = [...command.args, ...buildClaudeArgs({ sessionId, prompt: task.prompt, maxTurns, maxBudgetUsd })];
   const child = spawnImpl(command.file, args, {
     cwd,
     // WABID_RUNNER=1: el hook Stop de Wabid no espera mensajes dentro de esta sesión.
     env: { ...env, WABID_RUNNER: "1", WABID_RUNNER_TASK: task.id },
-    stdio: ["pipe", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "pipe"], // stdin cerrado: el prompt va como argumento posicional
     shell: false,
     windowsHide: true,
     detached: platform !== "win32",
   });
   onChild(child);
 
+  let resolveDone;
   const done = new Promise((resolve) => {
+    resolveDone = resolve;
     child.on("error", (e) => {
       spawnError = e;
       resolve(null);
@@ -270,10 +426,30 @@ export async function runTask({
     }
     if (buffered.length > 2_000_000) buffered = ""; // una línea absurda no debe crecer sin fin
   });
-  child.stdin?.on("error", () => {}); // si claude muere antes de leer, no tumbar el runner
-  child.stdin?.end(task.prompt);
 
-  const stop = () => killImpl(child, { platform });
+  // Mata el árbol y, si `close` no llega a tiempo (un nieto que retiene las tuberías), fuerza: mata el hijo,
+  // destruye las tuberías y suelta la tarea para que el runner siga con la siguiente.
+  let forceTimer = null;
+  const stop = () => {
+    killImpl(child, { platform });
+    if (forceTimer) return;
+    forceTimer = setTimeout(() => {
+      forced = true;
+      try {
+        child.kill();
+      } catch {
+        /* ya terminó */
+      }
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      resolveDone(null);
+    }, forceAfterMs);
+  };
+  const onAbort = () => {
+    aborted = true;
+    stop();
+  };
+  if (signal) signal.aborted ? onAbort() : signal.addEventListener("abort", onAbort, { once: true });
   const timeout = setTimeout(() => {
     timedOut = true;
     stop();
@@ -302,9 +478,13 @@ export async function runTask({
   const code = await done;
   clearTimeout(timeout);
   clearInterval(heartbeat);
+  if (forceTimer) clearTimeout(forceTimer);
+  signal?.removeEventListener("abort", onAbort);
   if (buffered.trim()) tracker.feed(buffered);
 
   const base = { sessionId: tracker.sessionId ?? sessionId, durationMs: Date.now() - startedAt };
+  if (forced) return { outcome: "fallida", error: `claude no terminó tras detenerlo (${Math.round(forceAfterMs / 1000)} s): se forzó el cierre`, ...base };
+  if (aborted) return { outcome: "fallida", error: "El runner se detuvo (cierre de sesión o apagado)", ...base };
   if (cancelled) return { outcome: "cancelada", ...base };
   if (timedOut) return { outcome: "fallida", error: `Tiempo máximo (${Math.round(maxMs / 60_000)} min): se detuvo la tarea`, ...base };
   if (spawnError) return { outcome: "fallida", error: `No se pudo iniciar claude (${spawnError.code ?? "error"})`, ...base };
@@ -333,7 +513,7 @@ export function validateTask(task, config, { isDirectory = (p) => existsSync(p) 
   if (!task || typeof task !== "object" || typeof task.id !== "string" || !UUID_RE.test(task.id)) return { error: "Tarea inválida" };
   const cwd = resolveProject(config, task.project);
   if (!cwd) return { error: "Proyecto fuera de la lista permitida de esta laptop" };
-  if (!isValidPrompt(task.prompt)) return { error: "Prompt inválido" };
+  if (!isValidPrompt(task.prompt)) return { error: "Prompt inválido (vacío, demasiado largo o empieza con «-»)" };
   if (!isDirectory(cwd)) return { error: "La carpeta del proyecto no existe en esta laptop" };
   return { cwd };
 }
@@ -349,8 +529,10 @@ async function reportWithRetry(report, event, sleep, tries = 3) {
   }
 }
 
-export async function handleTask({ task, config, command, hookConfig, fetchImpl = fetch, sleep, log = () => {}, env = process.env, platform = process.platform, spawnImpl, killImpl, heartbeatMs, onChild }) {
+// `getConfig()` se llama AQUÍ, justo antes de validar: un `remove` hecho mientras la tarea esperaba en cola la rechaza.
+export async function handleTask({ task, getConfig, command, checkVersion = async () => ({ ok: true }), hookConfig, fetchImpl = fetch, sleep, log = () => {}, env = process.env, platform = process.platform, spawnImpl, killImpl, heartbeatMs, onChild, signal, forceAfterMs }) {
   const report = (event) => api(hookConfig, fetchImpl, "POST", `/device/tasks/${encodeURIComponent(task.id)}/events`, event, 8000);
+  const config = getConfig();
 
   const valid = validateTask(task, config);
   if (valid.error) {
@@ -358,10 +540,13 @@ export async function handleTask({ task, config, command, hookConfig, fetchImpl 
     await reportWithRetry(report, { type: "finish", outcome: "rechazada", error: valid.error }, sleep).catch(() => {});
     return { outcome: "rechazada" };
   }
-  if (command.error) {
-    await reportWithRetry(report, { type: "finish", outcome: "fallida", error: command.error }, sleep).catch(() => {});
+  const refuse = async (error) => {
+    await reportWithRetry(report, { type: "finish", outcome: "fallida", error }, sleep).catch(() => {});
     return { outcome: "fallida" };
-  }
+  };
+  if (command.error) return refuse(command.error);
+  const version = await checkVersion();
+  if (!version.ok) return refuse(version.error);
 
   // Avisar el inicio antes de lanzar: si Wabid no responde o la tarea ya no existe, no se ejecuta nada.
   let started;
@@ -388,6 +573,10 @@ export async function handleTask({ task, config, command, hookConfig, fetchImpl 
     killImpl,
     heartbeatMs,
     onChild,
+    signal,
+    forceAfterMs,
+    maxTurns: config.maxTurns,
+    maxBudgetUsd: config.maxBudgetUsd,
     maxMs: config.maxMinutes * 60_000,
     log,
   });
@@ -416,27 +605,44 @@ export async function handleTask({ task, config, command, hookConfig, fetchImpl 
 
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export async function runnerLoop({ config, hookConfig, fetchImpl = fetch, sleep = defaultSleep, log = () => {}, signal, env = process.env, platform = process.platform, spawnImpl, killImpl, heartbeatMs, onChild, maxIterations = Infinity }) {
-  const command = resolveClaudeCommand({ config, env, platform });
+// `getConfig` (o `config` fijo, para pruebas) se evalúa en CADA vuelta: la allowlist que se reporta y contra la que
+// se valida es siempre la actual del archivo.
+export async function runnerLoop({ config, getConfig = () => config, hookConfig, fetchImpl = fetch, sleep = defaultSleep, log = () => {}, signal, env = process.env, platform = process.platform, spawnImpl, killImpl, heartbeatMs, onChild, forceAfterMs, maxIterations = Infinity, versionCheck = checkClaudeVersion }) {
+  let command = resolveClaudeCommand({ config: getConfig(), env, platform });
   if (command.error) log(command.error);
+  // La versión se comprueba una vez al arrancar y de nuevo antes de cada tarea mientras no haya salido bien.
+  let versionState = null;
+  const checkVersion = async () => {
+    if (command.error) {
+      command = resolveClaudeCommand({ config: getConfig(), env, platform });
+      if (command.error) return { ok: false, error: command.error };
+    }
+    if (!versionState || !versionState.ok) versionState = await versionCheck(command, spawnImpl ? { spawnImpl } : {});
+    return versionState;
+  };
+  const first = await checkVersion();
+  log(first.ok ? `claude ${first.version ?? ""} listo`.trim() : `claude no está listo: ${first.error}`);
+
   let failures = 0;
   for (let i = 0; i < maxIterations && !(signal && signal.aborted); i++) {
+    const cfg = getConfig();
     let task = null;
     try {
-      const res = await api(hookConfig, fetchImpl, "POST", "/device/tasks/next", { projects: [...config.projects.keys()] }, 8000);
+      const res = await api(hookConfig, fetchImpl, "POST", "/device/tasks/next", { projects: [...cfg.projects.keys()] }, 8000);
       task = res && res.task ? res.task : null;
       failures = 0;
     } catch (e) {
       failures++;
       log(`no se pudo consultar a Wabid: ${e instanceof Error ? e.message : "error"}`);
-      await sleep(Math.min(60, config.pollSeconds * 2 ** Math.min(failures, 3)) * 1000);
+      await sleep(Math.min(60, cfg.pollSeconds * 2 ** Math.min(failures, 3)) * 1000);
       continue;
     }
     if (task) {
-      await handleTask({ task, config, command, hookConfig, fetchImpl, sleep, log, env, platform, spawnImpl, killImpl, heartbeatMs, onChild });
+      if (command.error) command = resolveClaudeCommand({ config: cfg, env, platform });
+      await handleTask({ task, getConfig, command, checkVersion, hookConfig, fetchImpl, sleep, log, env, platform, spawnImpl, killImpl, heartbeatMs, onChild, signal, forceAfterMs });
       continue; // otra consulta enseguida: puede haber más en cola
     }
-    await sleep(config.pollSeconds * 1000);
+    await sleep(cfg.pollSeconds * 1000);
   }
 }
 
@@ -446,17 +652,14 @@ export async function runnerLoop({ config, hookConfig, fetchImpl = fetch, sleep 
 
 const log = (m) => process.stderr.write(`${new Date().toISOString()} wabid-runner: ${m}\n`);
 
-function loadRunnerConfig() {
-  const file = runnerConfigPath();
-  if (!existsSync(file)) return { file, config: parseRunnerConfig("{}"), exists: false };
-  return { file, config: parseRunnerConfig(readFileSync(file, "utf8")), exists: true };
-}
+export const runnerLockPath = (env = process.env, platform = process.platform, home = os.homedir()) =>
+  path.join(path.dirname(runnerConfigPath(env, platform, home)), "claude-runner.lock");
 
 function saveProjects(file, mutate) {
   let data = {};
   if (existsSync(file)) {
     try {
-      data = JSON.parse(readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
+      data = JSON.parse(readFileSync(file, "utf8").replace(/^﻿/, ""));
     } catch {
       throw new Error(`${file} no es JSON válido; arréglalo a mano`);
     }
@@ -468,7 +671,9 @@ function saveProjects(file, mutate) {
 
 async function main() {
   const [cmd, a, b] = process.argv.slice(2);
-  const { file, config } = loadRunnerConfig();
+  const file = runnerConfigPath();
+  const getConfig = createConfigReloader(file);
+  const config = getConfig();
 
   if (cmd === "list") {
     for (const p of config.problems) console.log(`aviso: ${p}`);
@@ -481,12 +686,13 @@ async function main() {
     const dir = path.resolve(b);
     if (!existsSync(dir) || !statSync(dir).isDirectory()) return void (process.exitCode = 1, console.error(`No existe la carpeta ${dir}`));
     saveProjects(file, (p) => ({ ...p, [a]: dir }));
-    return console.log(`Permitido: ${a} -> ${dir}  (${file})`);
+    console.log(`Permitido: ${a} -> ${dir}  (${file})`);
+    return console.log("Cuidado: dentro de ese proyecto Claude puede editar archivos. No agregues el repo de Wabid (finapp): una tarea podría modificar estos scripts.");
   }
   if (cmd === "remove") {
     if (!a) return void (process.exitCode = 1, console.error("Uso: node wabid-runner.mjs remove <nombre>"));
     saveProjects(file, (p) => Object.fromEntries(Object.entries(p).filter(([k]) => k !== a)));
-    return console.log(`Quitado: ${a}`);
+    return console.log(`Quitado: ${a} (el runner en marcha lo deja de aceptar en su próxima vuelta, sin reiniciar)`);
   }
   if (cmd === "check") {
     for (const p of config.problems) console.log(`aviso: ${p}`);
@@ -494,26 +700,40 @@ async function main() {
     console.log(`Conexión con Wabid (${configPath()}): ${hook ? "configurada" : "FALTA: corre `node wabid-hook.mjs setup`"}`);
     const c = resolveClaudeCommand({ config });
     console.log(`claude: ${c.error ?? [c.file, ...c.args].join(" ")}`);
-    console.log(`Proyectos permitidos: ${[...config.projects.keys()].join(", ") || "(ninguno)"}  ·  máximo ${config.maxMinutes} min por tarea`);
+    const v = await checkClaudeVersion(c);
+    console.log(`versión: ${v.ok ? `${v.version} (>= ${MIN_CLAUDE_VERSION.join(".")})` : `PROBLEMA: ${v.error}`}`);
+    if (!v.ok) process.exitCode = 1;
+    console.log(`Proyectos permitidos: ${[...config.projects.keys()].join(", ") || "(ninguno)"}`);
+    console.log(`Topes por tarea: ${config.maxMinutes} min · ${config.maxTurns} turnos · US$ ${config.maxBudgetUsd}`);
     return;
   }
   if (cmd !== undefined && cmd !== "run") return void (process.exitCode = 1, console.error("Comandos: run (por defecto), list, add, remove, check"));
 
   const hookConfig = existsSync(configPath()) ? parseConfig(readFileSync(configPath(), "utf8")) : null;
   if (!hookConfig) return void (process.exitCode = 1, log(`sin conexión configurada en ${configPath()}: corre \`node wabid-hook.mjs setup\``));
+  const lock = acquireLock(runnerLockPath());
+  if (!lock.ok) return void (process.exitCode = 1, log(`ya hay un runner corriendo (pid ${lock.pid}); no arranco otro`));
   for (const p of config.problems) log(`configuración: ${p}`);
   if (config.projects.size === 0) log(`no hay proyectos permitidos todavía: node wabid-runner.mjs add <nombre> <ruta>`);
 
   const controller = new AbortController();
-  let active = null;
+  // Cierre de sesión (SIGHUP; SIGBREAK en Windows), Ctrl+C o apagado: se aborta la tarea en curso (se mata su árbol y se
+  // reporta fallida) y se sale. Si algo se cuelga, se sale igual a los 30 s.
   const shutdown = () => {
     controller.abort();
-    if (active) killTree(active);
+    setTimeout(() => process.exit(1), 30_000).unref();
   };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"]) {
+    try {
+      process.on(sig, shutdown);
+    } catch {
+      /* esa señal no existe en este sistema */
+    }
+  }
+  process.on("exit", () => lock.release());
   log(`listo: consultando a Wabid cada ${config.pollSeconds} s (${config.projects.size} proyectos permitidos)`);
-  await runnerLoop({ config, hookConfig, log, signal: controller.signal, onChild: (c) => (active = c) });
+  await runnerLoop({ getConfig, hookConfig, log, signal: controller.signal });
+  lock.release();
 }
 
 const RUN_AS_SCRIPT = (() => {

@@ -14,7 +14,7 @@ const PATHS = {
 };
 
 function fakeIo({ files = {}, taskExists = false } = {}) {
-  const log = { exec: [], writes: [], removed: [], out: [] };
+  const log = { exec: [], writes: [], removed: [], out: [], copies: [] };
   const state = { files: { ...files }, taskExists };
   const io = {
     exec: (args) => {
@@ -35,6 +35,7 @@ function fakeIo({ files = {}, taskExists = false } = {}) {
       delete state.files[p];
     },
     out: (l) => log.out.push(l),
+    copyBin: () => (log.copies.push(1), { copied: ["wabid-hook.mjs", "wabid-runner.mjs"], unchanged: [] }),
   };
   return { io, log, state };
 }
@@ -66,6 +67,7 @@ test("instalar: escribe el .vbs y crea la tarea; la segunda vez no reescribe el 
   const first = install({ paths: PATHS, io });
   assert.equal(first.status, "installed");
   assert.equal(first.vbsRewritten, true);
+  assert.equal(log.copies.length, 1, "copia el runner y el hook a bin antes de crear la tarea");
   assert.equal(log.exec.length, 1);
   assert.equal(state.taskExists, true);
   const second = install({ paths: PATHS, io });
@@ -79,7 +81,7 @@ test("--dry-run imprime el plan y no escribe ni ejecuta nada (instalar y quitar)
   const a = fakeIo({ taskExists: true, files: { [PATHS.vbsPath]: "x" } });
   assert.equal(install({ paths: PATHS, dryRun: true, io: a.io }).status, "dry-run");
   assert.equal(uninstall({ paths: PATHS, dryRun: true, io: a.io }).status, "dry-run");
-  assert.deepEqual([a.log.exec, a.log.writes, a.log.removed], [[], [], []]);
+  assert.deepEqual([a.log.exec, a.log.writes, a.log.removed, a.log.copies], [[], [], [], []]);
   const printed = a.log.out.join("\n");
   assert.match(printed, /schtasks \/Create/);
   assert.match(printed, /schtasks \/Delete/);
@@ -99,7 +101,8 @@ test("quitar: borra la tarea y el .vbs; si no existía, no falla ni toca nada", 
 test("defaultPaths usa %LOCALAPPDATA%\\Wabid y la ruta del runner junto a este script", () => {
   const p = defaultPaths({ env: { LOCALAPPDATA: "C:\\Users\\D\\AppData\\Local" }, nodePath: "C:\\node.exe" });
   assert.equal(p.vbsPath, "C:\\Users\\D\\AppData\\Local\\Wabid\\wabid-runner.vbs");
-  assert.ok(p.runnerPath.endsWith("wabid-runner.mjs"));
+  assert.equal(p.runnerPath, "C:\\Users\\D\\AppData\\Local\\Wabid\\bin\\wabid-runner.mjs", "la tarea ejecuta la copia en bin, no el repo");
+  assert.ok(p.srcDir.endsWith("claude-hooks"));
 });
 
 test("CLI --dry-run (y --quitar --dry-run) funciona en cualquier sistema y no toca nada", () => {

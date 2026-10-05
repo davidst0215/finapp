@@ -38,6 +38,7 @@ before(async () => {
       if (req.method === "POST" && /^\/device\/sessions\/[^/]+\/messages\/next$/.test(req.url)) {
         return reply(200, { message: claimAnswers.shift() ?? null, away: false });
       }
+      if (req.method === "POST" && /^\/device\/messages\/[^/]+\/ack$/.test(req.url)) return reply(200, { ok: true });
       if (req.method === "GET" && req.url === "/device/ping") return reply(200, { ok: true, device: { name: "Laptop de prueba", approvals_enabled: true } });
       if (req.method === "POST" && req.url === "/device/events") {
         if (body.type === "permission_request") {
@@ -144,13 +145,14 @@ test("Stop y Notification tampoco imprimen nada", async () => {
 
 test("Stop con un mensaje del celular en cola imprime {decision:block, reason} con el texto", async () => {
   requests = [];
-  claimAnswers = [{ id: "m1", text: "ahora corre los tests" }];
+  claimAnswers = [{ id: "5b7a0c3e-1d2f-4a6b-8c9d-0e1f2a3b4c5d", text: "ahora corre los tests" }];
   const r = await run({ config: writeConfig(), stdin: input({ hook_event_name: "Stop", last_assistant_message: "listo" }) });
   assert.equal(r.code, 0);
   const out = JSON.parse(r.stdout);
   assert.equal(out.decision, "block");
   assert.ok(out.reason.includes("ahora corre los tests"));
   assert.equal(r.stdout.trim().split("\n").length, 1, "una sola línea JSON");
+  assert.equal(requests.some((q) => q.method === "POST" && q.url.endsWith("/ack")), true, "confirmó la entrega después de escribir");
 });
 
 test("Stop dentro de una tarea del runner (WABID_RUNNER=1) no pide mensajes ni imprime", async () => {

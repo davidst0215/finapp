@@ -100,7 +100,7 @@ const EVENT_WORDS: Record<EventKind, string> = {
 
 export const eventWord = (kind: EventKind) => EVENT_WORDS[kind];
 
-const MESSAGE_LABELS: Record<MessageStatus, string> = { en_cola: 'En cola', entregado: 'Entregado', vencido: 'Vencido' };
+const MESSAGE_LABELS: Record<MessageStatus, string> = { en_cola: 'En cola', entregando: 'Entregando…', entregado: 'Entregado', vencido: 'Vencido' };
 export const messageStatusLabel = (status: MessageStatus) => MESSAGE_LABELS[status];
 
 const TASK_LABELS: Record<TaskStatus, string> = {

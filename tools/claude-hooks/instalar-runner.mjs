@@ -4,8 +4,11 @@
 //   node tools/claude-hooks/instalar-runner.mjs --quitar     la elimina
 //   node tools/claude-hooks/instalar-runner.mjs --dry-run    imprime lo que haría y no toca nada (también con --quitar)
 //
-// Cómo queda: %LOCALAPPDATA%\Wabid\wabid-runner.vbs (lanza node sin ventana, como pendientes-app\scripts\vault-sync.vbs)
+// Cómo queda: copia de wabid-runner.mjs y wabid-hook.mjs en %LOCALAPPDATA%\Wabid\bin (fuera del repo: una tarea con permiso
+// de edición sobre finapp no puede reescribir lo que corre al iniciar sesión; vuelve a correr esto tras actualizar finapp),
+// %LOCALAPPDATA%\Wabid\wabid-runner.vbs (lanza node sin ventana, como pendientes-app\scripts\vault-sync.vbs)
 // y una tarea "Wabid Runner" (disparador: al iniciar sesión, mi usuario, sin privilegios elevados) que ejecuta ese .vbs.
+// No agregues finapp ni esa carpeta bin a la allowlist del runner.
 // Si Windows responde "Acceso denegado" al crearla, abre PowerShell como administrador y repite.
 // Sin shell: schtasks se llama con un arreglo de argumentos.
 import { execFileSync } from "node:child_process";
@@ -13,6 +16,7 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { binDir, copyToBin } from "./bin-copy.mjs";
 
 export const TASK_NAME = "Wabid Runner";
 
@@ -36,9 +40,12 @@ export function vbsContent({ nodePath, runnerPath }) {
 
 export function defaultPaths({ env = process.env, home = os.homedir(), nodePath = process.execPath, moduleUrl = import.meta.url } = {}) {
   const base = path.win32.join(env.LOCALAPPDATA || path.win32.join(home, "AppData", "Local"), "Wabid");
+  const bin = binDir(env, "win32", home);
   return {
     nodePath,
-    runnerPath: path.win32.normalize(path.join(path.dirname(fileURLToPath(moduleUrl)), "wabid-runner.mjs")),
+    srcDir: path.dirname(fileURLToPath(moduleUrl)), // el repo: de aquí se copia
+    binDir: bin,
+    runnerPath: path.win32.join(bin, "wabid-runner.mjs"), // lo que ejecuta la tarea: la copia, no el repo
     vbsPath: path.win32.join(base, "wabid-runner.vbs"),
     dir: base,
   };
@@ -64,17 +71,19 @@ export function install({ paths, dryRun = false, io }) {
   const plan = buildPlan(paths);
   if (dryRun) {
     io.out(`--dry-run: no se toca nada. Haría esto:`);
-    io.out(`1. Escribir ${plan.vbsPath} con:\n${plan.vbs.replace(/\r\n/g, "\n").trimEnd()}`);
-    io.out(`2. schtasks ${plan.createArgs.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" ")}`);
+    io.out(`1. Copiar wabid-runner.mjs y wabid-hook.mjs de ${paths.srcDir ?? "(este repo)"} a ${paths.binDir ?? "%LOCALAPPDATA%\\Wabid\\bin"} (solo si cambiaron)`);
+    io.out(`2. Escribir ${plan.vbsPath} con:\n${plan.vbs.replace(/\r\n/g, "\n").trimEnd()}`);
+    io.out(`3. schtasks ${plan.createArgs.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" ")}`);
     return { status: "dry-run", plan };
   }
   io.mkdir(paths.dir);
+  const copied = io.copyBin ? io.copyBin(paths) : { copied: [], unchanged: [] };
   const same = io.exists(plan.vbsPath) && io.read(plan.vbsPath) === plan.vbs;
   if (!same) io.write(plan.vbsPath, plan.vbs);
   io.exec(plan.createArgs);
   io.out(`Tarea "${TASK_NAME}" lista: arranca wabid-runner.mjs al iniciar sesión (oculta). Launcher: ${plan.vbsPath}`);
   io.out("Para probarla ya: schtasks /Run /TN \"Wabid Runner\"   ·   para quitarla: node tools/claude-hooks/instalar-runner.mjs --quitar");
-  return { status: "installed", plan, vbsRewritten: !same };
+  return { status: "installed", plan, vbsRewritten: !same, copied: copied.copied };
 }
 
 export function uninstall({ paths, dryRun = false, io }) {
@@ -114,6 +123,7 @@ function main() {
     mkdir: (d) => mkdirSync(d, { recursive: true }),
     remove: unlinkSync,
     out: (l) => console.log(l),
+    copyBin: (p) => (p.srcDir && path.resolve(p.srcDir) !== path.resolve(p.binDir) ? copyToBin({ srcDir: p.srcDir, destDir: p.binDir }) : { copied: [], unchanged: [] }),
   };
   try {
     const paths = defaultPaths();

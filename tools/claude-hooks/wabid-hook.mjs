@@ -309,7 +309,6 @@ export function buildPermissionOutput(status) {
 
 // Una sola línea que empieza con { y termina con }: así la reconoce Claude Code como JSON.
 export const serializeOutput = (output) => JSON.stringify(output);
-const outputLine = (output) => (output ? serializeOutput(output) : null);
 
 // ---------------------------------------------------------------------------------------------------------
 // Configuración local (fuera del repo)
@@ -358,11 +357,17 @@ export function parseConfig(raw) {
 // ---------------------------------------------------------------------------------------------------------
 
 export const STOP_POLL_MS = 3000;
-export const DEFAULT_STOP_WAIT_MINUTES = 10;
+// Con el modo ausente activo, CADA turno de Claude espera hasta este tiempo un mensaje del celular antes de terminar.
+// Por eso el defecto es corto (2 min); `stop_wait_minutes: 0` en claude-hook.json lo apaga.
+export const DEFAULT_STOP_WAIT_MINUTES = 2;
 // El timeout del hook en settings es 900 s; la espera máxima deja margen para las consultas y la salida.
 export const MAX_STOP_WAIT_MINUTES = 14;
 export const STOP_HOOK_TIMEOUT_SECONDS = 900;
 const CLAIM_TIMEOUT_MS = 5000;
+// El aviso inicial del Stop es síncrono (bloquea el fin del turno): si Wabid tarda más, se sigue sin esperar nada.
+const STOP_POST_TIMEOUT_MS = 3000;
+const ACK_TRIES = 3;
+const ACK_RETRY_MS = 250;
 const CLAIM_MAX_CONSECUTIVE_ERRORS = 3;
 
 // Minutos configurados -> milisegundos, con tope. Un valor inválido cae al defecto; 0 desactiva la espera.
@@ -374,6 +379,21 @@ export function stopWaitMs(config) {
 
 export function buildStopOutput(text) {
   return { decision: "block", reason: `David te escribió desde su celular (Wabid). Sigue con esto:\n${text}` };
+}
+
+// Confirma la entrega. Un fallo no se oculta del todo (se reintenta), pero nunca rompe el hook: lo peor es que el
+// mensaje vuelva a la cola tras 60 s.
+async function ackMessage(config, fetchImpl, messageId, sleep) {
+  if (!UUID_RE.test(messageId)) return false;
+  for (let i = 0; i < ACK_TRIES; i++) {
+    try {
+      await api(config, fetchImpl, "POST", `/device/messages/${encodeURIComponent(messageId)}/ack`, {}, CLAIM_TIMEOUT_MS);
+      return true;
+    } catch {
+      if (i < ACK_TRIES - 1) await sleep(ACK_RETRY_MS);
+    }
+  }
+  return false;
 }
 
 const claimMessage = (config, fetchImpl, sessionId) =>
@@ -395,7 +415,8 @@ export async function handleStop({ sessionId, away, config, fetchImpl, now, slee
       answer = null;
     }
     const text = answer && answer.message && typeof answer.message.text === "string" ? answer.message.text : "";
-    if (text) return buildStopOutput(text);
+    // Fase 1 de la entrega hecha (el mensaje está 'entregando' en Wabid): quien llama escribe stdout y luego confirma.
+    if (text) return { output: buildStopOutput(text), messageId: typeof answer.message.id === "string" ? answer.message.id : "" };
     // Sin modo ausente (o apagado mientras esperaba) o sin tiempo: solo se entrega lo que ya estaba en cola.
     const stillAway = answer ? answer.away === true : true;
     if (!stillAway || now() >= deadline) return null;
@@ -472,7 +493,7 @@ export async function waitForDecision({
 }
 
 // Procesa un evento de hook. Devuelve la línea JSON a imprimir en stdout, o null (no imprimir nada).
-export async function runHook({ raw, config, fetchImpl = fetch, home, now = Date.now, sleep = defaultSleep, log = () => {}, env = process.env }) {
+export async function runHook({ raw, config, fetchImpl = fetch, home, now = Date.now, sleep = defaultSleep, log = () => {}, env = process.env, onOutput }) {
   let input;
   try {
     input = JSON.parse(stripBom(raw));
@@ -489,13 +510,25 @@ export async function runHook({ raw, config, fetchImpl = fetch, home, now = Date
   const isPermission = event.type === "permission_request";
   let response;
   try {
-    response = await postEvent(config, fetchImpl, event, isPermission ? PERMISSION_POST_TIMEOUT_MS : EVENT_TIMEOUT_MS);
+    response = await postEvent(
+      config,
+      fetchImpl,
+      event,
+      isPermission ? PERMISSION_POST_TIMEOUT_MS : event.type === "stop" ? STOP_POST_TIMEOUT_MS : EVENT_TIMEOUT_MS,
+    );
   } catch (e) {
     log(`no se pudo enviar el evento: ${e instanceof Error ? e.message : "error"}`);
     return null;
   }
   if (event.type === "stop") {
-    return outputLine(await handleStop({ sessionId: event.session_id, away: response && response.away === true, config, fetchImpl, now, sleep, env }));
+    const delivery = await handleStop({ sessionId: event.session_id, away: response && response.away === true, config, fetchImpl, now, sleep, env });
+    if (!delivery) return null;
+    const line = serializeOutput(delivery.output);
+    // Entrega en dos fases: primero se escribe stdout (onOutput) y SOLO después se confirma. Si el hook muere en medio,
+    // Wabid reencola el mensaje a los 60 s en vez de darlo por entregado.
+    if (onOutput) await onOutput(line);
+    await ackMessage(config, fetchImpl, delivery.messageId, sleep);
+    return line;
   }
   if (!isPermission) return null;
 
@@ -558,8 +591,18 @@ async function hookMode() {
   // Tope duro: ningún evento debe dejar un proceso colgado. Salimos antes que el timeout del hook en settings
   // (150 s; el Stop que espera mensajes tiene 900 s) para no ser cancelados a media escritura.
   setTimeout(() => process.exit(0), hardLimitMs(raw, config)).unref();
-  const out = await runHook({ raw, config, home: os.homedir(), log });
-  if (out) await writeStdout(out + "\n");
+  let wrote = false;
+  const out = await runHook({
+    raw,
+    config,
+    home: os.homedir(),
+    log,
+    onOutput: async (line) => {
+      wrote = true;
+      await writeStdout(line + "\n");
+    },
+  });
+  if (out && !wrote) await writeStdout(out + "\n");
 }
 
 // En una terminal pregunta; con datos por tubería (una respuesta por línea) lee todo stdin de una vez.

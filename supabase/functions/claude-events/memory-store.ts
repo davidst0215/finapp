@@ -106,7 +106,7 @@ export class MemoryStore implements Store {
       }
     }
     if (cutoffs.messages) {
-      for (const [id, m] of this.messages) if (m.user_id === userId && m.status !== "en_cola" && m.created_at < cutoffs.messages) this.messages.delete(id);
+      for (const [id, m] of this.messages) if (m.user_id === userId && m.status !== "en_cola" && m.status !== "entregando" && m.created_at < cutoffs.messages) this.messages.delete(id);
     }
     if (cutoffs.tasks) {
       for (const [id, t] of this.tasks) if (t.user_id === userId && t.finished_at !== null && t.finished_at < cutoffs.tasks) this.tasks.delete(id);
@@ -177,13 +177,13 @@ export class MemoryStore implements Store {
 
   async countQueuedMessages(userId: string, sessionId: string, nowIso: string) {
     return [...this.messages.values()].filter(
-      (m) => m.user_id === userId && m.session_id === sessionId && m.status === "en_cola" && m.expires_at > nowIso,
+      (m) => m.user_id === userId && m.session_id === sessionId && (m.status === "en_cola" || m.status === "entregando") && m.expires_at > nowIso,
     ).length;
   }
 
   async insertMessage(row: NewMessage) {
     if (!this.sessions.has(sessionKey(row.user_id, row.session_id))) throw new Error("FK: la sesión no existe");
-    const m: MessageRow = { ...row, status: "en_cola", delivered_at: null };
+    const m: MessageRow = { ...row, status: "en_cola", claimed_at: null, delivered_at: null };
     this.messages.set(m.message_id, m);
     return { ...m };
   }
@@ -193,17 +193,35 @@ export class MemoryStore implements Store {
       .filter((m) => m.user_id === userId && m.session_id === sessionId && m.status === "en_cola" && m.expires_at > nowIso)
       .sort((a, b) => a.created_at.localeCompare(b.created_at))[0];
     if (!next || next.body === null) return null;
-    const text = next.body;
-    // Transición atómica (en memoria, sin await entre leer y escribir): entregado y sin texto.
-    next.status = "entregado";
-    next.body = null;
-    next.delivered_at = nowIso;
-    return { messageId: next.message_id, text };
+    // Transición atómica (en memoria, sin await entre leer y escribir): entregando; el texto queda hasta el ack.
+    next.status = "entregando";
+    next.claimed_at = nowIso;
+    return { messageId: next.message_id, text: next.body };
+  }
+
+  async ackMessage(userId: string, messageId: string, deviceId: string, nowIso: string) {
+    const m = this.messages.get(messageId);
+    if (!m || m.user_id !== userId || m.device_id !== deviceId || m.status !== "entregando") return false;
+    m.status = "entregado";
+    m.body = null;
+    m.claimed_at = null;
+    m.delivered_at = nowIso;
+    return true;
+  }
+
+  async requeueStaleMessages(userId: string, olderThanIso: string) {
+    for (const m of this.messages.values()) {
+      if (m.user_id === userId && m.status === "entregando" && m.claimed_at !== null && m.claimed_at < olderThanIso) {
+        m.status = "en_cola";
+        m.claimed_at = null;
+      }
+    }
   }
 
   async expireMessages(userId: string, nowIso: string) {
     for (const m of this.messages.values()) {
-      if (m.user_id === userId && m.status === "en_cola" && m.expires_at <= nowIso) {
+      if (m.user_id === userId && (m.status === "en_cola" || m.status === "entregando") && m.expires_at <= nowIso) {
+        m.claimed_at = null;
         m.status = "vencido";
         m.body = null;
       }
@@ -258,6 +276,8 @@ export class MemoryStore implements Store {
       .filter((t) => t.user_id === userId && t.device_id === deviceId && t.status === "en_cola" && t.expires_at > nowIso)
       .sort((a, b) => a.created_at.localeCompare(b.created_at))[0];
     if (!next) return null;
+    // Como el índice único parcial de la base: una sola tarea ejecutándose por dispositivo.
+    if ([...this.tasks.values()].some((t) => t.device_id === deviceId && t.status === "ejecutando")) return null;
     next.status = "ejecutando";
     next.started_at = nowIso;
     next.updated_at = nowIso;
