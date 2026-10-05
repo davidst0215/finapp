@@ -59,7 +59,7 @@ Cada módulo se entrega a producción por separado (rama → PR → merge → de
 | vault (vault-sync + tareas + memoria) | `005_vault.sql` | `_shared/vault.ts`, `functions/vault/`, `agent/tools/tareas.ts`, `agent/tools/memoria.ts`, `routes/modulos/TareasPage.tsx`, `routes/modulos/BuscarPage.tsx`, `components/tareas/*`, `components/buscar/*` |
 | avisos | `006_avisos.sql` | `_shared/notify.ts` (agregar el envío push), `functions/push/`, `apps/web/src/sw-push.js` y la config PWA de `vite.config.ts`, `components/avisos/*`, una fila "Avisos" en `routes/More.tsx` |
 | google (agenda + correo) | `007_google.sql` | `_shared/google.ts`, `functions/google-oauth/`, `functions/google/`, `agent/tools/agenda.ts`, `agent/tools/correo.ts`, `routes/modulos/AgendaPage.tsx`, `routes/modulos/CorreoPage.tsx`, `components/agenda/*`, `components/correo/*` |
-| claude-code | `008_claude_code.sql` | `functions/claude-events/`, `tools/claude-hooks/*` (script local), `routes/modulos/ClaudeCodePage.tsx`, `components/claude/*` |
+| claude-code | `008_claude_code.sql`, `012_claude_code_v2.sql` (ver `SPEC-claude-code-v2.md`) | `functions/claude-events/`, `tools/claude-hooks/*` (script local), `routes/modulos/ClaudeCodePage.tsx`, `components/claude/*` |
 | reuniones (2ª ola) | `009_reuniones.sql` | `functions/fathom/`, `agent/tools/reuniones.ts`, `routes/modulos/ReunionesPage.tsx`, `components/reuniones/*` |
 | brief (2ª ola) | `010_brief.sql` | `functions/brief/`, `routes/modulos/BriefPage.tsx`, `components/brief/*` |
 

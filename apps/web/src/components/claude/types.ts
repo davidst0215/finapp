@@ -11,6 +11,8 @@ export interface DeviceView {
   approvals_enabled: boolean;
   created_at: string;
   last_seen_at: string | null;
+  /** Runner de tareas de esa laptop: nombres de proyecto (nunca rutas) y si dio señal hace poco. */
+  runner: { projects: string[]; online: boolean };
 }
 
 export interface SessionView {
@@ -55,6 +57,35 @@ export interface Overview {
   sessions: SessionView[];
   pending: ApprovalView[];
   recent: ApprovalView[];
+  messages: MessageView[];
+  tasks: TaskView[];
+}
+
+export type MessageStatus = 'en_cola' | 'entregado' | 'vencido';
+export type TaskStatus = 'en_cola' | 'ejecutando' | 'terminada' | 'fallida' | 'cancelada' | 'rechazada' | 'vencida';
+
+/** Nunca trae el texto: el servidor lo borra al entregar o vencer. */
+export interface MessageView {
+  id: string;
+  session_id: string;
+  status: MessageStatus;
+  created_at: string;
+  delivered_at: string | null;
+}
+
+export interface TaskView {
+  id: string;
+  project: string;
+  prompt: string;
+  status: TaskStatus;
+  cancel_requested: boolean;
+  session_id: string | null;
+  progress: string | null;
+  result: string | null;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
 }
 
 export interface PairedDevice {

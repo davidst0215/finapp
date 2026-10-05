@@ -29,7 +29,7 @@ nada y Claude Code te pregunta en la terminal como siempre. Los secretos obvios 
          { "hooks": [ { "type": "command", "command": "node", "args": ["C:/Users/Dsalg/finapp/tools/claude-hooks/wabid-hook.mjs"], "async": true } ] }
        ],
        "Stop": [
-         { "hooks": [ { "type": "command", "command": "node", "args": ["C:/Users/Dsalg/finapp/tools/claude-hooks/wabid-hook.mjs"], "async": true } ] }
+         { "hooks": [ { "type": "command", "command": "node", "args": ["C:/Users/Dsalg/finapp/tools/claude-hooks/wabid-hook.mjs"], "timeout": 900 } ] }
        ],
        "StopFailure": [
          { "hooks": [ { "type": "command", "command": "node", "args": ["C:/Users/Dsalg/finapp/tools/claude-hooks/wabid-hook.mjs"], "async": true } ] }
@@ -65,3 +65,30 @@ nada y Claude Code te pregunta en la terminal como siempre. Los secretos obvios 
 - No renombres ni dividas `wabid-hook.mjs`. Para revocar una laptop: Wabid > Claude Code > ícono de desconectar.
 - Pruebas: `node --test tools/claude-hooks/wabid-hook.test.mjs tools/claude-hooks/wabid-hook.cli.test.mjs`.
 - Despliegue de la función (lo hace el hilo principal): `npx supabase functions deploy claude-events --no-verify-jwt --project-ref rrhyyclltgaecfyertqh`.
+
+## v2: responderle a una sesión y lanzar tareas desde el celular
+
+Especificación y formatos verificados: `SPEC-claude-code-v2.md` (raíz del repo).
+
+**Actualizar los hooks (Stop pasa a síncrono, timeout 900 s)**
+```powershell
+node tools/claude-hooks/instalar-hooks.mjs --dry-run   # muestra qué cambiaría
+node tools/claude-hooks/instalar-hooks.mjs             # actualiza solo los hooks de Wabid; respaldo settings.json.antes-de-wabid-<fecha>
+```
+Reinicia Claude Code. Es idempotente y no toca hooks ajenos. (`WABID_CLAUDE_SETTINGS=<ruta>` apunta a otro settings.json, para probar.)
+
+**Escribirle a una sesión**: en la app, abre la sesión y usa «Escríbele» (máx. 2000 caracteres). Se entrega una sola vez cuando Claude termina su turno (hook Stop,
+`{"decision":"block","reason":...}`). Con «Aprobar desde el celular» activo, el Stop espera tu mensaje (sondeo cada 3 s) hasta `stop_wait_minutes`
+(en `claude-hook.json`, defecto 10, máximo 14, 0 = no esperar); con el modo apagado solo entrega lo que ya estaba en cola. Los mensajes vencen a las 6 h
+y su texto se borra al entregarse o vencer. Tope oficial de Claude Code: 8 continuaciones seguidas sin usar herramientas.
+
+**Lanzar tareas**
+1. Permite proyectos (nombre -> ruta) en esta laptop; nunca se editan desde el celular:
+   `node tools/claude-hooks/wabid-runner.mjs add finapp C:\Users\Dsalg\finapp` (`list`, `remove`, `check`). Archivo: `%LOCALAPPDATA%\Wabid\claude-runner.json`
+   (opcionales: `claudeCommand` (ruta de claude.exe o `["node","...\\cli.js"]`; un `.cmd` no se puede lanzar sin shell), `maxMinutes` (30), `pollSeconds` (10)).
+2. Arranque al iniciar sesión (oculto): `node tools/claude-hooks/instalar-runner.mjs --dry-run`, luego sin `--dry-run`. Quitar: `--quitar`.
+3. Requiere `WABID_OWNER_ID` en los secretos de la función y la migración 012 aplicada antes de desplegar.
+
+Seguridad: una tarea a la vez, 30 min máximo (se mata el árbol de procesos), `claude -p --permission-mode default --permission-prompts none` con el prompt por stdin,
+sin saltar permisos. Lo que pida permiso pasa por el hook PermissionRequest (tarjeta en el celular, requiere modo ausente); sin respuesta, se deniega.
+Pruebas: `node --experimental-strip-types --test tools/claude-hooks/*.test.mjs supabase/functions/claude-events/*.test.ts`.

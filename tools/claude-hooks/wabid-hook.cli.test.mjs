@@ -20,6 +20,7 @@ let baseUrl;
 let tmp;
 let requests;
 let statusAnswers;
+let claimAnswers = [];
 
 before(async () => {
   tmp = mkdtempSync(path.join(tmpdir(), "wabid-hook-"));
@@ -34,6 +35,9 @@ before(async () => {
         res.end(JSON.stringify(data));
       };
       if (req.headers["x-wabid-device-token"] !== TOKEN) return reply(401, { error: "No autorizado" });
+      if (req.method === "POST" && /^\/device\/sessions\/[^/]+\/messages\/next$/.test(req.url)) {
+        return reply(200, { message: claimAnswers.shift() ?? null, away: false });
+      }
       if (req.method === "GET" && req.url === "/device/ping") return reply(200, { ok: true, device: { name: "Laptop de prueba", approvals_enabled: true } });
       if (req.method === "POST" && req.url === "/device/events") {
         if (body.type === "permission_request") {
@@ -61,10 +65,10 @@ function writeConfig(url = baseUrl, token = TOKEN) {
 }
 
 // Ejecuta el script como lo haría Claude Code: JSON por stdin, stdout capturado.
-function run({ stdin, config, args = [] }) {
+function run({ stdin, config, args = [], extraEnv = {} }) {
   return new Promise((resolve) => {
     const started = Date.now();
-    const env = { ...process.env, WABID_HOOK_CONFIG: config };
+    const env = { ...process.env, WABID_HOOK_CONFIG: config, ...extraEnv };
     delete env.WABID_HOOK_TEST;
     const child = spawn(process.execPath, [SCRIPT, ...args], { env, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
@@ -135,7 +139,28 @@ test("Stop y Notification tampoco imprimen nada", async () => {
     assert.equal(r.code, 0);
     assert.equal(r.stdout, "");
   }
-  assert.equal(requests.length, 2);
+  assert.equal(requests.filter((r) => r.url === "/device/events").length, 2);
+});
+
+test("Stop con un mensaje del celular en cola imprime {decision:block, reason} con el texto", async () => {
+  requests = [];
+  claimAnswers = [{ id: "m1", text: "ahora corre los tests" }];
+  const r = await run({ config: writeConfig(), stdin: input({ hook_event_name: "Stop", last_assistant_message: "listo" }) });
+  assert.equal(r.code, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.decision, "block");
+  assert.ok(out.reason.includes("ahora corre los tests"));
+  assert.equal(r.stdout.trim().split("\n").length, 1, "una sola línea JSON");
+});
+
+test("Stop dentro de una tarea del runner (WABID_RUNNER=1) no pide mensajes ni imprime", async () => {
+  requests = [];
+  claimAnswers = [{ id: "m1", text: "no debe entregarse" }];
+  const r = await run({ config: writeConfig(), stdin: input({ hook_event_name: "Stop" }), extraEnv: { WABID_RUNNER: "1" } });
+  assert.equal(r.code, 0);
+  assert.equal(r.stdout, "");
+  assert.equal(requests.some((q) => q.url.includes("/messages/next")), false);
+  claimAnswers = [];
 });
 
 test("con Wabid caído sale rápido con 0 y sin imprimir", async () => {

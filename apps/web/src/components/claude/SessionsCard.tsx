@@ -3,13 +3,16 @@ import { ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ApiError, claudeApi } from './api';
 import { describeSession, eventWord, limaClock, type SessionTone } from './format';
-import type { ApprovalView, EventView, SessionView } from './types';
+import { SessionMessageBox } from './SessionMessageBox';
+import type { ApprovalView, EventView, MessageView, SessionView } from './types';
 
 interface Props {
   sessions: SessionView[];
   pendingBySession: Map<string, ApprovalView>;
   /** Date.now() para los textos relativos. */
   now: number;
+  messages: MessageView[];
+  onSend: (sessionId: string, text: string) => Promise<boolean>;
 }
 
 // El estado se lee por forma y por texto, nunca solo por color: punto lleno = trabajando, anillo = te espera,
@@ -26,7 +29,7 @@ function StateDot({ tone }: { tone: SessionTone }) {
   return <span aria-hidden="true" className={cn('h-2.5 w-2.5 flex-shrink-0 rounded-full', shape[tone])} />;
 }
 
-export function SessionsCard({ sessions, pendingBySession, now }: Props) {
+export function SessionsCard({ sessions, pendingBySession, now, messages, onSend }: Props) {
   const [openId, setOpenId] = useState<string | null>(null);
 
   return (
@@ -63,7 +66,7 @@ export function SessionsCard({ sessions, pendingBySession, now }: Props) {
                     className={cn('flex-shrink-0 text-slate-400 transition-transform motion-reduce:transition-none', open && 'rotate-180')}
                   />
                 </button>
-                {open && <SessionDetail session={s} />}
+                {open && <SessionDetail session={s} messages={messages.filter((m) => m.session_id === s.id)} now={now} onSend={onSend} />}
               </li>
             );
           })}
@@ -73,7 +76,7 @@ export function SessionsCard({ sessions, pendingBySession, now }: Props) {
   );
 }
 
-function SessionDetail({ session }: { session: SessionView }) {
+function SessionDetail({ session, messages, now, onSend }: { session: SessionView; messages: MessageView[]; now: number; onSend: Props['onSend'] }) {
   const [events, setEvents] = useState<EventView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -115,6 +118,7 @@ function SessionDetail({ session }: { session: SessionView }) {
           ))}
         </ol>
       )}
+      <SessionMessageBox session={session} messages={messages} now={now} onSend={onSend} />
     </div>
   );
 }

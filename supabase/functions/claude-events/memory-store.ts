@@ -1,8 +1,8 @@
 // Almacén en memoria con la misma semántica que la base (llaves foráneas, transiciones atómicas, filtro por
 // usuario). Solo se usa en pruebas: index.ts nunca lo importa, así que no viaja en el despliegue.
 
-import type { Cutoffs, ExpireScope, NewApproval, NewDevice, NewEvent, Store } from "./store.ts";
-import type { ApprovalRow, ApprovalStatus, DeviceRow, EventKind, EventRow, SessionRow } from "./types.ts";
+import type { Cutoffs, ExpireScope, NewApproval, NewDevice, NewEvent, NewMessage, NewTask, Store, TaskPatch } from "./store.ts";
+import type { ApprovalRow, ApprovalStatus, DeviceRow, EventKind, EventRow, MessageRow, SessionRow, TaskRow, TaskStatus } from "./types.ts";
 
 const sessionKey = (userId: string, sessionId: string) => `${userId}|${sessionId}`;
 
@@ -11,6 +11,8 @@ export class MemoryStore implements Store {
   sessions = new Map<string, SessionRow>();
   events: EventRow[] = [];
   approvals = new Map<string, ApprovalRow>();
+  messages = new Map<string, MessageRow>();
+  tasks = new Map<string, TaskRow>();
   /** Reloj de las filas que la base fecharía con NOW() (created_at del dispositivo). */
   clock: () => string = () => new Date().toISOString();
 
@@ -21,7 +23,7 @@ export class MemoryStore implements Store {
   }
 
   async insertDevice(row: NewDevice) {
-    const d: DeviceRow = { ...row, approvals_enabled: false, created_at: this.clock(), last_seen_at: null, revoked_at: null };
+    const d: DeviceRow = { ...row, approvals_enabled: false, created_at: this.clock(), last_seen_at: null, revoked_at: null, runner_projects: [], runner_seen_at: null };
     this.devices.set(d.device_id, d);
     return { ...d };
   }
@@ -100,7 +102,14 @@ export class MemoryStore implements Store {
         this.sessions.delete(key);
         this.events = this.events.filter((e) => !(e.user_id === userId && e.session_id === s.session_id));
         for (const [id, a] of this.approvals) if (a.user_id === userId && a.session_id === s.session_id) this.approvals.delete(id);
+        for (const [id, m] of this.messages) if (m.user_id === userId && m.session_id === s.session_id) this.messages.delete(id);
       }
+    }
+    if (cutoffs.messages) {
+      for (const [id, m] of this.messages) if (m.user_id === userId && m.status !== "en_cola" && m.created_at < cutoffs.messages) this.messages.delete(id);
+    }
+    if (cutoffs.tasks) {
+      for (const [id, t] of this.tasks) if (t.user_id === userId && t.finished_at !== null && t.finished_at < cutoffs.tasks) this.tasks.delete(id);
     }
     this.events = this.events.filter((e) => !(e.user_id === userId && e.created_at < cutoffs.events));
     for (const [id, a] of this.approvals) {
@@ -155,6 +164,126 @@ export class MemoryStore implements Store {
       if (!scope.all && a.expires_at > nowIso) continue;
       a.status = "vencida";
       a.decided_at = nowIso;
+    }
+  }
+
+  // --- v2: runner y mensajes
+  async setRunnerState(deviceId: string, projects: string[], atIso: string) {
+    const d = this.devices.get(deviceId);
+    if (!d) return;
+    d.runner_projects = [...projects];
+    d.runner_seen_at = atIso;
+  }
+
+  async countQueuedMessages(userId: string, sessionId: string, nowIso: string) {
+    return [...this.messages.values()].filter(
+      (m) => m.user_id === userId && m.session_id === sessionId && m.status === "en_cola" && m.expires_at > nowIso,
+    ).length;
+  }
+
+  async insertMessage(row: NewMessage) {
+    if (!this.sessions.has(sessionKey(row.user_id, row.session_id))) throw new Error("FK: la sesión no existe");
+    const m: MessageRow = { ...row, status: "en_cola", delivered_at: null };
+    this.messages.set(m.message_id, m);
+    return { ...m };
+  }
+
+  async claimNextMessage(userId: string, sessionId: string, nowIso: string) {
+    const next = [...this.messages.values()]
+      .filter((m) => m.user_id === userId && m.session_id === sessionId && m.status === "en_cola" && m.expires_at > nowIso)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at))[0];
+    if (!next || next.body === null) return null;
+    const text = next.body;
+    // Transición atómica (en memoria, sin await entre leer y escribir): entregado y sin texto.
+    next.status = "entregado";
+    next.body = null;
+    next.delivered_at = nowIso;
+    return { messageId: next.message_id, text };
+  }
+
+  async expireMessages(userId: string, nowIso: string) {
+    for (const m of this.messages.values()) {
+      if (m.user_id === userId && m.status === "en_cola" && m.expires_at <= nowIso) {
+        m.status = "vencido";
+        m.body = null;
+      }
+    }
+  }
+
+  async listMessages(userId: string, limit: number) {
+    return [...this.messages.values()]
+      .filter((m) => m.user_id === userId)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .slice(0, limit)
+      .map((m) => ({ ...m, body: null })); // el contrato: el texto nunca sale de aquí
+  }
+
+  // --- v2: tareas
+  async countQueuedTasks(userId: string, nowIso: string) {
+    return [...this.tasks.values()].filter((t) => t.user_id === userId && t.status === "en_cola" && t.expires_at > nowIso).length;
+  }
+
+  async insertTask(row: NewTask) {
+    const t: TaskRow = {
+      ...row,
+      status: "en_cola",
+      cancel_requested: false,
+      session_id: null,
+      progress: null,
+      result: null,
+      error: null,
+      started_at: null,
+      updated_at: row.created_at,
+      finished_at: null,
+    };
+    this.tasks.set(t.task_id, t);
+    return { ...t };
+  }
+
+  async findTask(userId: string, taskId: string) {
+    const t = this.tasks.get(taskId);
+    return t && t.user_id === userId ? { ...t } : null;
+  }
+
+  async listTasks(userId: string, limit: number) {
+    return [...this.tasks.values()]
+      .filter((t) => t.user_id === userId)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .slice(0, limit)
+      .map((t) => ({ ...t }));
+  }
+
+  async claimNextTask(userId: string, deviceId: string, nowIso: string) {
+    const next = [...this.tasks.values()]
+      .filter((t) => t.user_id === userId && t.device_id === deviceId && t.status === "en_cola" && t.expires_at > nowIso)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at))[0];
+    if (!next) return null;
+    next.status = "ejecutando";
+    next.started_at = nowIso;
+    next.updated_at = nowIso;
+    return { ...next };
+  }
+
+  async updateTask(userId: string, taskId: string, patch: TaskPatch, onlyIfStatus: TaskStatus[]) {
+    const t = this.tasks.get(taskId);
+    if (!t || t.user_id !== userId || !onlyIfStatus.includes(t.status)) return null;
+    Object.assign(t, patch);
+    return { ...t };
+  }
+
+  async sweepTasks(userId: string, deviceId: string, nowIso: string, staleIso: string) {
+    for (const t of this.tasks.values()) {
+      if (t.user_id !== userId) continue;
+      if (t.status === "en_cola" && t.expires_at <= nowIso) {
+        t.status = "vencida";
+        t.finished_at = nowIso;
+        t.updated_at = nowIso;
+      } else if (t.status === "ejecutando" && t.device_id === deviceId && t.updated_at < staleIso) {
+        t.status = "fallida";
+        t.error = "El runner dejó de responder";
+        t.finished_at = nowIso;
+        t.updated_at = nowIso;
+      }
     }
   }
 }

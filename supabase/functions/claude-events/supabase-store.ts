@@ -4,8 +4,8 @@
 // condicional, no leer-y-escribir.
 
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
-import type { Cutoffs, ExpireScope, NewApproval, NewDevice, NewEvent, Store } from "./store.ts";
-import type { ApprovalRow, ApprovalStatus, DeviceRow, EventRow, SessionRow } from "./types.ts";
+import type { Cutoffs, ExpireScope, NewApproval, NewDevice, NewEvent, NewMessage, NewTask, Store, TaskPatch } from "./store.ts";
+import type { ApprovalRow, ApprovalStatus, DeviceRow, EventRow, MessageRow, SessionRow, TaskRow, TaskStatus } from "./types.ts";
 
 type Result<T> = { data: T; error: { message: string } | null };
 
@@ -134,6 +134,12 @@ export function createSupabaseStore(db: SupabaseClient): Store {
         await db.from("claude_approvals").delete().eq("user_id", userId).neq("status", "pendiente").lt("created_at", cutoffs.approvals),
         "prune approvals",
       );
+      if (cutoffs.messages) {
+        must(await db.from("claude_messages").delete().eq("user_id", userId).neq("status", "en_cola").lt("created_at", cutoffs.messages), "prune messages");
+      }
+      if (cutoffs.tasks) {
+        must(await db.from("claude_tasks").delete().eq("user_id", userId).not("finished_at", "is", null).lt("finished_at", cutoffs.tasks), "prune tasks");
+      }
     },
 
     // --- Aprobaciones
@@ -190,6 +196,153 @@ export function createSupabaseStore(db: SupabaseClient): Store {
       if (scope.sessionId) q = q.eq("session_id", scope.sessionId);
       if (!scope.all) q = q.lte("expires_at", nowIso);
       must(await q, "expireApprovals");
+    },
+
+    // --- v2 (012): runner y mensajes
+    async setRunnerState(deviceId, projects, atIso) {
+      must(await db.from("claude_devices").update({ runner_projects: projects, runner_seen_at: atIso }).eq("device_id", deviceId), "setRunnerState");
+    },
+
+    async countQueuedMessages(userId, sessionId, nowIso) {
+      const res = await db
+        .from("claude_messages")
+        .select("message_id", { count: "exact", head: true })
+        .eq("user_id", userId)
+        .eq("session_id", sessionId)
+        .eq("status", "en_cola")
+        .gt("expires_at", nowIso);
+      if (res.error) throw new Error(`countQueuedMessages: ${res.error.message}`);
+      return res.count ?? 0;
+    },
+
+    async insertMessage(row: NewMessage) {
+      const res = await db.from("claude_messages").insert(row).select("*").single();
+      return must(res, "insertMessage") as MessageRow;
+    },
+
+    async claimNextMessage(userId, sessionId, nowIso) {
+      // Leer el más antiguo y reclamarlo con un UPDATE condicional (status = 'en_cola'): si dos Stop compiten,
+      // solo uno recibe fila de vuelta y el otro reintenta con el siguiente. El texto se borra en esa misma sentencia.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const found = await db
+          .from("claude_messages")
+          .select("message_id, body")
+          .eq("user_id", userId)
+          .eq("session_id", sessionId)
+          .eq("status", "en_cola")
+          .gt("expires_at", nowIso)
+          .order("created_at", { ascending: true })
+          .limit(1);
+        const candidate = must(found as Result<{ message_id: string; body: string | null }[] | null>, "claimNextMessage")?.[0];
+        if (!candidate || candidate.body === null) return null;
+        const won = await db
+          .from("claude_messages")
+          .update({ status: "entregado", body: null, delivered_at: nowIso })
+          .eq("message_id", candidate.message_id)
+          .eq("user_id", userId)
+          .eq("status", "en_cola")
+          .select("message_id");
+        if (first(won as Result<{ message_id: string }[] | null>, "claimNextMessage")) return { messageId: candidate.message_id, text: candidate.body };
+      }
+      return null;
+    },
+
+    async expireMessages(userId, nowIso) {
+      must(
+        await db.from("claude_messages").update({ status: "vencido", body: null }).eq("user_id", userId).eq("status", "en_cola").lte("expires_at", nowIso),
+        "expireMessages",
+      );
+    },
+
+    async listMessages(userId, limit) {
+      // Sin `body`: el texto nunca sale de la base hacia la app.
+      const res = await db
+        .from("claude_messages")
+        .select("message_id, user_id, session_id, device_id, status, created_at, expires_at, delivered_at")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false })
+        .limit(limit);
+      return (must(res, "listMessages") as Omit<MessageRow, "body">[]).map((m) => ({ ...m, body: null }));
+    },
+
+    // --- v2 (012): tareas
+    async countQueuedTasks(userId, nowIso) {
+      const res = await db
+        .from("claude_tasks")
+        .select("task_id", { count: "exact", head: true })
+        .eq("user_id", userId)
+        .eq("status", "en_cola")
+        .gt("expires_at", nowIso);
+      if (res.error) throw new Error(`countQueuedTasks: ${res.error.message}`);
+      return res.count ?? 0;
+    },
+
+    async insertTask(row: NewTask) {
+      const res = await db.from("claude_tasks").insert({ ...row, updated_at: row.created_at }).select("*").single();
+      return must(res, "insertTask") as TaskRow;
+    },
+
+    async findTask(userId, taskId) {
+      const res = await db.from("claude_tasks").select("*").eq("task_id", taskId).eq("user_id", userId).maybeSingle();
+      return must(res, "findTask") as TaskRow | null;
+    },
+
+    async listTasks(userId, limit) {
+      const res = await db.from("claude_tasks").select("*").eq("user_id", userId).order("created_at", { ascending: false }).limit(limit);
+      return must(res, "listTasks") as TaskRow[];
+    },
+
+    async claimNextTask(userId, deviceId, nowIso) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const found = await db
+          .from("claude_tasks")
+          .select("task_id")
+          .eq("user_id", userId)
+          .eq("device_id", deviceId)
+          .eq("status", "en_cola")
+          .gt("expires_at", nowIso)
+          .order("created_at", { ascending: true })
+          .limit(1);
+        const candidate = must(found as Result<{ task_id: string }[] | null>, "claimNextTask")?.[0];
+        if (!candidate) return null;
+        const won = await db
+          .from("claude_tasks")
+          .update({ status: "ejecutando", started_at: nowIso, updated_at: nowIso })
+          .eq("task_id", candidate.task_id)
+          .eq("user_id", userId)
+          .eq("status", "en_cola")
+          .select("*");
+        const row = first(won as Result<TaskRow[] | null>, "claimNextTask");
+        if (row) return row;
+      }
+      return null;
+    },
+
+    async updateTask(userId, taskId, patch: TaskPatch, onlyIfStatus: TaskStatus[]) {
+      const res = await db.from("claude_tasks").update(patch).eq("task_id", taskId).eq("user_id", userId).in("status", onlyIfStatus).select("*");
+      return first(res as Result<TaskRow[] | null>, "updateTask");
+    },
+
+    async sweepTasks(userId, deviceId, nowIso, staleIso) {
+      must(
+        await db
+          .from("claude_tasks")
+          .update({ status: "vencida", finished_at: nowIso, updated_at: nowIso })
+          .eq("user_id", userId)
+          .eq("status", "en_cola")
+          .lte("expires_at", nowIso),
+        "sweepTasks vencidas",
+      );
+      must(
+        await db
+          .from("claude_tasks")
+          .update({ status: "fallida", error: "El runner dejó de responder", finished_at: nowIso, updated_at: nowIso })
+          .eq("user_id", userId)
+          .eq("device_id", deviceId)
+          .eq("status", "ejecutando")
+          .lt("updated_at", staleIso),
+        "sweepTasks sin latido",
+      );
     },
   };
 }

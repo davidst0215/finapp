@@ -1,5 +1,5 @@
 import { supabase } from '@/lib/supabase';
-import type { ApprovalView, Decision, DeviceView, EventView, Overview, PairedDevice } from './types';
+import type { ApprovalView, Decision, DeviceView, EventView, MessageView, Overview, PairedDevice, TaskView } from './types';
 
 // Rutas /ui/* de la edge function claude-events: van con el JWT del usuario. La laptop usa otras rutas (/device/*).
 const BASE = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/claude-events`;
@@ -59,4 +59,11 @@ export const claudeApi = {
 
   decide: (approvalId: string, decision: Decision) =>
     request<{ approval: ApprovalView }>('POST', `/ui/approvals/${approvalId}/decision`, { decision }),
+
+  sendMessage: (sessionId: string, text: string) =>
+    request<{ message: MessageView }>('POST', `/ui/sessions/${encodeURIComponent(sessionId)}/messages`, { text }),
+
+  createTask: (project: string, prompt: string) => request<{ task: TaskView }>('POST', '/ui/tasks', { project, prompt }),
+
+  cancelTask: (taskId: string) => request<{ task: TaskView }>('POST', `/ui/tasks/${taskId}/cancel`),
 };

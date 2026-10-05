@@ -106,5 +106,52 @@ export function useClaudeOverview() {
     [refresh],
   );
 
-  return { overview, fetchedAt, error, loading, refresh, decide, setApprovals, revoke, pair };
+  // Devuelven true si el servidor aceptó; el error ya se avisó con un toast.
+  const sendMessage = useCallback(
+    async (sessionId: string, text: string): Promise<boolean> => {
+      try {
+        await claudeApi.sendMessage(sessionId, text);
+        toast('Mensaje en cola. Se entrega cuando Claude termine su turno.', 'success');
+        return true;
+      } catch (e) {
+        toast(messageOf(e, 'No se pudo enviar el mensaje. Reintenta.'), 'error');
+        return false;
+      } finally {
+        await refresh();
+      }
+    },
+    [refresh],
+  );
+
+  const createTask = useCallback(
+    async (project: string, prompt: string): Promise<boolean> => {
+      try {
+        await claudeApi.createTask(project, prompt);
+        toast('Tarea enviada a tu laptop.', 'success');
+        return true;
+      } catch (e) {
+        toast(messageOf(e, 'No se pudo crear la tarea. Reintenta.'), 'error');
+        return false;
+      } finally {
+        await refresh();
+      }
+    },
+    [refresh],
+  );
+
+  const cancelTask = useCallback(
+    async (taskId: string) => {
+      try {
+        await claudeApi.cancelTask(taskId);
+        toast('Cancelando…', 'info');
+      } catch (e) {
+        toast(messageOf(e, 'No se pudo cancelar.'), 'error');
+      } finally {
+        await refresh();
+      }
+    },
+    [refresh],
+  );
+
+  return { overview, fetchedAt, error, loading, refresh, decide, setApprovals, revoke, pair, sendMessage, createTask, cancelTask };
 }

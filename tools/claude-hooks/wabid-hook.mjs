@@ -6,7 +6,7 @@
 //   node wabid-hook.mjs test      prueba la conexión y deja una sesión de prueba en la app
 //
 // Reglas que no se rompen:
-//   1. Nunca decide por su cuenta. Solo imprime "allow" o "deny" si el celular lo dijo explícitamente.
+//   1. Nunca decide por su cuenta. Solo imprime "allow"/"deny" (permisos) o "block" con el mensaje de David (Stop) si el celular lo dijo explícitamente.
 //      Si Wabid no responde, falla o vence, no imprime nada y Claude Code sigue con su flujo normal.
 //   2. No imprime nada en stdout salvo la decisión: en SessionStart y otros eventos todo lo que salga por
 //      stdout llega al contexto de Claude.
@@ -14,9 +14,10 @@
 //
 // Formato de entrada y salida: https://code.claude.com/docs/en/hooks
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------------------------------------
 // Redacción de secretos y limpieza de texto
@@ -308,6 +309,7 @@ export function buildPermissionOutput(status) {
 
 // Una sola línea que empieza con { y termina con }: así la reconoce Claude Code como JSON.
 export const serializeOutput = (output) => JSON.stringify(output);
+const outputLine = (output) => (output ? serializeOutput(output) : null);
 
 // ---------------------------------------------------------------------------------------------------------
 // Configuración local (fuera del repo)
@@ -343,7 +345,62 @@ export function parseConfig(raw) {
   }
   const local = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
   if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && local)) return null;
-  return { url: url.replace(/\/+$/, ""), token: deviceToken };
+  const config = { url: url.replace(/\/+$/, ""), token: deviceToken };
+  // Opcional: cuántos minutos espera el hook Stop un mensaje del celular con el modo ausente activo.
+  if (typeof data.stop_wait_minutes === "number") config.stopWaitMinutes = data.stop_wait_minutes;
+  return config;
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Hook Stop: entregar mensajes del celular (SPEC-claude-code-v2.md)
+// Formato oficial (hooks reference → Stop decision control): exit 0 y {"decision":"block","reason":"..."}
+// hace que Claude siga trabajando con `reason` como instrucción.
+// ---------------------------------------------------------------------------------------------------------
+
+export const STOP_POLL_MS = 3000;
+export const DEFAULT_STOP_WAIT_MINUTES = 10;
+// El timeout del hook en settings es 900 s; la espera máxima deja margen para las consultas y la salida.
+export const MAX_STOP_WAIT_MINUTES = 14;
+export const STOP_HOOK_TIMEOUT_SECONDS = 900;
+const CLAIM_TIMEOUT_MS = 5000;
+const CLAIM_MAX_CONSECUTIVE_ERRORS = 3;
+
+// Minutos configurados -> milisegundos, con tope. Un valor inválido cae al defecto; 0 desactiva la espera.
+export function stopWaitMs(config) {
+  const m = config && config.stopWaitMinutes;
+  const minutes = typeof m === "number" && Number.isFinite(m) && m >= 0 ? Math.min(m, MAX_STOP_WAIT_MINUTES) : DEFAULT_STOP_WAIT_MINUTES;
+  return Math.round(minutes * 60_000);
+}
+
+export function buildStopOutput(text) {
+  return { decision: "block", reason: `David te escribió desde su celular (Wabid). Sigue con esto:\n${text}` };
+}
+
+const claimMessage = (config, fetchImpl, sessionId) =>
+  api(config, fetchImpl, "POST", `/device/sessions/${encodeURIComponent(sessionId)}/messages/next`, {}, CLAIM_TIMEOUT_MS);
+
+// Devuelve el JSON de salida del hook Stop o null (dejar terminar). Falla abierto: ante cualquier error Claude termina normal.
+export async function handleStop({ sessionId, away, config, fetchImpl, now, sleep, env = {} }) {
+  // Las sesiones que lanza el runner del celular no esperan mensajes: terminan y reportan.
+  if (env.WABID_RUNNER === "1") return null;
+  const deadline = now() + (away ? stopWaitMs(config) : 0);
+  let errors = 0;
+  for (;;) {
+    let answer;
+    try {
+      answer = await claimMessage(config, fetchImpl, sessionId);
+      errors = 0;
+    } catch {
+      if (++errors >= CLAIM_MAX_CONSECUTIVE_ERRORS) return null;
+      answer = null;
+    }
+    const text = answer && answer.message && typeof answer.message.text === "string" ? answer.message.text : "";
+    if (text) return buildStopOutput(text);
+    // Sin modo ausente (o apagado mientras esperaba) o sin tiempo: solo se entrega lo que ya estaba en cola.
+    const stillAway = answer ? answer.away === true : true;
+    if (!stillAway || now() >= deadline) return null;
+    await sleep(Math.min(STOP_POLL_MS, Math.max(0, deadline - now())));
+  }
 }
 
 function loadConfig() {
@@ -363,7 +420,7 @@ const PERMISSION_POST_TIMEOUT_MS = 4000; // si Wabid tarda más, mejor que Claud
 const POLL_TIMEOUT_MS = 5000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-async function api(config, fetchImpl, method, route, body, timeoutMs) {
+export async function api(config, fetchImpl, method, route, body, timeoutMs) {
   const res = await fetchImpl(`${config.url}${route}`, {
     method,
     headers: { "content-type": "application/json", "x-wabid-device-token": config.token },
@@ -415,7 +472,7 @@ export async function waitForDecision({
 }
 
 // Procesa un evento de hook. Devuelve la línea JSON a imprimir en stdout, o null (no imprimir nada).
-export async function runHook({ raw, config, fetchImpl = fetch, home, now = Date.now, sleep = defaultSleep, log = () => {} }) {
+export async function runHook({ raw, config, fetchImpl = fetch, home, now = Date.now, sleep = defaultSleep, log = () => {}, env = process.env }) {
   let input;
   try {
     input = JSON.parse(stripBom(raw));
@@ -436,6 +493,9 @@ export async function runHook({ raw, config, fetchImpl = fetch, home, now = Date
   } catch (e) {
     log(`no se pudo enviar el evento: ${e instanceof Error ? e.message : "error"}`);
     return null;
+  }
+  if (event.type === "stop") {
+    return outputLine(await handleStop({ sessionId: event.session_id, away: response && response.away === true, config, fetchImpl, now, sleep, env }));
   }
   if (!isPermission) return null;
 
@@ -477,16 +537,28 @@ function writeStdout(text) {
   return new Promise((resolve) => process.stdout.write(text, () => resolve()));
 }
 
+// Tope duro del proceso: 140 s en general; en Stop, la espera máxima de mensajes más margen (nunca pasa de 870 s).
+export function hardLimitMs(raw, config) {
+  let name = "";
+  try {
+    name = JSON.parse(stripBom(raw)).hook_event_name;
+  } catch {
+    /* entrada inválida: tope general */
+  }
+  return name === "Stop" ? stopWaitMs(config) + 30_000 : 140_000;
+}
+
 async function hookMode() {
   const raw = await readStdin(5000);
   if (!raw.trim()) {
     log("sin datos en stdin; Claude Code lo ejecuta solo. Ayuda: node wabid-hook.mjs help");
     return;
   }
-  // Tope duro: ningún evento debe dejar un proceso colgado.
-  // El timeout del hook en settings es 150 s: salimos antes para no ser cancelados a media escritura.
-  setTimeout(() => process.exit(0), 140_000).unref();
-  const out = await runHook({ raw, config: loadConfig(), home: os.homedir(), log });
+  const config = loadConfig();
+  // Tope duro: ningún evento debe dejar un proceso colgado. Salimos antes que el timeout del hook en settings
+  // (150 s; el Stop que espera mensajes tiene 900 s) para no ser cancelados a media escritura.
+  setTimeout(() => process.exit(0), hardLimitMs(raw, config)).unref();
+  const out = await runHook({ raw, config, home: os.homedir(), log });
   if (out) await writeStdout(out + "\n");
 }
 
@@ -570,7 +642,15 @@ async function main() {
   }
 }
 
-if (process.env.WABID_HOOK_TEST !== "1") {
+// Solo se ejecuta como programa (no al importarlo desde wabid-runner.mjs ni desde las pruebas).
+const RUN_AS_SCRIPT = (() => {
+  try {
+    return realpathSync.native(process.argv[1]) === realpathSync.native(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+if (process.env.WABID_HOOK_TEST !== "1" && RUN_AS_SCRIPT) {
   // Un hook jamás debe romper la sesión de Claude Code: cualquier error se registra y se sale con 0.
   const isHook = !["setup", "test", "help", "--help", "-h"].includes(process.argv[2] ?? "");
   main()
