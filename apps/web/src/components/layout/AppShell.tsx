@@ -1,4 +1,6 @@
+import { useEffect } from 'react';
 import { Outlet } from 'react-router-dom';
+import { prefetchTasks } from '@/components/tareas/useTasks';
 import { TabBar } from './TabBar';
 import { ToastContainer } from '@/components/ui/Toast';
 import { useAppStore } from '@/stores/appStore';
@@ -10,6 +12,7 @@ export function AppShell() {
   const { error, clearError, fetchAccounts, fetchCategories, fetchTransactions } = useAppStore();
   useNotifications();
   useOfflineSync();
+  useEffect(prefetchTasks, []); // Tareas es una pestaña principal: su primera visita no debe esperar a la red
 
   const handleRetry = () => {
     clearError();

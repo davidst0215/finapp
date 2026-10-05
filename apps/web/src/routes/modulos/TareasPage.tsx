@@ -128,7 +128,7 @@ export function TareasPage() {
       {error && (
         <ErrorNotice
           message={error}
-          onRetry={() => void reload({ refresh: true })}
+          onRetry={() => void reload()}
           retrying={fetching}
         />
       )}

@@ -70,12 +70,14 @@ export interface SyncResponse {
 }
 
 export const vaultApi = {
-  /** Trae el índice de tareas ya agrupado. `refresh` pide sincronizar con GitHub antes si pasó más de un minuto. */
-  tasks: (opts: { refresh?: boolean } = {}) =>
-    call<TasksResponse>({ action: 'tasks', refresh: opts.refresh ?? false }),
+  /** Trae el índice de tareas ya agrupado, tal como está en la base (sin esperar a GitHub). */
+  tasks: () => call<TasksResponse>({ action: 'tasks' }),
 
-  /** Sincroniza el índice con GitHub ahora mismo. */
+  /** Reindexa todo el vault desde GitHub ahora mismo. */
   sync: () => call<SyncResponse>({ action: 'sync', force: true }),
+
+  /** Trae solo lo que cambió en GitHub; si el árbol no cambió, una sola consulta y nada más. */
+  syncChanges: () => call<SyncResponse>({ action: 'sync' }),
 
   createTask: (input: CreateTaskInput) =>
     call<TaskMutationResponse>({ action: 'task.create', ...input }),
