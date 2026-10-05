@@ -5,14 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Wabid · Política de privacidad</title>
   <meta name="color-scheme" content="light dark" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Comfortaa:wght@400;700&display=swap" rel="stylesheet" />
   <style>
     :root { --bg: #fafafa; --surface: #ffffff; --line: #e1e1e6; --text: #1a1a1e; --muted: #3e3e41; }
     @media (prefers-color-scheme: dark) {
       :root { --bg: #141417; --surface: #1f1f23; --line: #34343a; --text: #f0f0f2; --muted: #c8ccd4; }
     }
-    body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.65 Comfortaa, system-ui, sans-serif; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
     main { max-width: 68ch; margin: 0 auto; padding: 40px 20px 64px; }
     h1 { font-size: 1.9rem; line-height: 1.2; margin: 0 0 6px; }
     h2 { font-size: 1.15rem; margin: 32px 0 8px; }
@@ -37,15 +35,17 @@
       <li><strong>Cuenta:</strong> el correo y nombre de la cuenta de Google con la que inicias sesión.</li>
       <li><strong>Finanzas:</strong> cuentas, movimientos, presupuestos y pagos que registras.</li>
       <li><strong>Google Calendar</strong> (permiso <code>calendar.events</code>): leer tus eventos para mostrarte la agenda y crear o mover eventos solo cuando tú lo pides. Wabid no invita a otras personas.</li>
-      <li><strong>Gmail</strong> (permisos <code>gmail.readonly</code> y <code>gmail.compose</code>): leer remitente y asunto de tus correos para resumirlos y crear borradores de respuesta. Un correo solo se envía cuando tú lo confirmas en la pantalla de Wabid.</li>
-      <li><strong>Notas y tareas:</strong> el contenido de tu repositorio privado de notas, para buscar y gestionar tareas.</li>
+      <li><strong>Gmail</strong> (permisos <code>gmail.readonly</code> y <code>gmail.compose</code>): leer remitente, asunto y un extracto de tus correos para mostrarlos y resumirlos, y crear borradores de respuesta. Un correo solo se envía cuando tú lo confirmas en la pantalla de Wabid.</li>
+      <li><strong>Notas y tareas:</strong> el contenido de tu repositorio privado de notas en GitHub, para buscar y gestionar tareas.</li>
     </ul>
 
     <h2>Uso limitado de los datos de Google</h2>
-    <p>El uso que hace Wabid de la información recibida de las API de Google cumple la <a href="https://developers.google.com/terms/api-services-user-data-policy">Política de datos de usuario de los servicios de API de Google</a>, incluidos los requisitos de uso limitado. Esos datos solo se usan para darte las funciones de Wabid; no se venden, no se usan para publicidad, no se comparten con terceros y no se usan para entrenar modelos de inteligencia artificial.</p>
+    <p>El uso que hace Wabid de la información recibida de las API de Google cumple la <a href="https://developers.google.com/terms/api-services-user-data-policy">Política de datos de usuario de los servicios de API de Google</a>, incluidos los requisitos de uso limitado. Esos datos solo se usan para darte las funciones de Wabid que tú pides; no se venden, no se usan para publicidad y no se usan para entrenar modelos de inteligencia artificial generales.</p>
+    <p>Solo se transfieren a terceros cuando hace falta para ejecutar la función que pides: el texto necesario se envía a un proveedor de modelos de lenguaje (OpenRouter, que lo enruta a DeepInfra) para redactar la respuesta, y a ElevenLabs para convertirla en voz. Esos proveedores procesan el texto solo para devolver el resultado.</p>
+    <p>Ninguna persona lee tus datos de Google, salvo que tú lo autorices expresamente, que sea necesario por seguridad o para investigar un abuso, o que lo exija la ley.</p>
 
     <h2>Dónde se guardan</h2>
-    <p>En una base de datos privada (Supabase, región Estados Unidos oeste) con acceso restringido a tu usuario. Los tokens de acceso a Google se guardan cifrados. Para responder, Wabid envía el texto necesario a un modelo de lenguaje y a un servicio de voz, sin guardar ahí tus datos.</p>
+    <p>En una base de datos privada (Supabase, región Estados Unidos oeste) con acceso restringido a tu usuario. Los tokens de acceso a Google se guardan cifrados. Los proveedores de modelo de lenguaje y de voz descritos arriba reciben solo el texto de cada pedido.</p>
 
     <h2>Cómo revocar el acceso o borrar tus datos</h2>
     <ul>
