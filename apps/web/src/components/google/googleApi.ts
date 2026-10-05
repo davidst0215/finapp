@@ -1,6 +1,7 @@
 // Cliente de las edge functions `google` y `google-oauth`.
 // Usa fetch directo (no supabase.functions.invoke) para leer el mensaje real de los errores.
-import { supabase } from '@/lib/supabase';
+// Siempre por functionUrl: sin la región fijada cada llamada tardaba ~1.5 s en vez de ~0.6 s (medido 5-oct).
+import { functionUrl, supabase } from '@/lib/supabase';
 
 export class GoogleUiError extends Error {
   code: string;
@@ -14,8 +15,6 @@ export class GoogleUiError extends Error {
     this.data = data;
   }
 }
-
-const base = () => `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
 async function authHeaders(): Promise<Record<string, string>> {
   const { data: { session } } = await supabase.auth.getSession();
@@ -49,11 +48,11 @@ async function post<T>(url: string, body: unknown, timeoutMs: number): Promise<T
 
 /** Una acción de la edge function `google` (ver supabase/functions/google/index.ts). */
 export const googleCall = <T,>(action: string, params: Record<string, unknown> = {}): Promise<T> =>
-  post<T>(`${base()}/google`, { action, ...params }, 25_000);
+  post<T>(functionUrl('google'), { action, ...params }, 25_000);
 
 /** Pide la URL de consentimiento de Google y va hacia ella. Los permisos los fija el servidor. */
 export async function startGoogleConnect(): Promise<void> {
-  const { url } = await post<{ url: string }>(`${base()}/google-oauth/start`, {}, 15_000);
+  const { url } = await post<{ url: string }>(functionUrl('google-oauth/start'), {}, 15_000);
   window.location.assign(url);
 }
 

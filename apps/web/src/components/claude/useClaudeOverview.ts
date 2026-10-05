@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { readCache, useCachedState, writeCache } from '@/lib/moduleCache';
 import { useToastStore } from '@/stores/toastStore';
 import { ApiError, claudeApi } from './api';
 import type { Decision, DeviceView, Overview, PairedDevice } from './types';
@@ -11,11 +12,12 @@ const toast = (message: string, type: 'success' | 'error' | 'info') => useToastS
 const messageOf = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
 export function useClaudeOverview() {
-  const [overview, setOverview] = useState<Overview | null>(null);
+  // Al volver a la pantalla se ve lo último mientras llega la primera consulta.
+  const [overview, setOverview] = useCachedState<Overview>('claude.overview');
   /** performance.now() del último éxito: las cuentas regresivas se calculan contra esto, no contra el reloj del celular. */
-  const [fetchedAt, setFetchedAt] = useState(0);
+  const [fetchedAt, setFetchedAt] = useState(() => readCache<number>('claude.fetchedAt') ?? 0);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !overview);
   const inFlight = useRef<AbortController | null>(null);
 
   const refresh = useCallback(async () => {
@@ -25,8 +27,10 @@ export function useClaudeOverview() {
     try {
       const data = await claudeApi.overview(controller.signal);
       if (controller.signal.aborted) return;
+      const at = performance.now();
       setOverview(data);
-      setFetchedAt(performance.now());
+      setFetchedAt(at);
+      writeCache('claude.fetchedAt', at);
       setError(null);
     } catch (e) {
       if (controller.signal.aborted) return;

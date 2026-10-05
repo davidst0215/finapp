@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCachedState } from '@/lib/moduleCache';
 import { vaultApi, VaultApiError } from './api';
 import { errorMessage } from './format';
 import type { CreateTaskInput, TaskRef, TasksResponse, TaskStatus, VaultTask } from './types';
@@ -50,12 +51,12 @@ function findTask(data: TasksResponse | null, id: string): VaultTask | null {
  * (completar, deshacer) y se descartan las respuestas que llegan tarde.
  */
 export function useTasks() {
-  const [data, setData] = useState<TasksResponse | null>(null);
+  const [data, setData] = useCachedState<TasksResponse>('tareas');
   const [fetching, setFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
 
-  const dataRef = useRef<TasksResponse | null>(null);
+  const dataRef = useRef(data);
   /** La última petición pedida es la única que vale; una mutación también invalida las que van en vuelo. */
   const seq = useRef(0);
   const inFlight = useRef(0);

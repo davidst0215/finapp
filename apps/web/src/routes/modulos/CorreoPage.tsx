@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
+import { useCachedState } from '@/lib/moduleCache';
 import { cn } from '@/lib/utils';
 import { useToastStore } from '@/stores/toastStore';
 import { DraftCard } from '@/components/correo/DraftCard';
@@ -24,9 +25,9 @@ export function CorreoPage() {
   const { loading, status, error: statusError, reload: reloadStatus } = useGoogleStatus();
 
   const [tab, setTab] = useState<TabId>('importantes');
-  const [mail, setMail] = useState<Mail | null>(null);
+  const [mail, setMail] = useCachedState<Mail>('correo.mail');
   const [mailError, setMailError] = useState<string | null>(null);
-  const [drafts, setDrafts] = useState<DraftItem[] | null>(null);
+  const [drafts, setDrafts] = useCachedState<DraftItem[]>('correo.drafts');
   const [draftsError, setDraftsError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);

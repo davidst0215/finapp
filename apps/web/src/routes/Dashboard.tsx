@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { TrendingUp, TrendingDown, ArrowRight, CalendarDays } from 'lucide-react';
 import { AccountCard } from '@/components/ui/AccountCard';
+import { useCachedState } from '@/lib/moduleCache';
 import { supabase } from '@/lib/supabase';
 import { useAppStore } from '@/stores/appStore';
 import { CategoryIcon } from '@/components/ui/CategoryIcon';
@@ -21,7 +22,7 @@ interface MonthlySummary {
 export function DashboardPage() {
   const profile = useAuthStore(s => s.profile);
   const { transactions, accounts, fetchTransactions, fetchAccounts, loadingTransactions } = useAppStore();
-  const [summary, setSummary] = useState<MonthlySummary | null>(null);
+  const [summary, setSummary] = useCachedState<MonthlySummary>('finanzas.resumen');
 
   useEffect(() => {
     fetchTransactions(10);
@@ -119,7 +120,7 @@ export function DashboardPage() {
             Ver todos <ArrowRight size={14} />
           </Link>
         </div>
-        {loadingTransactions ? (
+        {loadingTransactions && transactions.length === 0 ? (
           <Spinner />
         ) : transactions.length === 0 ? (
           <div className="card text-center py-8">
