@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { User as SupabaseUser, Session } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
+import { clearCache } from '@/lib/moduleCache';
 import type { User } from '@/types/database';
 
 interface AuthState {
@@ -38,6 +39,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         if (session?.user) {
           await get().fetchProfile();
         } else {
+          clearCache();
           set({ profile: null });
         }
       });
@@ -56,6 +58,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   signOut: async () => {
     await supabase.auth.signOut();
+    clearCache();
     set({ session: null, user: null, profile: null });
   },
 

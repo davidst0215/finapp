@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Plus } from 'lucide-react';
+import { useCachedState } from '@/lib/moduleCache';
 import { cn } from '@/lib/utils';
 import { useToastStore } from '@/stores/toastStore';
 import { DayChips } from '@/components/agenda/DayChips';
@@ -27,7 +28,7 @@ export function AgendaPage() {
   const [today, setToday] = useState(() => limaDateKey());
   const [nowHM, setNowHM] = useState(() => limaHM());
   const [selected, setSelected] = useState(today);
-  const [events, setEvents] = useState<CalEvent[] | null>(null);
+  const [events, setEvents] = useCachedState<CalEvent[]>('agenda.events');
   const [loadError, setLoadError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);

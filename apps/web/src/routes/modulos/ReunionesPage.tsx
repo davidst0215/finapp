@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
+import { useCachedState } from '@/lib/moduleCache';
 import { cn } from '@/lib/utils';
 import { useToastStore } from '@/stores/toastStore';
 import { EsperasSection } from '@/components/reuniones/EsperasSection';
@@ -8,8 +9,8 @@ import { leerEsperas, listarReuniones, sincronizar, type EsperasRespuesta, type 
 
 export function ReunionesPage() {
   const addToast = useToastStore((s) => s.addToast);
-  const [reuniones, setReuniones] = useState<Reunion[] | null>(null);
-  const [esperas, setEsperas] = useState<EsperasRespuesta | null>(null);
+  const [reuniones, setReuniones] = useCachedState<Reunion[]>('reuniones.lista');
+  const [esperas, setEsperas] = useCachedState<EsperasRespuesta>('reuniones.esperas');
   const [errorReuniones, setErrorReuniones] = useState<string | null>(null);
   const [sincronizando, setSincronizando] = useState(false);
 

@@ -127,7 +127,7 @@ export function AccountsPage() {
         ))}
       </div>
 
-      {loadingAccounts ? (
+      {loadingAccounts && accounts.length === 0 ? (
         <Spinner />
       ) : accounts.length === 0 && !showForm ? (
         <div className="text-center py-10">

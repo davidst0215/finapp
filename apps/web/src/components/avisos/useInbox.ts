@@ -1,17 +1,26 @@
 // Bandeja de avisos: carga, refresco automático y marcar como leído (con actualización inmediata).
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { readCache, writeCache } from '@/lib/moduleCache';
 import { pushApi, type Notice } from './api';
 
 export type InboxStatus = 'loading' | 'ready' | 'error';
 
 type InboxData = { items: Notice[]; unread: number };
 
+const KEY = 'avisos';
+
 export function useInbox() {
-  const [data, setData] = useState<InboxData>({ items: [], unread: 0 });
-  const [status, setStatus] = useState<InboxStatus>('loading');
+  // Con la última bandeja guardada se pinta al instante y la carga la actualiza por detrás.
+  const [initial] = useState(() => readCache<InboxData>(KEY));
+  const [data, setData] = useState<InboxData>(initial ?? { items: [], unread: 0 });
+  const [status, setStatus] = useState<InboxStatus>(initial ? 'ready' : 'loading');
   const [error, setError] = useState<string | null>(null);
   const alive = useRef(true);
-  const loaded = useRef(false);
+  const loaded = useRef(Boolean(initial));
+
+  useEffect(() => {
+    if (status === 'ready') writeCache(KEY, data);
+  }, [status, data]);
 
   useEffect(() => {
     alive.current = true;
