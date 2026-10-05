@@ -1,8 +1,9 @@
-import { supabase } from '@/lib/supabase';
+import { functionUrl, supabase } from '@/lib/supabase';
 import type { ApprovalView, Decision, DeviceView, EventView, MessageView, Overview, PairedDevice, TaskView } from './types';
 
 // Rutas /ui/* de la edge function claude-events: van con el JWT del usuario. La laptop usa otras rutas (/device/*).
-const BASE = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/claude-events`;
+// Siempre por functionUrl: sin la región fijada cada llamada tardaba ~1.9 s en vez de ~0.7 s (medido 5-oct).
+const url = (path: string) => functionUrl(`claude-events${path}`);
 
 export class ApiError extends Error {
   status: number;
@@ -22,7 +23,7 @@ async function request<T>(method: string, path: string, body?: unknown, signal?:
 
   let res: Response;
   try {
-    res = await fetch(`${BASE}${path}`, {
+    res = await fetch(url(path), {
       method,
       headers: {
         'Content-Type': 'application/json',

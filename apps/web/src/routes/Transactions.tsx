@@ -113,7 +113,7 @@ export function TransactionsPage() {
       </div>
 
       {/* Lista */}
-      {loadingTransactions ? (
+      {loadingTransactions && transactions.length === 0 ? (
         <Spinner />
       ) : Object.keys(grouped).length === 0 ? (
         <div className="text-center py-10">

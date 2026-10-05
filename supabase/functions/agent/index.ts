@@ -111,7 +111,7 @@ Deno.serve(async (req: Request) => {
       console.error(`agent: respuesta inservible del modelo (intento ${intento + 1})`);
     }
     if (respuestaInservible(call) || !call) {
-      console.log(JSON.stringify({ evt: "agent", tool: "(inservible)", ...t.resumen() }));
+      console.log(JSON.stringify({ evt: "agent", fn: "(inservible)", ...t.resumen() }));
       return json({ action: "query", message: "No me salió la respuesta. ¿Me lo repites?" });
     }
 
@@ -120,7 +120,8 @@ Deno.serve(async (req: Request) => {
     const args = argumentos(call) ?? {};
     const result = await t.medir("tool", owner.handlers[call.function.name](args, ctx, dataByModule.get(owner.id)));
     // Una línea por pedido, sin contenido de David: sirve para seguir el p50 en los logs.
-    console.log(JSON.stringify({ evt: "agent", tool: call.function.name, ...t.resumen() }));
+    // `fn` y no `tool`: resumen() ya trae `tool` (los ms de la fase) y pisaba el nombre.
+    console.log(JSON.stringify({ evt: "agent", fn: call.function.name, ...t.resumen() }));
     return json(result);
   } catch (error) {
     console.error("agent error:", error instanceof Error ? error.message : String(error));
