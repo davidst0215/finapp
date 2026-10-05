@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Link, Navigate, useNavigate } from 'react-router-dom';
-import { X } from 'lucide-react';
+import { CornerUpLeft, X } from 'lucide-react';
 import { ChatScreen } from './ChatScreen';
 import { buildRows, taskTimeline } from './chatModel';
 import { Composer } from './Composer';
@@ -82,7 +82,7 @@ export function SessionChat({ sessionId, api }: { sessionId: string; api: Claude
         </Link>
       </>
     );
-  } else if (session && ended) {
+  } else if (session && ended && !device?.runner.online) {
     disabledReason = (
       <>
         Esta conversación terminó. Para seguir con el proyecto, lanza una tarea nueva.{' '}
@@ -103,6 +103,11 @@ export function SessionChat({ sessionId, api }: { sessionId: string; api: Claude
   } else if (session && device) {
     if (quiet && device.last_seen_at) {
       hint = `Tu laptop no da señal ${timeAgo(device.last_seen_at, now).replace('hace', 'desde hace')}. El mensaje se entrega cuando vuelva.`;
+    } else if (device.runner.online && (ended || session.status === 'esperando' || session.status === 'error')) {
+      // 014: con el runner conectado, un mensaje a una sesión quieta o cerrada se retoma en la laptop (sesión nueva) en ~1 min.
+      hint = ended
+        ? 'Esta conversación está cerrada. Tu mensaje la retoma en la laptop, en una conversación nueva, en cerca de 1 minuto.'
+        : 'Claude está quieto. Si no lo lee en 1 minuto, lo retomo en la laptop, en una conversación nueva.';
     } else if (session.status === 'esperando' && !device.approvals_enabled) {
       hint = (
         <span className="flex items-center gap-3">
@@ -136,6 +141,19 @@ export function SessionChat({ sessionId, api }: { sessionId: string; api: Claude
       hasMore={timeline.hasMore}
       onLoadOlder={timeline.loadOlder}
       working={status.tone === 'active'}
+      banner={
+        timeline.continuedFrom ? (
+          <div className="flex justify-center pt-3">
+            <Link
+              to={`/claude/s/${encodeURIComponent(timeline.continuedFrom.id)}`}
+              className="inline-flex min-h-[44px] max-w-full items-center gap-1.5 rounded-full bg-slate-800 px-4 text-[14px] font-semibold text-slate-100 active:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+            >
+              <CornerUpLeft size={16} strokeWidth={2} className="flex-shrink-0" aria-hidden="true" />
+              <span className="min-w-0 truncate">Continuación de {timeline.continuedFrom.project || 'otra conversación'}</span>
+            </Link>
+          </div>
+        ) : null
+      }
       empty={overview && !session ? <Missing what="conversación" /> : <EmptyChat />}
       footer={<Composer maxLength={MAX_MESSAGE} onSend={onSend} disabledReason={disabledReason} hint={hint} />}
     />

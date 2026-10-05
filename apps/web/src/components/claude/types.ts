@@ -28,6 +28,8 @@ export interface SessionView {
   started_at: string;
   last_event_at: string;
   ended_at: string | null;
+  /** Sesión original de la que esta es continuación (se retomó desde el celular). */
+  continued_from?: string | null;
 }
 
 export interface ApprovalView {
@@ -64,7 +66,8 @@ export interface Overview {
   tasks: TaskView[];
 }
 
-export type MessageStatus = 'en_cola' | 'entregando' | 'entregado' | 'vencido';
+/** 'retomando' = lo tomó el runner de la laptop; 'no_retomado' = no se pudo (ver `error`). */
+export type MessageStatus = 'en_cola' | 'entregando' | 'entregado' | 'vencido' | 'retomando' | 'no_retomado';
 export type TaskStatus = 'en_cola' | 'ejecutando' | 'terminada' | 'fallida' | 'cancelada' | 'rechazada' | 'vencida';
 
 /** Nunca trae el texto: el servidor lo borra al entregar o vencer. */
@@ -74,10 +77,13 @@ export interface MessageView {
   status: MessageStatus;
   created_at: string;
   delivered_at: string | null;
+  error?: string | null;
 }
 
 export interface TaskView {
   id: string;
+  /** 'resume' = retomar una sesión con un mensaje del celular (no es una tarea nueva). */
+  kind?: 'new' | 'resume';
   project: string;
   prompt: string;
   status: TaskStatus;
@@ -93,9 +99,24 @@ export interface TaskView {
 
 // --- Chat (013): línea de tiempo de una sesión. Espejo de supabase/functions/claude-events/timeline.ts ---------------
 
+export type QueueHint = 'turn' | 'idle_runner' | 'idle_no_runner';
+
 export type TimelineItem =
   /** Lo que David escribió: en la laptop, desde el celular, o el encargo de una tarea lanzada desde el celular. */
-  | { id: string; at: string; type: 'user'; source: 'laptop' | 'phone' | 'task'; text: string | null; delivery: MessageStatus | null }
+  | {
+      id: string;
+      at: string;
+      type: 'user';
+      source: 'laptop' | 'phone' | 'task';
+      text: string | null;
+      delivery: MessageStatus | null;
+      /** Por qué un mensaje del celular sigue en cola: Claude trabaja (turn) · quieto con runner · quieto sin runner. */
+      queue?: QueueHint | null;
+      /** Mensajes que no se pudieron retomar: el motivo. */
+      note?: string | null;
+      /** Sesión nueva donde el runner retomó la conversación con este mensaje. */
+      continuation?: string | null;
+    }
   /** Lo que dice Claude: respuesta al fin de un turno, aviso o error. */
   | { id: string; at: string; type: 'claude'; tone: 'reply' | 'notice' | 'error'; text: string }
   /** Eventos de sistema: chips pequeños y centrados. */
@@ -107,6 +128,8 @@ export interface TimelineResponse {
   now: string;
   items: TimelineItem[];
   has_more: boolean;
+  /** Si la sesión es una continuación (014): de cuál. */
+  continued_from?: { id: string; project: string | null } | null;
 }
 
 export interface PairedDevice {

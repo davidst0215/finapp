@@ -42,6 +42,13 @@ export const LIMITS = {
     maxQueuedPerSession: 5,
     /** Un reclamo del hook que no se confirma (ack) en este tiempo vuelve a la cola: el hook murió antes de entregar. */
     claimTtlMs: 60_000,
+    /** 014: un mensaje 'en_cola' más viejo que esto y con la sesión quieta/cerrada se convierte en una tarea de retomar del runner. */
+    resumeAfterMs: 60_000,
+    /** El runner puede pedir otro umbral (claude-runner.json: resumeAfterSeconds) dentro de este rango. */
+    resumeAfterMinMs: 20_000,
+    resumeAfterMaxMs: HOUR,
+    /** Mensajes de una sesión que se juntan en una sola tarea de retomar (el texto junto cabe en maxPromptChars). */
+    resumeMaxMessages: 5,
   },
   task: {
     maxPromptChars: 4000,
@@ -430,8 +437,14 @@ const promptSummary = (prompt: string) => cleanLine(prompt, LIMITS.task.promptSu
 async function sweepTasks(store: Store, userId: string, deviceId: string, nowIso: string, staleIso: string) {
   for (const t of await store.sweepTasks(userId, deviceId, nowIso, staleIso)) {
     await store.updateTask(userId, t.task_id, { prompt: promptSummary(t.prompt) }, ["vencida", "fallida"]);
+    if (t.kind === "resume") {
+      const error = t.status === "vencida" ? "la laptop no recogió el trabajo a tiempo" : "el runner de la laptop dejó de responder";
+      await store.settleResumeMessages(userId, t.task_id, { ok: false, error });
+    }
   }
 }
+
+const runnerOnline = (d: DeviceRow, nowMs: number) => !!d.runner_seen_at && nowMs - Date.parse(d.runner_seen_at) <= RUNNER_ONLINE_MS;
 
 const PROJECT_NAME_RE = /^[A-Za-z0-9._ -]{1,60}$/;
 
@@ -483,6 +496,8 @@ async function deviceTaskNext(req: ApiRequest, deps: ApiDeps, device: DeviceRow)
   const userId = device.user_id;
   const { store } = deps;
 
+  const body = asObject(json.value);
+
   await store.setRunnerState(device.device_id, projects, nowIso);
   await sweepTasks(store, userId, device.device_id, nowIso, new Date(now.getTime() - LIMITS.task.staleMs).toISOString());
 
@@ -490,8 +505,121 @@ async function deviceTaskNext(req: ApiRequest, deps: ApiDeps, device: DeviceRow)
   const busy = (await store.listTasks(userId, 30)).some((t) => t.device_id === device.device_id && t.status === "ejecutando");
   if (busy) return ok({ task: null });
 
+  // 014: mensajes del celular que quedaron esperando a una sesión quieta o cerrada se convierten en tareas de retomar.
+  // Se hace AQUÍ (y no en un barrido) porque este pedido ya prueba que el runner de la laptop está vivo: nunca se crea
+  // un trabajo que nadie vaya a recoger, y no hace falta cron. Solo si el runner lo declara (`resume: true`): un runner anterior a 014 no sabe retomar y jamás recibe estas tareas. `resumeSessions: false` (claude-runner.json) lo apaga desde la laptop.
+  if (body.resume === true) {
+    const asked = Number(body.resume_after_seconds) * 1000;
+    const afterMs = Number.isFinite(asked) ? Math.min(LIMITS.message.resumeAfterMaxMs, Math.max(LIMITS.message.resumeAfterMinMs, asked)) : LIMITS.message.resumeAfterMs;
+    await bestEffort("resume", () => resumeStalledMessages(deps, device, now, afterMs));
+  }
+
   const task = await store.claimNextTask(userId, device.device_id, nowIso);
-  return ok({ task: task ? { id: task.task_id, project: task.project, prompt: task.prompt } : null });
+  return ok({
+    task: task
+      ? {
+          id: task.task_id,
+          project: task.project,
+          prompt: task.prompt,
+          ...(task.kind === "resume" ? { kind: "resume", resume: { session_id: task.resume_session_id, cwd: task.resume_cwd } } : {}),
+        }
+      : null,
+  });
+}
+
+// Una sesión está "quieta" cuando Claude no está trabajando: esperándote, con error o cerrada. En esos estados el hook Stop no
+// va a pasar a recoger el mensaje. 'trabajando' sigue esperando al Stop como siempre.
+const BODY_SEP = "\n\n";
+const isIdleSession =(s: { status: string; ended_at: string | null }) => s.ended_at !== null || s.status === "esperando" || s.status === "terminada" || s.status === "error";
+
+/**
+ * Convierte mensajes 'en_cola' viejos de sesiones quietas en tareas de retomar. Sin carreras: cada mensaje se reclama con un
+ * UPDATE condicional (en_cola -> retomando); si el hook Stop lo reclamó antes (entregando) el reclamo falla y NO se retoma.
+ * Un mensaje se entrega por una sola vía. Los mensajes de una misma sesión van juntos en una tarea, en orden.
+ */
+async function resumeStalledMessages(deps: ApiDeps, device: DeviceRow, now: Date, afterMs: number) {
+  const { store } = deps;
+  const userId = device.user_id;
+  const nowIso = now.toISOString();
+  if ((await store.countQueuedTasks(userId, nowIso)) >= LIMITS.task.maxQueued) return;
+
+  await store.requeueStaleMessages(userId, new Date(now.getTime() - LIMITS.message.claimTtlMs).toISOString());
+  await store.expireMessages(userId, nowIso);
+  const stalled = await store.listStalledMessages(userId, device.device_id, new Date(now.getTime() - afterMs).toISOString(), nowIso, 20);
+
+  const bySession = new Map<string, typeof stalled>();
+  for (const m of stalled) bySession.set(m.session_id, [...(bySession.get(m.session_id) ?? []), m]);
+
+  for (const [sessionId, rows] of bySession) {
+    const session = await store.getSession(userId, sessionId);
+    if (!session || session.device_id !== device.device_id || !isIdleSession(session)) continue;
+    if ((await store.countQueuedTasks(userId, nowIso)) >= LIMITS.task.maxQueued) return;
+
+    // Los más viejos primero mientras el texto junto quepa en una tarea; el resto queda en cola para la vuelta siguiente.
+    const chosen: typeof rows = [];
+    let size = 0;
+    for (const m of rows.slice(0, LIMITS.message.resumeMaxMessages)) {
+      const add = (m.body ?? "").length + (chosen.length ? 2 : 0);
+      if (size + add > LIMITS.task.maxPromptChars) break;
+      chosen.push(m);
+      size += add;
+    }
+    const taskId = deps.randomUUID();
+    const claimed: typeof rows = [];
+    for (const m of chosen) if (await store.claimMessageForResume(userId, m.message_id, taskId)) claimed.push(m);
+    if (claimed.length === 0) continue; // el hook Stop se los llevó primero
+
+    try {
+      await store.insertTask({
+        task_id: taskId,
+        user_id: userId,
+        device_id: device.device_id,
+        project: cleanLine(session.project || "sesión", 60),
+        prompt: claimed.map((m) => m.body ?? "").join(BODY_SEP),
+        kind: "resume",
+        resume_session_id: sessionId,
+        resume_cwd: session.cwd,
+        created_at: nowIso,
+        expires_at: new Date(now.getTime() + LIMITS.task.queueTtlMs).toISOString(),
+      });
+    } catch (e) {
+      await store.releaseResumeMessages(userId, taskId); // sin tarea no hay quien los lleve: vuelven a la cola
+      throw e;
+    }
+  }
+}
+
+// Crea (o completa) la fila de la sesión bifurcada con el enlace a la original. Los hooks de la sesión nueva también la crean:
+// el que llegue segundo respeta el enlace (mergeSession conserva continued_from).
+async function linkContinuation(store: Store, task: TaskRow, sessionId: string, device: DeviceRow, nowIso: string, result: string | null) {
+  const from = task.resume_session_id;
+  if (!from || from === sessionId) return;
+  const userId = device.user_id;
+  const current = await store.getSession(userId, sessionId);
+  if (current && current.device_id !== device.device_id) return;
+  if (current) {
+    // Sin hooks que la cierren, una sesión que sigue 'trabajando' tras terminar la tarea pasa a 'esperando'.
+    const settle = result !== null && current.status === "trabajando" && !current.ended_at;
+    if (current.continued_from !== from || settle) {
+      await store.saveSession({ ...current, continued_from: from, ...(settle ? { status: "esperando" as const, last_event_at: nowIso } : {}) });
+    }
+    return;
+  }
+  const original = await store.getSession(userId, from);
+  await store.saveSession({
+    user_id: userId,
+    session_id: sessionId,
+    device_id: device.device_id,
+    project: original?.project ?? task.project,
+    cwd: task.resume_cwd ?? original?.cwd ?? null,
+    status: result !== null ? "esperando" : "trabajando",
+    last_summary: null,
+    last_role: null,
+    started_at: nowIso,
+    last_event_at: nowIso,
+    ended_at: null,
+    continued_from: from,
+  });
 }
 
 const TASK_OUTCOMES = new Set(["terminada", "fallida", "cancelada", "rechazada"]);
@@ -537,16 +665,34 @@ async function deviceTaskEvent(taskId: string, req: ApiRequest, deps: ApiDeps, d
   const updated = await store.updateTask(userId, taskId, patch, ["ejecutando"]);
   if (!updated) return ok({ ok: false, cancel_requested: true });
 
+  // 014: al retomar, la sesión nueva (bifurcada) aparece en el chat enlazada a la original; y el mensaje queda como entregado
+  // por el runner (o "no se pudo retomar" con el motivo).
+  if (updated.kind === "resume") {
+    if (sessionId) await bestEffort("continuation", () => linkContinuation(store, updated, sessionId, device, nowIso, type === "finish" ? updated.result : null));
+    if (type === "finish") {
+      const failure = updated.error || (updated.status === "cancelada" ? "cancelado desde el celular" : "no terminó");
+      await store.settleResumeMessages(userId, taskId, updated.status === "terminada" ? { ok: true, atIso: nowIso } : { ok: false, error: cleanLine(failure, LIMITS.task.errorMax) });
+    }
+  }
+
   if (type === "finish" && updated.status !== "cancelada") {
     const detail = updated.status === "terminada" ? updated.result : updated.error || updated.result;
-    const title = updated.status === "terminada" ? `Tarea terminada · ${updated.project}` : `Tarea ${updated.status} · ${updated.project}`;
+    const resume = updated.kind === "resume";
+    const title = resume
+      ? updated.status === "terminada"
+        ? `Claude retomó tu mensaje · ${updated.project}`
+        : `No se pudo retomar · ${updated.project}`
+      : updated.status === "terminada"
+        ? `Tarea terminada · ${updated.project}`
+        : `Tarea ${updated.status} · ${updated.project}`;
+    // La conversación nueva si ya abrió una; si no, la original (retomar) o la propia tarea.
+    const target = updated.session_id ?? (resume ? updated.resume_session_id : null);
     await bestEffort("notify", () =>
       deps.notify(userId, {
         kind: "claude",
         title: cleanLine(title, 120),
         body: cleanLine(detail ?? "", 120),
-        // La conversación de la tarea: su sesión si ya abrió una, o la propia tarea.
-        url: updated.session_id ? `/claude/s/${encodeURIComponent(updated.session_id)}` : `/claude/t/${encodeURIComponent(updated.task_id)}`,
+        url: target ? `/claude/s/${encodeURIComponent(target)}` : `/claude/t/${encodeURIComponent(updated.task_id)}`,
       })
     );
   }
@@ -570,14 +716,30 @@ async function uiSessionTimeline(sessionId: string, req: ApiRequest, deps: ApiDe
 
   await store.expireApprovals(userId, nowIso);
   await store.expireMessages(userId, nowIso);
-  const [events, messages, approvals, tasks] = await Promise.all([
+  const [events, messages, approvals, tasks, owner, original] = await Promise.all([
     store.listEvents(userId, sessionId, limit),
     store.listSessionMessages(userId, sessionId, limit),
     store.listSessionApprovals(userId, sessionId, limit),
     store.listTasks(userId, 30),
+    store.findDevice(session.device_id),
+    session.continued_from ? store.getSession(userId, session.continued_from) : Promise.resolve(null),
   ]);
-  const { items, hasMore } = buildTimeline({ sessionId, events, messages, approvals, tasks, nowMs: now.getTime() }, limit);
-  return ok({ now: nowIso, items, has_more: hasMore });
+  // Una continuación (014) muestra el mensaje que la originó: vive en la sesión original, enlazado por la tarea de retomar.
+  const resumeTaskIds = new Set(tasks.filter((t) => t.kind === "resume" && t.session_id === sessionId).map((t) => t.task_id));
+  const resumedMessages =
+    session.continued_from && resumeTaskIds.size > 0
+      ? (await store.listSessionMessages(userId, session.continued_from, limit)).filter((m) => m.resume_task_id && resumeTaskIds.has(m.resume_task_id))
+      : [];
+  const { items, hasMore } = buildTimeline(
+    { sessionId, session, runnerOnline: !!owner && !owner.revoked_at && runnerOnline(owner, now.getTime()), events, messages, approvals, tasks, resumedMessages, nowMs: now.getTime() },
+    limit,
+  );
+  return ok({
+    now: nowIso,
+    items,
+    has_more: hasMore,
+    continued_from: session.continued_from ? { id: session.continued_from, project: original?.project ?? null } : null,
+  });
 }
 
 // --- App: escribirle a una sesión -----------------------------------------------------------------------------------------
@@ -598,9 +760,10 @@ async function uiMessageCreate(sessionId: string, req: ApiRequest, deps: ApiDeps
   const { store } = deps;
   const session = await store.getSession(userId, sessionId);
   if (!session) return fail(404, "No existe");
-  if (session.ended_at) return fail(409, "Esa sesión ya terminó");
   const owner = await store.findDevice(session.device_id);
   if (!owner || owner.revoked_at || owner.user_id !== userId) return fail(409, "La laptop de esa sesión ya no está conectada");
+  // Una sesión cerrada ya no tiene Stop que recoja el mensaje: solo se acepta si el runner de la laptop puede retomarla (014).
+  if (session.ended_at && !runnerOnline(owner, now.getTime())) return fail(409, "Esa sesión ya terminó y el runner de la laptop no está conectado para retomarla");
 
   await store.expireMessages(userId, nowIso);
   if ((await store.countQueuedMessages(userId, sessionId, nowIso)) >= LIMITS.message.maxQueuedPerSession) {
@@ -642,7 +805,7 @@ async function uiTaskCreate(req: ApiRequest, deps: ApiDeps, userId: string): Pro
   // El proyecto debe estar en la lista que reporta una laptop con el runner conectado. La ruta real vive solo en la laptop.
   const candidates = (await store.listDevices(userId)).filter((d) => (d.runner_projects ?? []).includes(project));
   if (candidates.length === 0) return fail(409, "Ese proyecto no está en la lista de tu laptop");
-  const target = candidates.find((d) => d.runner_seen_at && now.getTime() - Date.parse(d.runner_seen_at) <= RUNNER_ONLINE_MS);
+  const target = candidates.find((d) => runnerOnline(d, now.getTime()));
   if (!target) return fail(409, "El runner de tu laptop no está conectado");
 
   await sweepTasks(store, userId, target.device_id, nowIso, new Date(now.getTime() - LIMITS.task.staleMs).toISOString());
@@ -674,7 +837,10 @@ async function uiTaskCancel(taskId: string, deps: ApiDeps, userId: string): Prom
     { status: "cancelada", finished_at: nowIso, updated_at: nowIso, ...(current ? { prompt: promptSummary(current.prompt) } : {}) },
     ["en_cola"],
   );
-  if (queued) return ok({ task: toTaskView(queued) });
+  if (queued) {
+    if (queued.kind === "resume") await store.settleResumeMessages(userId, taskId, { ok: false, error: "cancelado desde el celular" });
+    return ok({ task: toTaskView(queued) });
+  }
   const running = await store.updateTask(userId, taskId, { cancel_requested: true }, ["ejecutando"]);
   if (running) return ok({ task: toTaskView(running) });
 

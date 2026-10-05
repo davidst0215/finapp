@@ -91,7 +91,8 @@ export function buildConversations(overview: Overview, nowMs: number): Conversat
   for (const m of overview.messages as MessageView[]) lastMessageAt.set(m.session_id, newer(m.created_at, lastMessageAt.get(m.session_id)));
 
   const taskBySession = new Map<string, TaskView>();
-  for (const t of overview.tasks) if (t.session_id) taskBySession.set(t.session_id, t);
+  // Retomar (014) no es una tarea nueva: su sesión es una continuación y el estado vive en el mensaje, no en la lista.
+  for (const t of overview.tasks) if (t.session_id && t.kind !== 'resume') taskBySession.set(t.session_id, t);
   const sessionIds = new Set(overview.sessions.map((s) => s.id));
 
   const out: Conversation[] = overview.sessions.map((s) => {
@@ -114,6 +115,7 @@ export function buildConversations(overview: Overview, nowMs: number): Conversat
   });
 
   for (const t of overview.tasks) {
+    if (t.kind === 'resume') continue;
     if (t.session_id && sessionIds.has(t.session_id)) continue; // ya es esa sesión
     const p = taskPreview(t);
     out.push({

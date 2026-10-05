@@ -46,6 +46,8 @@ export interface SessionRow {
   started_at: string;
   last_event_at: string;
   ended_at: string | null;
+  /** Sesión original de la que se bifurcó esta al retomarla desde el celular (014). */
+  continued_from?: string | null;
 }
 
 export interface EventRow {
@@ -113,6 +115,8 @@ export interface SessionView {
   started_at: string;
   last_event_at: string;
   ended_at: string | null;
+  /** Sesión original de la que esta es continuación (retomar desde el celular), o null. */
+  continued_from: string | null;
 }
 
 export interface ApprovalView {
@@ -159,7 +163,9 @@ export interface ApiResult {
 
 // --- v2 (012): mensajes al celular -> sesión y tareas nuevas -------------------------------------------------
 
-export type MessageStatus = "en_cola" | "entregando" | "entregado" | "vencido";
+/** 014: 'retomando' = lo tomó el runner de la laptop (retoma la sesión con él); 'no_retomado' = el runner no pudo (ver `error`). */
+export type MessageStatus = "en_cola" | "entregando" | "entregado" | "vencido" | "retomando" | "no_retomado";
+export type TaskKind = "new" | "resume";
 export type TaskStatus = "en_cola" | "ejecutando" | "terminada" | "fallida" | "cancelada" | "rechazada" | "vencida";
 export const FINISHED_TASK_STATUSES: readonly TaskStatus[] = ["terminada", "fallida", "cancelada", "rechazada", "vencida"];
 
@@ -176,6 +182,10 @@ export interface MessageRow {
   /** Cuándo lo reclamó el hook (fase 1 de la entrega); null si no está 'entregando'. */
   claimed_at: string | null;
   delivered_at: string | null;
+  /** Tarea del runner que lleva este mensaje (014). */
+  resume_task_id?: string | null;
+  /** Por qué no se pudo retomar (014). */
+  error?: string | null;
 }
 
 export interface TaskRow {
@@ -185,6 +195,10 @@ export interface TaskRow {
   project: string;
   prompt: string;
   status: TaskStatus;
+  /** 014: 'resume' = retomar `resume_session_id` (bifurcándola) con `prompt`; el proyecto es solo la etiqueta de la sesión. */
+  kind?: TaskKind;
+  resume_session_id?: string | null;
+  resume_cwd?: string | null;
   cancel_requested: boolean;
   session_id: string | null;
   progress: string | null;
@@ -204,10 +218,12 @@ export interface MessageView {
   status: MessageStatus;
   created_at: string;
   delivered_at: string | null;
+  error: string | null;
 }
 
 export interface TaskView {
   id: string;
+  kind: TaskKind;
   project: string;
   prompt: string;
   status: TaskStatus;

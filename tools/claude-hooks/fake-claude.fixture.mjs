@@ -10,16 +10,20 @@ if (args.includes("--version")) {
   process.stdout.write((process.env.FAKE_CLAUDE_VERSION ?? "2.1.280") + " (Claude Code)\n");
   process.exit(0);
 }
-const sid = args[args.indexOf("--session-id") + 1] ?? "sin-session";
+// Con --fork-session (retomar) el ID de la sesión nueva lo decide claude: el falso inventa uno (o usa FAKE_FORK_SESSION_ID).
+const forked = args.includes("--fork-session");
+const sid = forked ? (process.env.FAKE_FORK_SESSION_ID ?? crypto.randomUUID()) : (args[args.indexOf("--session-id") + 1] ?? "sin-session");
 // El prompt es el único argumento posicional, después de `--` (stdin va cerrado).
 const dashdash = args.indexOf("--");
 const prompt = dashdash >= 0 ? (args[dashdash + 1] ?? "") : "";
-const mode = prompt.split("\n")[0].trim();
+// Al retomar, el runner antepone el encabezado "[Mensaje enviado desde el celular]": el modo es la línea siguiente.
+const promptLines = prompt.split("\n");
+const mode = (promptLines[0].startsWith("[Mensaje enviado desde el celular]") ? (promptLines[1] ?? "") : promptLines[0]).trim();
 
 if (process.env.FAKE_CLAUDE_LOG) {
   appendFileSync(
     process.env.FAKE_CLAUDE_LOG,
-    JSON.stringify({ args, cwd: process.cwd(), prompt, wabidRunner: process.env.WABID_RUNNER, wabidTask: process.env.WABID_RUNNER_TASK }) + "\n",
+    JSON.stringify({ args, cwd: process.cwd(), prompt, sid, wabidRunner: process.env.WABID_RUNNER, wabidTask: process.env.WABID_RUNNER_TASK }) + "\n",
   );
 }
 

@@ -61,7 +61,7 @@ export function toolLabel(toolName: string): string {
   return `Usar ${toolName}`;
 }
 
-const MESSAGE_LABELS: Record<MessageStatus, string> = { en_cola: 'En cola', entregando: 'Entregando…', entregado: 'Entregado', vencido: 'No se entregó' };
+const MESSAGE_LABELS: Record<MessageStatus, string> = { en_cola: 'En cola', entregando: 'Entregando…', entregado: 'Entregado', vencido: 'No se entregó', retomando: 'Retomando…', no_retomado: 'No se pudo retomar' };
 export const messageStatusLabel = (status: MessageStatus) => MESSAGE_LABELS[status];
 
 const TASK_LABELS: Record<TaskStatus, string> = {

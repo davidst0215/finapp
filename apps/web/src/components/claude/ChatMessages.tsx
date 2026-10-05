@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { Check, CheckCheck, Clock, Laptop, ListTodo, Loader2, Square, TriangleAlert, Volume2, X } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Check, CheckCheck, Clock, CornerDownRight, Laptop, ListTodo, Loader2, Square, TriangleAlert, Volume2, X } from 'lucide-react';
 import { alternarVoz, useEstadoVoz } from '@/lib/hablar';
 import { cn } from '@/lib/utils';
-import { deliveryOf, type Row } from './chatModel';
+import { deliveryLine, type Row } from './chatModel';
 import { limaClock } from './format';
 import { PermissionMessage } from './PermissionMessage';
 import type { ApprovalView, Decision, TimelineItem } from './types';
@@ -73,14 +74,20 @@ type UserItem = Extract<TimelineItem, { type: 'user' }>;
 type ClaudeItem = Extract<TimelineItem, { type: 'claude' }>;
 
 function UserBubble({ item, spacing, showMeta }: { item: UserItem; spacing: string; showMeta: boolean }) {
-  const delivery = item.source === 'phone' && item.delivery ? deliveryOf(item.delivery) : null;
+  const delivery = deliveryLine(item);
+  // Un mensaje que todavía no llegó (o no se pudo retomar) siempre explica su estado, aunque no cierre el grupo de burbujas.
+  // Los estados largos («Claude está quieto: lo retomo en la laptop…») van en su propia línea, alineados a la derecha.
+  const wide = delivery !== null && delivery.label.length > 24;
+  const labelClass = cn(delivery?.ticks === 2 && 'text-slate-200', delivery?.alert && 'font-semibold text-expense');
+  const pending = delivery !== null && (delivery.alert || delivery.continuation !== null || item.delivery !== 'entregado');
   return (
     <div className={cn('flex flex-col items-end', spacing)}>
       <div className="max-w-[86%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-slate-700 px-3.5 py-2.5 text-base leading-relaxed text-slate-100">
         {item.text ?? <span className="italic text-slate-300">Mensaje enviado desde el celular</span>}
       </div>
-      {showMeta && (
-        <p className="mt-1 flex items-center gap-1.5 text-[13px] text-slate-400">
+      {(showMeta || pending) && (
+        <div className="mt-1 flex max-w-[86%] flex-col items-end gap-0.5 text-[13px] text-slate-400">
+         <p className="flex items-center gap-1.5">
           {item.source === 'laptop' && (
             <>
               <Laptop size={14} strokeWidth={1.8} aria-hidden="true" />
@@ -99,11 +106,30 @@ function UserBubble({ item, spacing, showMeta }: { item: UserItem; spacing: stri
           {delivery && (
             <>
               <span aria-hidden="true">·</span>
-              {delivery.ticks === 2 ? <CheckCheck size={16} strokeWidth={2} aria-hidden="true" /> : delivery.ticks === 1 ? <Check size={16} strokeWidth={2} aria-hidden="true" /> : <Clock size={14} aria-hidden="true" />}
-              <span className={cn(delivery.ticks === 2 && 'text-slate-200')}>{delivery.label}</span>
+              {delivery.alert ? (
+                <TriangleAlert size={14} strokeWidth={2} className="text-expense" aria-hidden="true" />
+              ) : delivery.ticks === 2 ? (
+                <CheckCheck size={16} strokeWidth={2} aria-hidden="true" />
+              ) : delivery.ticks === 1 ? (
+                <Check size={16} strokeWidth={2} aria-hidden="true" />
+              ) : (
+                <Clock size={14} aria-hidden="true" />
+              )}
+              {!wide && <span className={labelClass}>{delivery.label}</span>}
             </>
           )}
-        </p>
+         </p>
+         {delivery && wide && <p className={cn('text-right', labelClass)}>{delivery.label}</p>}
+         {delivery?.continuation && (
+           <Link
+             to={`/claude/s/${encodeURIComponent(delivery.continuation)}`}
+             className="inline-flex min-h-[44px] items-center gap-1.5 rounded-full px-3 font-semibold text-slate-100 underline underline-offset-2 active:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+           >
+             <CornerDownRight size={14} strokeWidth={2} aria-hidden="true" />
+             Ver la continuación
+           </Link>
+         )}
+        </div>
       )}
     </div>
   );

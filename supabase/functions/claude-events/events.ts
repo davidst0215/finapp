@@ -140,6 +140,8 @@ export function mergeSession(existing: SessionRow | null, e: ParsedEvent, ctx: M
     started_at: existing?.started_at ?? ctx.atIso,
     last_event_at: ctx.atIso,
     ended_at: e.type === "session_end" ? ctx.atIso : e.type === "session_start" ? null : (existing?.ended_at ?? null),
+    // La continuación se enlaza al crear la sesión desde el runner (014); un evento de los hooks no debe borrar ese enlace.
+    continued_from: existing?.continued_from ?? null,
   };
 }
 

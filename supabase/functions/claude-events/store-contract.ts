@@ -523,4 +523,56 @@ export function defineStoreContract(label: string, make: () => Promise<StoreFixt
     assert.deepEqual(found!.runner_projects, ["finapp", "vera"]);
     same(found!.runner_seen_at, iso(5));
   });
+
+  // --- 014: retomar
+
+  T("retomar: el reclamo para retomar y el del hook Stop son excluyentes (un solo ganador)", async (f) => {
+    const d = await withSession(f);
+    const m = await f.store.insertMessage(msg(U1, d.device_id, "s1", "hola", 0));
+    const taskId = crypto.randomUUID();
+    assert.equal(await f.store.claimMessageForResume(U1, m.message_id, taskId), true);
+    assert.equal(await f.store.claimMessageForResume(U1, m.message_id, crypto.randomUUID()), false, "ya lo tiene otra tarea");
+    assert.equal(await f.store.claimNextMessage(U1, "s1", iso(10)), null, "el hook Stop ya no lo ve");
+
+    const m2 = await f.store.insertMessage(msg(U1, d.device_id, "s1", "otro", 1));
+    assert.ok(await f.store.claimNextMessage(U1, "s1", iso(10)), "el Stop reclama primero");
+    assert.equal(await f.store.claimMessageForResume(U1, m2.message_id, crypto.randomUUID()), false, "entonces el runner no lo retoma");
+  });
+
+  T("retomar: listStalledMessages respeta umbral, dispositivo, usuario, vencimiento y estado", async (f) => {
+    const d = await withSession(f);
+    const other = await newDevice(f, U2);
+    await f.store.saveSession(session(U2, other.device_id, "s1"));
+    await f.store.insertMessage(msg(U1, d.device_id, "s1", "viejo", 0));
+    await f.store.insertMessage(msg(U1, d.device_id, "s1", "reciente", 50));
+    await f.store.insertMessage(msg(U1, d.device_id, "s1", "vence", 1, 5));
+    await f.store.insertMessage(msg(U2, other.device_id, "s1", "ajeno", 0));
+    const rows = await f.store.listStalledMessages(U1, d.device_id, iso(30), iso(20), 10);
+    assert.deepEqual(rows.map((m) => m.body), ["viejo"], "reciente (50 s > umbral), vencido y ajeno quedan fuera");
+    assert.deepEqual((await f.store.listStalledMessages(U1, d.device_id, iso(30), iso(3), 10)).map((m) => m.body), ["viejo", "vence"], "más viejos primero; sin vencer todavía");
+    assert.deepEqual((await f.store.listStalledMessages(U1, d.device_id, iso(30), iso(4000), 10)).map((m) => m.body), [], "vencidos fuera");
+  });
+
+  T("retomar: liberar devuelve a la cola; cerrar marca entregado o no_retomado con el motivo", async (f) => {
+    const d = await withSession(f);
+    const a = await f.store.insertMessage(msg(U1, d.device_id, "s1", "a", 0));
+    const b = await f.store.insertMessage(msg(U1, d.device_id, "s1", "b", 1));
+    const t1 = crypto.randomUUID();
+    const t2 = crypto.randomUUID();
+    await f.store.claimMessageForResume(U1, a.message_id, t1);
+    await f.store.claimMessageForResume(U1, b.message_id, t2);
+    await f.store.releaseResumeMessages(U1, t1);
+    await f.store.settleResumeMessages(U1, t2, { ok: false, error: "proyecto no autorizado en la laptop" });
+    const rows = await f.store.listSessionMessages(U1, "s1", 10);
+    const byBody = Object.fromEntries(rows.map((m) => [m.body, m]));
+    assert.equal(byBody["a"]!.status, "en_cola");
+    assert.equal(byBody["a"]!.resume_task_id, null);
+    assert.equal(byBody["b"]!.status, "no_retomado");
+    assert.equal(byBody["b"]!.error, "proyecto no autorizado en la laptop");
+    await f.store.claimMessageForResume(U1, a.message_id, t1);
+    await f.store.settleResumeMessages(U1, t1, { ok: true, atIso: iso(50) });
+    const done = (await f.store.listSessionMessages(U1, "s1", 10)).find((m) => m.body === "a")!;
+    assert.equal(done.status, "entregado");
+    same(done.delivered_at, iso(50));
+  });
 }

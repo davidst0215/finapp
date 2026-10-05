@@ -93,5 +93,5 @@ export function useTimeline(sessionId: string | null) {
 
   const loadOlder = useCallback(() => setLimit((l) => l + PAGE), []);
 
-  return { items, hasMore: data?.has_more ?? false, fetchedAt, error, loading, refresh, addLocal, loadOlder };
+  return { items, hasMore: data?.has_more ?? false, continuedFrom: data?.continued_from ?? null, fetchedAt, error, loading, refresh, addLocal, loadOlder };
 }

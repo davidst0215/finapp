@@ -6,13 +6,34 @@
 // texto (`text: null`): la app lo muestra como "Mensaje enviado desde el celular".
 
 import { redactSecrets } from "./redact.ts";
-import type { ApprovalRow, EventRow, MessageRow, TaskRow } from "./types.ts";
+import type { ApprovalRow, EventRow, MessageRow, SessionRow, TaskRow } from "./types.ts";
 import type { ApprovalView, MessageStatus } from "./types.ts";
 import { toApprovalView } from "./views.ts";
 
+/**
+ * Por qué un mensaje del celular sigue en cola (014):
+ *  turn            Claude está trabajando: se entrega cuando termine su turno (hook Stop).
+ *  idle_runner     Claude está quieto/cerrado y el runner de la laptop está conectado: lo retoma pasado el umbral.
+ *  idle_no_runner  Claude está quieto/cerrado y no hay runner: solo se entrega si la sesión vuelve a trabajar.
+ */
+export type QueueHint = "turn" | "idle_runner" | "idle_no_runner";
+
 export type TimelineItem =
   /** Lo que David escribió: en la laptop, desde el celular, o el encargo de una tarea lanzada desde el celular. */
-  | { id: string; at: string; type: "user"; source: "laptop" | "phone" | "task"; text: string | null; delivery: MessageStatus | null }
+  | {
+      id: string;
+      at: string;
+      type: "user";
+      source: "laptop" | "phone" | "task";
+      text: string | null;
+      delivery: MessageStatus | null;
+      /** Solo mensajes del celular 'en_cola'. */
+      queue: QueueHint | null;
+      /** Mensajes 'no_retomado': por qué. */
+      note: string | null;
+      /** Mensajes retomados por el runner: la sesión nueva donde sigue la conversación. */
+      continuation: string | null;
+    }
   /** Lo que dice Claude: respuesta al fin de un turno, aviso o error. */
   | { id: string; at: string; type: "claude"; tone: "reply" | "notice" | "error"; text: string }
   /** Eventos de sistema: chips pequeños y centrados. */
@@ -25,8 +46,14 @@ export interface TimelineSources {
   events: EventRow[];
   messages: MessageRow[];
   approvals: ApprovalRow[];
-  /** Todas las tareas del usuario; aquí solo cuentan las que abrieron esta sesión. */
+  /** Todas las tareas del usuario; aquí solo cuentan las que abrieron esta sesión (y las de retomar, para enlazar mensajes). */
   tasks: TaskRow[];
+  /** La sesión que se está pintando (su estado decide qué se dice de un mensaje en cola). */
+  session: Pick<SessionRow, "status" | "ended_at">;
+  /** El runner de la laptop dueña de la sesión dio señal hace poco. */
+  runnerOnline: boolean;
+  /** Si esta sesión es una continuación: los mensajes de la sesión original que la originaron. */
+  resumedMessages?: MessageRow[];
   nowMs: number;
 }
 
@@ -50,7 +77,7 @@ function fromEvent(e: EventRow, approvalTimes: Set<number>): TimelineItem | null
   const base = { id: `e:${e.event_id}`, at: e.created_at };
   switch (e.kind) {
     case "user_prompt":
-      return { ...base, type: "user", source: "laptop", text: shown(e.summary), delivery: null };
+      return { ...base, type: "user", source: "laptop", text: shown(e.summary), delivery: null, ...NO_DELIVERY };
     case "stop":
       return e.summary === EMPTY_STOP ? { ...base, type: "system", text: "Claude terminó" } : { ...base, type: "claude", tone: "reply", text: e.summary };
     case "stop_failure":
@@ -68,11 +95,15 @@ function fromEvent(e: EventRow, approvalTimes: Set<number>): TimelineItem | null
   }
 }
 
+const NO_DELIVERY = { queue: null, note: null, continuation: null } as const;
+
 const taskText = (t: TaskRow) => (t.status === "terminada" ? "Tarea terminada" : t.status === "cancelada" ? "Tarea cancelada" : `Tarea ${t.status === "fallida" ? "falló" : t.status}`);
 
 function fromTask(t: TaskRow): TimelineItem[] {
-  const out: TimelineItem[] = [{ id: `t:${t.task_id}`, at: t.created_at, type: "user", source: "task", text: shown(t.prompt), delivery: null }];
-  if (t.started_at) out.push({ id: `t:${t.task_id}:start`, at: t.started_at, type: "system", text: "Tarea iniciada" });
+  const resume = t.kind === "resume";
+  // Una tarea de retomar no es un encargo nuevo: su texto es el mensaje del celular (se pinta aparte, con su texto completo).
+  const out: TimelineItem[] = resume ? [] : [{ id: `t:${t.task_id}`, at: t.created_at, type: "user", source: "task", text: shown(t.prompt), delivery: null, ...NO_DELIVERY }];
+  if (t.started_at) out.push({ id: `t:${t.task_id}:start`, at: t.started_at, type: "system", text: resume ? "Retomada en la laptop" : "Tarea iniciada" });
   if (t.finished_at) {
     const why = t.status === "fallida" || t.status === "rechazada" ? (t.error ? `: ${t.error}` : "") : "";
     out.push({ id: `t:${t.task_id}:end`, at: t.finished_at, type: "system", text: `${taskText(t)}${why}` });
@@ -92,8 +123,24 @@ export function buildTimeline(src: TimelineSources, limit: number): { items: Tim
     const item = fromEvent(e, approvalTimes);
     if (item) items.push(item);
   }
+  const idle = src.session.ended_at !== null || src.session.status !== "trabajando";
+  const queue: QueueHint = !idle ? "turn" : src.runnerOnline ? "idle_runner" : "idle_no_runner";
   for (const m of src.messages) {
-    items.push({ id: `m:${m.message_id}`, at: m.created_at, type: "user", source: "phone", text: shown(m.body), delivery: m.status });
+    const task = m.resume_task_id ? src.tasks.find((t) => t.task_id === m.resume_task_id) : undefined;
+    items.push({
+      id: `m:${m.message_id}`,
+      at: m.created_at,
+      type: "user",
+      source: "phone",
+      text: shown(m.body),
+      delivery: m.status,
+      queue: m.status === "en_cola" ? queue : null,
+      note: m.status === "no_retomado" ? (m.error ?? "no se pudo retomar") : null,
+      continuation: task?.session_id ?? null,
+    });
+  }
+  for (const m of src.resumedMessages ?? []) {
+    items.push({ id: `m:${m.message_id}:resumed`, at: m.created_at, type: "user", source: "phone", text: shown(m.body), delivery: "entregado", ...NO_DELIVERY });
   }
   for (const a of src.approvals) items.push({ id: `a:${a.approval_id}`, at: a.created_at, type: "approval", approval: toApprovalView(a, src.nowMs) });
   for (const t of src.tasks) if (t.session_id === src.sessionId) items.push(...fromTask(t));

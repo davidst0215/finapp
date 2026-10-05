@@ -114,7 +114,7 @@ export class MemoryStore implements Store {
       }
     }
     if (cutoffs.messages) {
-      for (const [id, m] of this.messages) if (m.user_id === userId && m.status !== "en_cola" && m.status !== "entregando" && m.created_at < cutoffs.messages) this.messages.delete(id);
+      for (const [id, m] of this.messages) if (m.user_id === userId && m.status !== "en_cola" && m.status !== "entregando" && m.status !== "retomando" && m.created_at < cutoffs.messages) this.messages.delete(id);
     }
     if (cutoffs.tasks) {
       for (const [id, t] of this.tasks) if (t.user_id === userId && t.finished_at !== null && t.finished_at < cutoffs.tasks) this.tasks.delete(id);
@@ -199,7 +199,7 @@ export class MemoryStore implements Store {
 
   async insertMessage(row: NewMessage) {
     if (!this.sessions.has(sessionKey(row.user_id, row.session_id))) throw new Error("FK: la sesión no existe");
-    const m: MessageRow = { ...row, status: "en_cola", claimed_at: null, delivered_at: null };
+    const m: MessageRow = { ...row, status: "en_cola", claimed_at: null, delivered_at: null, resume_task_id: null, error: null };
     this.messages.set(m.message_id, m);
     return { ...m };
   }
@@ -259,6 +259,45 @@ export class MemoryStore implements Store {
       .map((m) => ({ ...m }));
   }
 
+  // --- 014: retomar
+  async listStalledMessages(userId: string, deviceId: string, olderThanIso: string, nowIso: string, limit: number) {
+    return [...this.messages.values()]
+      .filter((m) => m.user_id === userId && m.device_id === deviceId && m.status === "en_cola" && m.body !== null && m.created_at <= olderThanIso && m.expires_at > nowIso)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at))
+      .slice(0, limit)
+      .map((m) => ({ ...m }));
+  }
+
+  async claimMessageForResume(userId: string, messageId: string, taskId: string) {
+    const m = this.messages.get(messageId);
+    if (!m || m.user_id !== userId || m.status !== "en_cola") return false;
+    m.status = "retomando";
+    m.resume_task_id = taskId;
+    return true;
+  }
+
+  async releaseResumeMessages(userId: string, taskId: string) {
+    for (const m of this.messages.values()) {
+      if (m.user_id === userId && m.status === "retomando" && m.resume_task_id === taskId) {
+        m.status = "en_cola";
+        m.resume_task_id = null;
+      }
+    }
+  }
+
+  async settleResumeMessages(userId: string, taskId: string, outcome: { ok: true; atIso: string } | { ok: false; error: string }) {
+    for (const m of this.messages.values()) {
+      if (m.user_id !== userId || m.status !== "retomando" || m.resume_task_id !== taskId) continue;
+      if (outcome.ok) {
+        m.status = "entregado";
+        m.delivered_at = outcome.atIso;
+      } else {
+        m.status = "no_retomado";
+        m.error = outcome.error;
+      }
+    }
+  }
+
   // --- v2: tareas
   async countQueuedTasks(userId: string, nowIso: string) {
     return [...this.tasks.values()].filter((t) => t.user_id === userId && t.status === "en_cola" && t.expires_at > nowIso).length;
@@ -267,6 +306,9 @@ export class MemoryStore implements Store {
   async insertTask(row: NewTask) {
     const t: TaskRow = {
       ...row,
+      kind: row.kind ?? "new",
+      resume_session_id: row.resume_session_id ?? null,
+      resume_cwd: row.resume_cwd ?? null,
       status: "en_cola",
       cancel_requested: false,
       session_id: null,
