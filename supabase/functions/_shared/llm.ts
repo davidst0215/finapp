@@ -14,9 +14,11 @@ const configurados = (Deno.env.get("LLM_PROVIDERS") ?? "")
   .split(",").map((p) => p.trim()).filter((p) => p && p !== "xiaomi");
 const PROVEEDORES = configurados.length ? configurados : ["deepinfra"];
 // Campos fijos de cada request: modelo, proveedor y sin razonamiento (latencia).
+// `only`: si los proveedores elegidos fallan, OpenRouter NO cae en otros que nadie revisó
+// (privacidad de los datos de David); falla y la app lo dice.
 export const LLM_BODY = {
   model: LLM_MODEL,
-  provider: { order: PROVEEDORES, ignore: ["xiaomi"] },
+  provider: { order: PROVEEDORES, only: PROVEEDORES, ignore: ["xiaomi"] },
   reasoning: { enabled: false },
 };
 

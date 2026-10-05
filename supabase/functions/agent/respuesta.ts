@@ -13,10 +13,17 @@ export function argumentos(call: ToolCall): Record<string, unknown> | null {
   }
 }
 
-/** true si no hay tool, los argumentos no se pueden leer o el texto a decir (`answer`) vino vacío. */
+// Rellenos que el modelo a veces escribe en vez de la respuesta.
+// "Revisando…" cuenta solo si es un muñón corto y sin cifras: "Revisando tus gastos: S/ 450…" es respuesta real.
+const RELLENO = /^(placeholder|respuesta|answer|todo|tbd|n\/?a|\.{2,}|…|(revisando|déjame (revisar|ver))[^\d\n:]{0,30}(\.{2,}|…)?)$/i;
+
+/** true si no hay tool, los argumentos no se pueden leer o el texto a decir (`answer`) vino vacío o es un relleno corto sin datos. */
 export function respuestaInservible(call: ToolCall): boolean {
   if (!call?.function?.name) return true;
   const args = argumentos(call);
   if (!args) return true;
-  return "answer" in args && (typeof args.answer !== "string" || args.answer.trim() === "");
+  if (!("answer" in args)) return false;
+  if (typeof args.answer !== "string") return true;
+  const texto = args.answer.trim();
+  return texto.length < 2 || RELLENO.test(texto);
 }
