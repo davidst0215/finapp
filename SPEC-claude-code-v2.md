@@ -41,5 +41,5 @@ Con modo ausente: CADA turno espera, sondeando cada 3 s, hasta `stop_wait_minute
 ## Límites / fuera de alcance
 - Un mensaje se entrega al siguiente Stop de esa sesión; no interrumpe a Claude a media tarea.
 - No se despliega ni se aplica la migración 012 (lo hace el hilo principal; migración antes que la función).
-- El runner no reanuda sesiones ni acepta preguntas interactivas (`AskUserQuestion` no existe sin host).
+- (Desde 014 el runner SÍ retoma sesiones con `--resume <id> --fork-session`; ver README, sección v4.) El runner no acepta preguntas interactivas (`AskUserQuestion` no existe sin host).
 - `--` antes del prompt no figura en la referencia oficial de la CLI (solo `claude -p "query"`): se usa por convención y se rechazan prompts que empiecen con `-`. Sin ejecutar `claude` real, no está comprobado de extremo a extremo.

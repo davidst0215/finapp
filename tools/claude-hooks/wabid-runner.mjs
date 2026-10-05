@@ -14,6 +14,9 @@
 //   - Una tarea a la vez, con tiempo máximo (30 min por defecto) y kill del árbol de procesos.
 //   - Sin shell: `spawn` con argumentos. El prompt entra por stdin (nunca como argumento: no hay interpolación
 //     y un prompt que empiece con "-" no puede pasar por flag).
+//   - Retomar (014): un mensaje del celular que quedó esperando a una sesión quieta o cerrada llega como tarea "resume".
+//     Se ejecuta `claude -p --resume <id> --fork-session`: continúa esa conversación en una sesión NUEVA (no choca con una
+//     terminal que siga abierta). La carpeta de la sesión debe estar DENTRO de un proyecto permitido de la allowlist local.
 //   - Nunca usa --dangerously-skip-permissions ni modos que salten permisos. Lo que la tarea pida pasa por el
 //     hook PermissionRequest de Wabid (tarjeta en el celular, con el modo ausente activo); sin respuesta, se deniega.
 //
@@ -33,6 +36,11 @@ export const DEFAULT_POLL_SECONDS = 10;
 // Topes por tarea (--max-turns / --max-budget-usd, ambos solo en modo -p). Conservadores; se suben en el json local.
 export const DEFAULT_MAX_TURNS = 40;
 export const DEFAULT_MAX_BUDGET_USD = 2;
+// Cuánto espera un mensaje del celular (con la sesión quieta/cerrada) antes de que el runner lo retome. Rango que acepta el servidor.
+export const DEFAULT_RESUME_AFTER_SECONDS = 60;
+// El prompt de retomar lleva siempre este encabezado: Claude sabe de dónde viene el mensaje y el texto nunca empieza con "-".
+export const RESUME_PROMPT_HEADER = "[Mensaje enviado desde el celular]";
+export const RESUME_REJECTED = "proyecto no autorizado en la laptop";
 // --permission-prompts none existe desde esta versión de Claude Code (docs: cli-reference).
 export const MIN_CLAUDE_VERSION = [2, 1, 259];
 // Si tras matar el proceso `close` no llega en este tiempo, se fuerza y se sigue con la siguiente tarea.
@@ -68,6 +76,8 @@ export function parseRunnerConfig(raw) {
     pollSeconds: DEFAULT_POLL_SECONDS,
     maxTurns: DEFAULT_MAX_TURNS,
     maxBudgetUsd: DEFAULT_MAX_BUDGET_USD,
+    resumeSessions: true,
+    resumeAfterSeconds: DEFAULT_RESUME_AFTER_SECONDS,
     problems: [],
   };
   let data;
@@ -94,12 +104,62 @@ export function parseRunnerConfig(raw) {
   out.maxBudgetUsd = clamp(data.maxBudgetUsd, 0.1, 50, DEFAULT_MAX_BUDGET_USD);
   out.maxMinutes = clamp(data.maxMinutes, 1, 120, DEFAULT_MAX_MINUTES);
   out.pollSeconds = clamp(data.pollSeconds, 3, 120, DEFAULT_POLL_SECONDS);
+  out.resumeSessions = data.resumeSessions !== false; // interruptor local: false = este runner no retoma sesiones
+  out.resumeAfterSeconds = Math.round(clamp(data.resumeAfterSeconds, 20, 3600, DEFAULT_RESUME_AFTER_SECONDS));
   return out;
 }
 
 // La allowlist: solo se resuelve lo que está EXACTAMENTE en el archivo. Map evita trucos como "__proto__".
 export function resolveProject(config, name) {
   return typeof name === "string" && config.projects.has(name) ? config.projects.get(name) : null;
+}
+
+// --- Carpeta de una sesión dentro de la allowlist (retomar) -------------------------------------------------------------
+// La carpeta viene del servidor (la reportó el hook, con el inicio recortado a "~"): NO es de confianza. Se expande, se
+// normaliza (.., barras, mayúsculas en Windows) y debe quedar igual o DENTRO de la ruta de algún proyecto permitido.
+export function expandHome(p, home = os.homedir()) {
+  if (typeof p !== "string") return null;
+  if (p === "~") return home;
+  if (p.startsWith("~/") || p.startsWith("~\\")) {
+    const join = /^[A-Za-z]:|^\\\\/.test(home) ? path.win32 : path.posix;
+    return join.join(home, p.slice(2));
+  }
+  return p;
+}
+
+// { win, norm } o null si la ruta no es absoluta o es de las formas especiales de Windows (\\?\, \\.\).
+function normalizeAbs(p) {
+  if (typeof p !== "string" || p.length === 0 || p.length > 1000 || p.includes("\u0000")) return null;
+  if (p.startsWith("\\\\?\\") || p.startsWith("\\\\.\\") || p.startsWith("//?/") || p.startsWith("//./")) return null;
+  if (/^[A-Za-z]:[\\/]/.test(p) || p.startsWith("\\\\")) return { win: true, norm: path.win32.resolve(p).toLowerCase() };
+  if (p.startsWith("/")) return { win: false, norm: path.posix.resolve(p) };
+  return null;
+}
+
+function isInside(child, parent) {
+  if (!child || !parent || child.win !== parent.win) return false;
+  const sep = child.win ? "\\" : "/";
+  const base = parent.norm.endsWith(sep) ? parent.norm : parent.norm + sep;
+  return child.norm === parent.norm || child.norm.startsWith(base);
+}
+
+// realpath en Windows puede devolver la forma extendida (\\?\C:\x, \\?\UNC\srv\share): es la MISMA carpeta. Solo para rutas ya
+// resueltas por el sistema; la cwd que llega del servidor con esa forma se sigue rechazando (normalizeAbs).
+export function stripExtendedPrefix(p) {
+  if (typeof p !== "string") return p;
+  if (/^\\\\\?\\UNC\\/i.test(p)) return "\\\\" + p.slice(8);
+  if (/^\\\\\?\\[A-Za-z]:\\/.test(p)) return p.slice(4);
+  return p;
+}
+
+// Devuelve { name, dir } del proyecto permitido que contiene `cwd`, o null. Solo lexical (el caso real se confirma con realpath).
+export function findProjectForCwd(config, cwd, home = os.homedir()) {
+  const target = normalizeAbs(expandHome(cwd, home));
+  if (!target) return null;
+  for (const [name, dir] of config.projects) {
+    if (isInside(target, normalizeAbs(dir))) return { name, dir };
+  }
+  return null;
 }
 
 // Un prompt que empieza con "-" se rechaza además de ir detrás de `--` (defensa en profundidad contra inyección de flags).
@@ -276,6 +336,29 @@ export function buildClaudeArgs({ sessionId, prompt, maxTurns = DEFAULT_MAX_TURN
   ];
 }
 
+// Retomar: igual que buildClaudeArgs pero `--resume <id> --fork-session` en lugar de `--session-id`. Verificado en
+// https://code.claude.com/docs/en/cli-reference (--resume por ID, --fork-session "crea un ID de sesión nuevo en lugar de reusar
+// el original"). El ID de la sesión nueva sale del evento system/init del stream. Sin --session-id (la doc no dice que se pueda
+// combinar con --resume). El texto del celular va tras `--`, con un encabezado fijo: nunca empieza con "-".
+export function buildResumeArgs({ resumeSessionId, prompt, maxTurns = DEFAULT_MAX_TURNS, maxBudgetUsd = DEFAULT_MAX_BUDGET_USD }) {
+  if (!UUID_RE.test(resumeSessionId)) throw new Error("la sesión a retomar debe ser un UUID");
+  if (typeof prompt !== "string" || prompt.length === 0) throw new Error("falta el prompt");
+  return [
+    "-p",
+    "--output-format", "stream-json",
+    "--verbose",
+    "--permission-mode", "default",
+    "--permission-prompts", "none",
+    "--setting-sources", "user",
+    "--max-turns", String(maxTurns),
+    "--max-budget-usd", String(maxBudgetUsd),
+    "--resume", resumeSessionId,
+    "--fork-session",
+    "--",
+    `${RESUME_PROMPT_HEADER}\n${prompt}`,
+  ];
+}
+
 // Devuelve { file, args } (args = prefijo, para `node cli.js`) o { error }. Sin shell: un .cmd/.bat no se puede lanzar.
 export function resolveClaudeCommand({ config, env = process.env, platform = process.platform, exists = existsSync } = {}) {
   const explicit = config && config.claudeCommand;
@@ -431,7 +514,13 @@ export async function runTask({
   let forced = false;
   let aborted = false;
 
-  const args = [...command.args, ...buildClaudeArgs({ sessionId, prompt: task.prompt, maxTurns, maxBudgetUsd })];
+  const isResume = task.kind === "resume";
+  const args = [
+    ...command.args,
+    ...(isResume
+      ? buildResumeArgs({ resumeSessionId: task.resume.session_id, prompt: task.prompt, maxTurns, maxBudgetUsd })
+      : buildClaudeArgs({ sessionId, prompt: task.prompt, maxTurns, maxBudgetUsd })),
+  ];
   const child = spawnImpl(command.file, args, {
     cwd,
     // WABID_RUNNER=1: el hook Stop de Wabid no espera mensajes dentro de esta sesión.
@@ -526,7 +615,8 @@ export async function runTask({
   if (buffered.trim()) tracker.feed(buffered);
   if (forced) await new Promise((r) => setTimeout(r, forceSettleMs));
 
-  const base = { sessionId: tracker.sessionId ?? sessionId, durationMs: Date.now() - startedAt };
+  // Al retomar, el ID de la sesión nueva lo decide claude (sale del stream); si no llegó a emitirlo no se inventa uno.
+  const base = { sessionId: tracker.sessionId ?? (isResume ? null : sessionId), durationMs: Date.now() - startedAt };
   if (forced) return { outcome: "fallida", error: `claude no terminó tras detenerlo (${Math.round(forceAfterMs / 1000)} s): se forzó el cierre`, ...base };
   if (aborted) return { outcome: "fallida", error: "El runner se detuvo (cierre de sesión o apagado)", ...base };
   if (cancelled) return { outcome: "cancelada", ...base };
@@ -553,12 +643,39 @@ export async function runTask({
 // ---------------------------------------------------------------------------------------------------------
 
 // Devuelve { cwd } o { error }. La ruta sale SOLO de la allowlist local.
-export function validateTask(task, config, { isDirectory = (p) => existsSync(p) && statSync(p).isDirectory() } = {}) {
+export function validateTask(task, config, { isDirectory = (p) => existsSync(p) && statSync(p).isDirectory(), realpath = (p) => realpathSync.native(p), home = os.homedir() } = {}) {
   if (!task || typeof task !== "object" || typeof task.id !== "string" || !UUID_RE.test(task.id)) return { error: "Tarea inválida" };
+  if (task.kind === "resume") return validateResumeTask(task, config, { isDirectory, realpath, home });
   const cwd = resolveProject(config, task.project);
   if (!cwd) return { error: "Proyecto fuera de la lista permitida de esta laptop" };
   if (!isValidPrompt(task.prompt)) return { error: "Prompt inválido (vacío, demasiado largo o empieza con «-»)" };
   if (!isDirectory(cwd)) return { error: "La carpeta del proyecto no existe en esta laptop" };
+  return { cwd };
+}
+
+// Retomar: la sesión debe ser un UUID, el prompt válido, y su carpeta (la que reportó el hook) debe estar DENTRO de un proyecto de
+// la allowlist local. Si no: "proyecto no autorizado en la laptop" (el servidor lo muestra en el chat). Devuelve { cwd } o { error }.
+export function validateResumeTask(task, config, { isDirectory, realpath, home }) {
+  const r = task.resume;
+  if (!config.resumeSessions) return { error: "esta laptop no retoma sesiones (resumeSessions: false)" };
+  if (!r || typeof r !== "object" || typeof r.session_id !== "string" || !UUID_RE.test(r.session_id)) return { error: "sesión a retomar inválida" };
+  // Aquí el "-" inicial no importa: el texto siempre va detrás de `--` y del encabezado fijo (buildResumeArgs).
+  if (typeof task.prompt !== "string" || task.prompt.trim().length < 1 || task.prompt.length > MAX_PROMPT_CHARS || task.prompt.includes("\u0000")) return { error: "mensaje inválido (vacío o demasiado largo)" };
+  const raw = typeof r.cwd === "string" ? r.cwd : "";
+  const match = findProjectForCwd(config, raw, home);
+  if (!match) return { error: RESUME_REJECTED };
+  // Se lanza con la ruta ya normalizada (sin `..` ni barras mezcladas): la que se validó es la que se usa.
+  const expanded = expandHome(raw, home);
+  const cwd = (normalizeAbs(expanded).win ? path.win32 : path.posix).resolve(expanded);
+  if (!isDirectory(cwd)) return { error: "la carpeta de la sesión ya no existe en esta laptop" };
+  // Enlaces simbólicos y junctions: la ruta real de la carpeta también debe quedar dentro de la ruta real del proyecto.
+  try {
+    const real = normalizeAbs(stripExtendedPrefix(realpath(cwd)));
+    const root = normalizeAbs(stripExtendedPrefix(realpath(match.dir)));
+    if (!isInside(real, root)) return { error: RESUME_REJECTED };
+  } catch {
+    return { error: "la carpeta de la sesión ya no existe en esta laptop" };
+  }
   return { cwd };
 }
 
@@ -672,7 +789,7 @@ export async function runnerLoop({ config, getConfig = () => config, hookConfig,
     const cfg = getConfig();
     let task = null;
     try {
-      const res = await api(hookConfig, fetchImpl, "POST", "/device/tasks/next", { projects: [...cfg.projects.keys()] }, 8000);
+      const res = await api(hookConfig, fetchImpl, "POST", "/device/tasks/next", { projects: [...cfg.projects.keys()], resume: cfg.resumeSessions, resume_after_seconds: cfg.resumeAfterSeconds }, 8000);
       task = res && res.task ? res.task : null;
       failures = 0;
     } catch (e) {
@@ -749,6 +866,7 @@ async function main() {
     if (!v.ok) process.exitCode = 1;
     console.log(`Proyectos permitidos: ${[...config.projects.keys()].join(", ") || "(ninguno)"}`);
     console.log(`Topes por tarea: ${config.maxMinutes} min · ${config.maxTurns} turnos · US$ ${config.maxBudgetUsd}`);
+    console.log(config.resumeSessions ? `Retomar sesiones quietas: sí, tras ${config.resumeAfterSeconds} s en cola (solo carpetas dentro de los proyectos permitidos)` : "Retomar sesiones quietas: NO (resumeSessions: false)");
     return;
   }
   if (cmd !== undefined && cmd !== "run") return void (process.exitCode = 1, console.error("Comandos: run (por defecto), list, add, remove, check"));

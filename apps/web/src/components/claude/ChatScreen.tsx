@@ -28,13 +28,15 @@ interface Props {
   working?: boolean;
   empty: React.ReactNode;
   footer: React.ReactNode;
+  /** Aviso fijo arriba de la conversación (p. ej. «continuación de …»). */
+  banner?: React.ReactNode;
 }
 
 const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 // Pantalla de chat: encabezado, línea de tiempo con auto-scroll y compositor fijo abajo. Cubre toda la pantalla (incluida la
 // barra de pestañas), como cualquier app de mensajes; el botón atrás del sistema vuelve a la lista.
-export function ChatScreen({ title, subtitle, tone, onBack, headerRight, rows, fetchedAt, onDecide, loading, error, onRetry, hasMore, onLoadOlder, working, empty, footer }: Props) {
+export function ChatScreen({ title, subtitle, tone, onBack, headerRight, rows, fetchedAt, onDecide, loading, error, onRetry, hasMore, onLoadOlder, working, empty, footer, banner }: Props) {
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const lastKey = useRef<string | null>(null);
@@ -82,6 +84,7 @@ export function ChatScreen({ title, subtitle, tone, onBack, headerRight, rows, f
     <ScreenShell title={title} subtitle={subtitle} tone={tone} onBack={onBack} headerRight={headerRight} footer={footer}>
         <div className="relative min-h-0 flex-1">
           <div ref={scroller} onScroll={onScroll} role="log" aria-label="Conversación" aria-live="polite" className="h-full overflow-y-auto overscroll-contain px-3 pb-3 pt-1">
+            {banner}
             {hasMore && onLoadOlder && (
               <div className="flex justify-center pt-2">
                 <button type="button" onClick={onLoadOlder} className="min-h-[44px] rounded-full px-4 text-[14px] font-semibold text-slate-300 active:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500">

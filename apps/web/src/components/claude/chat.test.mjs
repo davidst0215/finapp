@@ -2,7 +2,7 @@
 // Lista de conversaciones y filas del chat (lo puro de la pestaña Claude Code como chat).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildRows, deliveryOf, taskTimeline } from "./chatModel.ts";
+import { buildRows, deliveryLine, deliveryOf, taskTimeline } from "./chatModel.ts";
 import { buildConversations, laptopLine, sessionStatus, taskConversationStatus } from "./conversations.ts";
 
 const NOW = Date.parse("2026-10-04T19:30:00.000Z"); // 14:30 en Lima
@@ -175,4 +175,47 @@ test("taskTimeline: el encargo de David y cómo va, para una tarea sin sesión",
   assert.deepEqual(failed.map((i) => (i.type === "system" ? i.text : i.type)), ["user", "claude", "Tu laptop no aceptó la tarea"]);
   const done = taskTimeline(task({ status: "terminada", result: "Listo.", started_at: ago(90), finished_at: ago(5) }));
   assert.deepEqual(done.map((i) => i.type), ["user", "system", "claude", "system"]);
+});
+
+// --- 014: estados de un mensaje en cola ------------------------------------------------------------------------------------------
+
+const phone = (delivery, over = {}) => ({ id: "m", at: ago(5), type: "user", source: "phone", text: "Sí hazlo", delivery, ...over });
+
+test("deliveryLine: un mensaje en cola dice por qué espera según la sesión", () => {
+  assert.equal(deliveryLine(phone("en_cola", { queue: "turn" })).label, "En cola: se entrega cuando Claude termine su turno");
+  assert.equal(deliveryLine(phone("en_cola", { queue: "idle_runner" })).label, "Claude está quieto: lo retomo en la laptop…");
+  assert.equal(deliveryLine(phone("retomando")).label, "Claude está quieto: lo retomo en la laptop…");
+  assert.match(deliveryLine(phone("en_cola", { queue: "idle_no_runner" })).label, /runner de la laptop no está conectado/);
+  assert.equal(deliveryLine(phone("en_cola")).label, "En cola", "mensaje recién enviado, antes de que el servidor diga por qué");
+  assert.equal(deliveryLine(phone("entregando")).label, "Entregando…");
+});
+
+test("deliveryLine: retomado enlaza la sesión nueva; si no se pudo retomar es una alarma con el motivo", () => {
+  const done = deliveryLine(phone("entregado", { continuation: "nueva" }));
+  assert.deepEqual([done.label, done.ticks, done.continuation, done.alert], ["Retomado en la laptop", 2, "nueva", false]);
+  assert.equal(deliveryLine(phone("entregado")).continuation, null, "entregado por el hook Stop: sin enlace");
+  const bad = deliveryLine(phone("no_retomado", { note: "proyecto no autorizado en la laptop" }));
+  assert.deepEqual([bad.label, bad.alert, bad.ticks], ["No se puede retomar: proyecto no autorizado en la laptop", true, 0]);
+  assert.match(deliveryLine(phone("no_retomado")).label, /^No se puede retomar: /);
+  assert.equal(deliveryLine({ ...phone("entregado"), source: "laptop" }), null);
+});
+
+test("buildConversations: retomar no crea filas de tarea ni marca la sesión nueva como tarea", () => {
+  const list = buildConversations(
+    {
+      now: ago(0), devices: [], pending: [], recent: [], messages: [],
+      sessions: [session({ id: "nueva", continued_from: "s1" })],
+      tasks: [
+        { id: "t1", kind: "resume", project: "finapp", prompt: "x", status: "terminada", cancel_requested: false, session_id: "nueva", progress: null, result: "ok", error: null, created_at: ago(60), started_at: ago(50), finished_at: ago(10) },
+        { id: "t2", kind: "resume", project: "finapp", prompt: "y", status: "rechazada", cancel_requested: false, session_id: null, progress: null, result: null, error: "no", created_at: ago(60), started_at: null, finished_at: ago(10) },
+      ],
+    },
+    NOW,
+  );
+  assert.deepEqual(list.map((c) => [c.key, c.isTask]), [["s:nueva", false]]);
+});
+
+test("deliveryLine: retomado con error enlaza la continuación y avisa en rojo (no es 'no se pudo retomar')", () => {
+  const l = deliveryLine(phone("entregado", { continuation: "nueva", note: "Claude terminó con error: error_max_turns" }));
+  assert.deepEqual([l.label, l.alert, l.continuation, l.ticks], ["Retomado con error: Claude terminó con error: error_max_turns", true, "nueva", 2]);
 });

@@ -32,7 +32,7 @@ const task = (over: Partial<TaskRow>): TaskRow => ({
   updated_at: iso(9), finished_at: iso(9), ...over,
 });
 const build = (src: Partial<Parameters<typeof buildTimeline>[0]>, limit = 60) =>
-  buildTimeline({ sessionId: "s", events: [], messages: [], approvals: [], tasks: [], nowMs: T0 + 30_000, ...src }, limit);
+  buildTimeline({ sessionId: "s", session: { status: "esperando", ended_at: null }, runnerOnline: false, events: [], messages: [], approvals: [], tasks: [], nowMs: T0 + 30_000, ...src }, limit);
 
 // --- Línea de tiempo (pura) ----------------------------------------------------------------------------------------
 

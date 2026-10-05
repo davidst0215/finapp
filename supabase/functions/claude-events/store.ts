@@ -52,6 +52,10 @@ export interface NewTask {
   prompt: string;
   created_at: string;
   expires_at: string;
+  /** 014: tarea de retomar una sesión. Sin `kind` es una tarea nueva. */
+  kind?: "new" | "resume";
+  resume_session_id?: string | null;
+  resume_cwd?: string | null;
 }
 
 /** Campos que el runner o la app pueden cambiar en una tarea. */
@@ -147,6 +151,24 @@ export interface Store {
   listMessages(userId: string, limit: number): Promise<MessageRow[]>;
   /** Más recientes primero, CON texto (013): solo para la línea de tiempo de una sesión; nunca va a la vista general. */
   listSessionMessages(userId: string, sessionId: string, limit: number): Promise<MessageRow[]>;
+
+  // --- 014: retomar sesiones quietas con el runner -----------------------------------------------------------
+  /** Mensajes 'en_cola' del dispositivo creados antes de `olderThanIso` y sin vencer, con texto, los más viejos primero. */
+  listStalledMessages(userId: string, deviceId: string, olderThanIso: string, nowIso: string, limit: number): Promise<MessageRow[]>;
+  /**
+   * Reclamo atómico para retomar: 'en_cola' -> 'retomando' (UPDATE condicional status = 'en_cola') y guarda la tarea que lo lleva.
+   * false si otro lo tomó antes (el hook Stop lo entregó o lo reclamó, o venció): ese mensaje NO se retoma.
+   */
+  claimMessageForResume(userId: string, messageId: string, taskId: string, nowIso: string): Promise<boolean>;
+  /** La tarea no se pudo crear: sus mensajes 'retomando' vuelven a 'en_cola'. */
+  releaseResumeMessages(userId: string, taskId: string): Promise<void>;
+  /**
+   * La tarea terminó: sus mensajes 'retomando' pasan a 'entregado' (ok; con `error` si la continuación se abrió pero terminó mal)
+   * o a 'no_retomado' (con el motivo).
+   */
+  settleResumeMessages(userId: string, taskId: string, outcome: { ok: true; atIso: string; error?: string } | { ok: false; error: string }): Promise<void>;
+  /** Mensajes 'retomando' reclamados antes de `claimedBeforeIso`: candidatos a huérfanos (la función murió antes de crear la tarea, o la tarea ya terminó). */
+  listStaleResumeMessages(userId: string, claimedBeforeIso: string): Promise<MessageRow[]>;
 
   // --- v2 (012): tareas --------------------------------------------------------------------------------------
   countQueuedTasks(userId: string, nowIso: string): Promise<number>;

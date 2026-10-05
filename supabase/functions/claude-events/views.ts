@@ -41,6 +41,7 @@ export const toSessionView = (s: SessionRow): SessionView => ({
   started_at: s.started_at,
   last_event_at: s.last_event_at,
   ended_at: s.ended_at,
+  continued_from: s.continued_from ?? null,
 });
 
 export const toEventView = (e: EventRow): EventView => ({
@@ -72,10 +73,12 @@ export const toMessageView = (m: MessageRow): MessageView => ({
   status: m.status,
   created_at: m.created_at,
   delivered_at: m.delivered_at,
+  error: m.error ?? null,
 });
 
 export const toTaskView = (t: TaskRow): TaskView => ({
   id: t.task_id,
+  kind: t.kind ?? "new",
   project: t.project,
   prompt: t.prompt,
   status: t.status,

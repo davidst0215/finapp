@@ -4,6 +4,8 @@
 import { dayLabel } from './format.ts'; // con extensión: estas pruebas corren en Node sin compilar
 import type { MessageStatus, TaskView, TimelineItem } from './types';
 
+type UserItem = Extract<TimelineItem, { type: 'user' }>;
+
 export type Side = 'user' | 'claude';
 
 export type Row =
@@ -47,10 +49,50 @@ const MESSAGE_TICKS: Record<MessageStatus, { label: string; ticks: 0 | 1 | 2 }> 
   entregando: { label: 'Entregando…', ticks: 1 },
   entregado: { label: 'Entregado', ticks: 2 },
   vencido: { label: 'No se entregó', ticks: 0 },
+  retomando: { label: 'Retomando…', ticks: 1 },
+  no_retomado: { label: 'No se pudo retomar', ticks: 0 },
 };
 
 /** Estado de entrega estilo ticks: un tick = salió del celular, dos = Claude lo recibió. */
 export const deliveryOf = (status: MessageStatus) => MESSAGE_TICKS[status];
+
+export interface DeliveryLine {
+  label: string;
+  ticks: 0 | 1 | 2;
+  /** Algo salió mal y David debe saberlo (rojo de alarma). */
+  alert: boolean;
+  /** Entregado por el runner: la conversación sigue en esa sesión nueva. */
+  continuation: string | null;
+}
+
+/**
+ * Lo que se dice bajo un mensaje enviado desde el celular. Un mensaje en cola explica POR QUÉ espera, según la sesión:
+ *  - Claude trabaja: se entrega al terminar su turno (hook Stop).
+ *  - Claude quieto y el runner de la laptop conectado: lo retoma en una sesión nueva.
+ *  - Claude quieto y sin runner: solo se entrega si la sesión vuelve a trabajar.
+ */
+export function deliveryLine(item: UserItem): DeliveryLine | null {
+  if (item.source !== 'phone' || !item.delivery) return null;
+  const base = deliveryOf(item.delivery);
+  const line = (label: string, over: Partial<DeliveryLine> = {}): DeliveryLine => ({ label, ticks: base.ticks, alert: false, continuation: null, ...over });
+  switch (item.delivery) {
+    case 'en_cola':
+      if (item.queue === 'turn') return line('En cola: se entrega cuando Claude termine su turno');
+      if (item.queue === 'idle_runner') return line('Claude está quieto: lo retomo en la laptop…');
+      if (item.queue === 'idle_no_runner') return line('En cola: Claude está quieto y el runner de la laptop no está conectado');
+      return line(base.label);
+    case 'retomando':
+      return line('Claude está quieto: lo retomo en la laptop…');
+    case 'entregado':
+      // Retomado pero la continuación terminó mal (tope de turnos o de gasto): Claude sí leyó el mensaje; se avisa y se enlaza.
+      if (item.continuation && item.note) return line(`Retomado con error: ${item.note}`, { continuation: item.continuation, alert: true });
+      return item.continuation ? line('Retomado en la laptop', { continuation: item.continuation }) : line(base.label);
+    case 'no_retomado':
+      return line(`No se puede retomar: ${item.note || 'la laptop no pudo abrir la sesión'}`, { alert: true });
+    default:
+      return line(base.label);
+  }
+}
 
 /**
  * Conversación de una tarea que todavía no abrió sesión (en cola, rechazada, vencida): el encargo de David y cómo va.
