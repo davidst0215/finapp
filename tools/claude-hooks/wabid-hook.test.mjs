@@ -390,12 +390,12 @@ const permissionInput = (extra = {}) =>
 
 test("runHook: un evento normal se envía con el token en la cabecera propia y no imprime nada", async () => {
   const { fetchImpl, calls } = makeFetch({ "POST /device/events": { body: { ok: true } } });
-  const out = await hook.runHook({ raw: JSON.stringify({ ...base, hook_event_name: "Stop", last_assistant_message: "listo" }), config: CONFIG, fetchImpl, home: HOME, ...fakeClock() });
+  const out = await hook.runHook({ raw: JSON.stringify({ ...base, hook_event_name: "Notification", notification_type: "idle_prompt", message: "te espero" }), config: CONFIG, fetchImpl, home: HOME, ...fakeClock() });
   assert.equal(out, null, "SessionStart y otros eventos inyectan stdout como contexto de Claude: no se puede imprimir nada");
   assert.equal(calls.length, 1);
   assert.equal(calls[0].init.headers["x-wabid-device-token"], DEVICE_TOKEN);
   assert.equal(calls[0].init.redirect, "error", "no seguir redirecciones con el token en la cabecera");
-  assert.equal(calls[0].body.type, "stop");
+  assert.equal(calls[0].body.type, "notification");
   assert.ok(!JSON.stringify(calls[0].body).includes(DEVICE_TOKEN), "el token solo va en la cabecera");
 });
 

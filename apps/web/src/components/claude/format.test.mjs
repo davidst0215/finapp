@@ -2,7 +2,7 @@
 // Es .mjs a propósito: `tsc -b` no incluye .mjs, así que no necesita @types/node en la app web.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { countdown, describeSession, limaClock, limaDayClock, timeAgo, toolLabel } from "./format.ts";
+import { countdown, describeSession, isTaskActive, limaClock, limaDayClock, messageStatusLabel, taskDuration, taskStatusLabel, timeAgo, toolLabel } from "./format.ts";
 
 const NOW = Date.parse("2026-10-04T19:30:00.000Z"); // 14:30 en Lima
 
@@ -71,4 +71,22 @@ test("una sesión sin señal por más de 6 h ya no figura como trabajando", () =
   assert.deepEqual(describeSession(old, undefined, NOW), { tone: "stale", text: "Sin actividad desde 05:00" });
   assert.equal(describeSession({ ...old, status: "esperando" }, undefined, NOW).tone, "stale");
   assert.equal(describeSession({ ...old, status: "error" }, undefined, NOW).tone, "error", "una falla no se disfraza de inactividad");
+});
+
+test("taskDuration: segundos, minutos y horas; viva cuenta hasta ahora; sin inicio, vacío", () => {
+  const at = (ms) => new Date(NOW - ms).toISOString();
+  assert.equal(taskDuration({ started_at: null, finished_at: null }, NOW), "");
+  assert.equal(taskDuration({ started_at: at(45_000), finished_at: null }, NOW), "45 s");
+  assert.equal(taskDuration({ started_at: at(10 * 60_000), finished_at: at(7 * 60_000) }, NOW), "3 min");
+  assert.equal(taskDuration({ started_at: at(65 * 60_000), finished_at: null }, NOW), "1 h 05 min");
+});
+
+test("etiquetas de estado y tareas vivas", () => {
+  assert.equal(messageStatusLabel("en_cola"), "En cola");
+  assert.equal(messageStatusLabel("vencido"), "Vencido");
+  assert.equal(messageStatusLabel("entregando"), "Entregando…");
+  assert.equal(taskStatusLabel("rechazada"), "Rechazada por la laptop");
+  assert.equal(isTaskActive("ejecutando"), true);
+  assert.equal(isTaskActive("en_cola"), true);
+  assert.equal(isTaskActive("terminada"), false);
 });

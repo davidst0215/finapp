@@ -3,6 +3,7 @@ import { Terminal, TriangleAlert } from 'lucide-react';
 import { Spinner } from '@/components/ui/Spinner';
 import { LaptopsCard } from '@/components/claude/LaptopsCard';
 import { PairDevicePanel } from '@/components/claude/PairDevicePanel';
+import { NewTaskCard } from '@/components/claude/NewTaskCard';
 import { PermissionCard } from '@/components/claude/PermissionCard';
 import { RecentApprovals } from '@/components/claude/RecentApprovals';
 import { SessionsCard } from '@/components/claude/SessionsCard';
@@ -20,7 +21,7 @@ function statusLine(devices: DeviceView[], now: number): string {
 }
 
 export function ClaudeCodePage() {
-  const { overview, fetchedAt, error, loading, refresh, decide, setApprovals, revoke, pair } = useClaudeOverview();
+  const { overview, fetchedAt, error, loading, refresh, decide, setApprovals, revoke, pair, sendMessage, createTask, cancelTask } = useClaudeOverview();
   const [connecting, setConnecting] = useState(false);
   const now = useNow(30_000);
 
@@ -89,7 +90,14 @@ export function ClaudeCodePage() {
             onRevoke={(id) => void revoke(id)}
             onConnect={() => setConnecting(true)}
           />
-          <SessionsCard sessions={overview?.sessions ?? []} pendingBySession={pendingBySession} now={now} />
+          <SessionsCard
+            sessions={overview?.sessions ?? []}
+            pendingBySession={pendingBySession}
+            now={now}
+            messages={overview?.messages ?? []}
+            onSend={sendMessage}
+          />
+          <NewTaskCard devices={devices} tasks={overview?.tasks ?? []} now={now} onCreate={createTask} onCancel={(id) => void cancelTask(id)} />
           <RecentApprovals approvals={overview?.recent ?? []} now={now} />
         </>
       )}

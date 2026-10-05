@@ -6,8 +6,9 @@
 // Por eso cada ruta se autentica sola (ver handlers.ts):
 //   /device/*  cabecera x-wabid-device-token, comparada contra su hash SHA-256
 //   /ui/*      JWT del usuario vía requireUser
-// No usa secretos nuevos: SUPABASE_URL, SUPABASE_ANON_KEY y SUPABASE_SERVICE_ROLE_KEY los inyecta la plataforma.
+// Secretos: SUPABASE_URL, SUPABASE_ANON_KEY y SUPABASE_SERVICE_ROLE_KEY los inyecta la plataforma; WABID_OWNER_ID ya existe (brief, fathom).
 //
+// v2 (012): mensajes al celular -> sesión y tareas desde el celular exigen WABID_OWNER_ID (ver SPEC-claude-code-v2.md).
 // Contrato completo: tools/claude-hooks/README.md y handlers.ts.
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
@@ -44,6 +45,8 @@ Deno.serve(async (req: Request) => {
       },
       randomUUID: () => crypto.randomUUID(),
       publicUrl: `${Deno.env.get("SUPABASE_URL") ?? ""}/functions/v1/claude-events`,
+      // v2: solo el dueño puede escribirle a una sesión o lanzar tareas (secreto ya usado por brief y fathom).
+      ownerId: Deno.env.get("WABID_OWNER_ID") ?? null,
     },
   );
   return json(result.body, result.status);

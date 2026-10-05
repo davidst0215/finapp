@@ -333,4 +333,152 @@ export function defineStoreContract(label: string, make: () => Promise<StoreFixt
     assert.equal(await f.store.getSession(U1, "s"), null);
     assert.ok(await f.store.getSession(U2, "s"));
   });
+
+  // --- v2 (012): mensajes
+
+  const msg = (userId: string, deviceId: string, sessionId: string, body: string, createdSec: number, ttlSec = 3600) => ({
+    message_id: crypto.randomUUID(),
+    user_id: userId,
+    session_id: sessionId,
+    device_id: deviceId,
+    body,
+    created_at: iso(createdSec),
+    expires_at: iso(createdSec + ttlSec),
+  });
+
+  T("mensajes: se reclaman en orden, una sola vez; el texto se borra solo al confirmar (ack)", async (f) => {
+    const d = await withSession(f);
+    await f.store.insertMessage(msg(U1, d.device_id, "s1", "primero", 0));
+    await f.store.insertMessage(msg(U1, d.device_id, "s1", "segundo", 1));
+    assert.equal(await f.store.countQueuedMessages(U1, "s1", iso(2)), 2);
+    const a = await f.store.claimNextMessage(U1, "s1", iso(2));
+    assert.equal(a?.text, "primero");
+    const b = await f.store.claimNextMessage(U1, "s1", iso(3));
+    assert.equal(b?.text, "segundo");
+    assert.equal(await f.store.claimNextMessage(U1, "s1", iso(4)), null, "no hay entrega doble");
+    assert.deepEqual((await f.store.listMessages(U1, 10)).map((m) => m.status), ["entregando", "entregando"]);
+    assert.equal(await f.store.countQueuedMessages(U1, "s1", iso(4)), 2, "entregando sigue contando contra el tope");
+    assert.equal(await f.store.ackMessage(U1, a!.messageId, d.device_id, iso(5)), true);
+    assert.equal(await f.store.ackMessage(U1, a!.messageId, d.device_id, iso(6)), false, "el ack no se repite");
+    const other = await newDevice(f, U1, "otra");
+    assert.equal(await f.store.ackMessage(U1, b!.messageId, other.device_id, iso(6)), false, "otro dispositivo no confirma");
+    const listed = await f.store.listMessages(U1, 10);
+    assert.deepEqual(listed.map((m) => m.status).sort(), ["entregado", "entregando"]);
+    assert.ok(listed.every((m) => m.body === null), "el texto nunca sale de listMessages");
+  });
+
+  T("mensajes: un reclamo sin ack vuelve a la cola pasado el plazo y se puede reclamar otra vez", async (f) => {
+    const d = await withSession(f);
+    await f.store.insertMessage(msg(U1, d.device_id, "s1", "uno", 0));
+    assert.equal((await f.store.claimNextMessage(U1, "s1", iso(1)))?.text, "uno");
+    await f.store.requeueStaleMessages(U1, iso(0));
+    assert.equal(await f.store.claimNextMessage(U1, "s1", iso(2)), null, "aún no es viejo");
+    await f.store.requeueStaleMessages(U1, iso(30));
+    assert.equal((await f.store.claimNextMessage(U1, "s1", iso(31)))?.text, "uno");
+  });
+
+  T("mensajes: dos reclamos simultáneos entregan el texto una sola vez", async (f) => {
+    const d = await withSession(f);
+    await f.store.insertMessage(msg(U1, d.device_id, "s1", "uno", 0));
+    const results = await Promise.all([f.store.claimNextMessage(U1, "s1", iso(1)), f.store.claimNextMessage(U1, "s1", iso(1))]);
+    assert.equal(results.filter((r) => r !== null).length, 1);
+  });
+
+  T("mensajes: no se reclaman los ajenos, los de otra sesión ni los vencidos; vencer borra el texto", async (f) => {
+    const d = await withSession(f);
+    await f.store.saveSession(session(U1, d.device_id, "s2"));
+    await f.store.insertMessage(msg(U1, d.device_id, "s1", "de s1", 0, 60));
+    assert.equal(await f.store.claimNextMessage(U1, "s2", iso(1)), null);
+    await f.seedUser(U2);
+    assert.equal(await f.store.claimNextMessage(U2, "s1", iso(1)), null);
+    assert.equal(await f.store.claimNextMessage(U1, "s1", iso(61)), null, "vencido");
+    await f.store.expireMessages(U1, iso(61));
+    assert.equal((await f.store.listMessages(U1, 10))[0]!.status, "vencido");
+    assert.equal(await f.store.countQueuedMessages(U1, "s1", iso(61)), 0);
+  });
+
+  T("mensajes: prune borra los entregados viejos y deja los que siguen en cola", async (f) => {
+    const d = await withSession(f);
+    await f.store.insertMessage(msg(U1, d.device_id, "s1", "viejo", -1000, 100000));
+    const claimed = await f.store.claimNextMessage(U1, "s1", iso(0));
+    await f.store.ackMessage(U1, claimed!.messageId, d.device_id, iso(1));
+    const pending = await f.store.insertMessage(msg(U1, d.device_id, "s1", "en cola", -900, 100000));
+    await f.store.prune(U1, { events: iso(-5000), approvals: iso(-5000), sessions: iso(-5000), messages: iso(-100), tasks: iso(-100) });
+    assert.deepEqual((await f.store.listMessages(U1, 10)).map((m) => m.message_id), [pending.message_id]);
+  });
+
+  // --- v2 (012): tareas
+
+  const task = (userId: string, deviceId: string, project: string, createdSec: number, ttlSec = 3600) => ({
+    task_id: crypto.randomUUID(),
+    user_id: userId,
+    device_id: deviceId,
+    project,
+    prompt: `haz algo en ${project}`,
+    created_at: iso(createdSec),
+    expires_at: iso(createdSec + ttlSec),
+  });
+
+  T("tareas: claimNextTask reclama la más antigua del dispositivo una sola vez", async (f) => {
+    const d = await newDevice(f);
+    const other = await newDevice(f, U1, "Otra");
+    const a = await f.store.insertTask(task(U1, d.device_id, "a", 0));
+    await f.store.insertTask(task(U1, d.device_id, "b", 1));
+    await f.store.insertTask(task(U1, other.device_id, "c", -5));
+    const claimed = await f.store.claimNextTask(U1, d.device_id, iso(2));
+    assert.equal(claimed!.task_id, a.task_id);
+    assert.equal(claimed!.status, "ejecutando");
+    same(claimed!.started_at, iso(2));
+    assert.equal(await f.store.claimNextTask(U1, d.device_id, iso(3)), null, "una sola ejecutándose por dispositivo");
+    await f.store.updateTask(U1, claimed!.task_id, { status: "terminada", finished_at: iso(3) }, ["ejecutando"]);
+    assert.equal((await f.store.claimNextTask(U1, d.device_id, iso(4)))!.project, "b");
+    assert.equal(await f.store.claimNextTask(U1, d.device_id, iso(5)), null);
+  });
+
+  T("tareas: dos reclamos simultáneos no entregan la misma tarea", async (f) => {
+    const d = await newDevice(f);
+    await f.store.insertTask(task(U1, d.device_id, "a", 0));
+    const results = await Promise.all([f.store.claimNextTask(U1, d.device_id, iso(1)), f.store.claimNextTask(U1, d.device_id, iso(1))]);
+    assert.equal(results.filter((r) => r !== null).length, 1);
+  });
+
+  T("tareas: updateTask solo transiciona desde los estados permitidos y no toca las de otro usuario", async (f) => {
+    const d = await newDevice(f);
+    const t = await f.store.insertTask(task(U1, d.device_id, "a", 0));
+    assert.equal(await f.store.updateTask(U1, t.task_id, { status: "terminada", finished_at: iso(5) }, ["ejecutando"]), null, "en cola no termina");
+    const c = await f.store.updateTask(U1, t.task_id, { status: "cancelada", finished_at: iso(5) }, ["en_cola"]);
+    assert.equal(c!.status, "cancelada");
+    await f.seedUser(U2);
+    assert.equal(await f.store.updateTask(U2, t.task_id, { cancel_requested: true }, ["cancelada"]), null);
+  });
+
+  T("tareas: sweepTasks vence las no reclamadas y falla las que perdieron el latido", async (f) => {
+    const d = await newDevice(f);
+    const old = await f.store.insertTask(task(U1, d.device_id, "vieja", 0, 60));
+    const run = await f.store.insertTask(task(U1, d.device_id, "corriendo", 100, 3600));
+    await f.store.claimNextTask(U1, d.device_id, iso(100));
+    const changed = await f.store.sweepTasks(U1, d.device_id, iso(1000), iso(900));
+    assert.deepEqual(changed.map((t) => t.status).sort(), ["fallida", "vencida"], "devuelve las filas que cambió");
+    assert.equal((await f.store.findTask(U1, old.task_id))!.status, "vencida");
+    const swept = await f.store.findTask(U1, run.task_id);
+    assert.equal(swept!.status, "fallida");
+    assert.ok(swept!.finished_at);
+  });
+
+  T("tareas: prune borra las terminadas viejas y no las vivas", async (f) => {
+    const d = await newDevice(f);
+    const done = await f.store.insertTask(task(U1, d.device_id, "hecha", -1000));
+    await f.store.updateTask(U1, done.task_id, { status: "cancelada", finished_at: iso(-900) }, ["en_cola"]);
+    const live = await f.store.insertTask(task(U1, d.device_id, "viva", -1000, 100000));
+    await f.store.prune(U1, { events: iso(-5000), approvals: iso(-5000), sessions: iso(-5000), messages: iso(-100), tasks: iso(-100) });
+    assert.deepEqual((await f.store.listTasks(U1, 10)).map((t) => t.task_id), [live.task_id]);
+  });
+
+  T("runner: setRunnerState guarda los nombres y el último contacto", async (f) => {
+    const d = await newDevice(f);
+    await f.store.setRunnerState(d.device_id, ["finapp", "vera"], iso(5));
+    const found = await f.store.findDevice(d.device_id);
+    assert.deepEqual(found!.runner_projects, ["finapp", "vera"]);
+    same(found!.runner_seen_at, iso(5));
+  });
 }

@@ -1,4 +1,4 @@
-import type { ApprovalView, EventKind, SessionView } from './types';
+import type { ApprovalView, EventKind, MessageStatus, SessionView, TaskStatus, TaskView } from './types';
 
 // Todo se muestra en hora de Lima (UTC-5): el celular de David puede cambiar de zona al viajar.
 const TZ = 'America/Lima';
@@ -99,3 +99,31 @@ const EVENT_WORDS: Record<EventKind, string> = {
 };
 
 export const eventWord = (kind: EventKind) => EVENT_WORDS[kind];
+
+const MESSAGE_LABELS: Record<MessageStatus, string> = { en_cola: 'En cola', entregando: 'Entregando…', entregado: 'Entregado', vencido: 'Vencido' };
+export const messageStatusLabel = (status: MessageStatus) => MESSAGE_LABELS[status];
+
+const TASK_LABELS: Record<TaskStatus, string> = {
+  en_cola: 'En cola',
+  ejecutando: 'Ejecutando',
+  terminada: 'Terminada',
+  fallida: 'Fallida',
+  cancelada: 'Cancelada',
+  rechazada: 'Rechazada por la laptop',
+  vencida: 'Venció sin ejecutarse',
+};
+export const taskStatusLabel = (status: TaskStatus) => TASK_LABELS[status];
+
+/** Una tarea sigue viva (se puede cancelar) mientras esté en cola o ejecutándose. */
+export const isTaskActive = (status: TaskStatus) => status === 'en_cola' || status === 'ejecutando';
+
+/** "45 s" · "3 min" · "1 h 05 min". Vacío si aún no empezó. Una tarea viva cuenta hasta `nowMs`. */
+export function taskDuration(task: Pick<TaskView, 'started_at' | 'finished_at'>, nowMs: number): string {
+  if (!task.started_at) return '';
+  const end = task.finished_at ? Date.parse(task.finished_at) : nowMs;
+  const sec = Math.max(0, Math.round((end - Date.parse(task.started_at)) / 1000));
+  if (sec < 60) return `${sec} s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} min`;
+  return `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, '0')} min`;
+}
