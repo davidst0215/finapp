@@ -1,6 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type User } from "jsr:@supabase/supabase-js@2";
-import { llmConfigured, llmConRespaldo } from "../_shared/llm.ts";
+import { LLM_MODEL, llmConfigured, llmConRespaldo } from "../_shared/llm.ts";
 import { pedirVoz, vozConfigurada } from "../_shared/elevenlabs.ts";
 import { PERSONA } from "./prompt.ts";
 import { MODULES } from "./registry.ts";
@@ -146,6 +146,7 @@ Deno.serve(async (req: Request) => {
       }
       const data = JSON.parse(llm.cuerpo);
       prov = typeof data.provider === "string" ? data.provider : "";
+      if (typeof data.model === "string" && !data.model.startsWith(LLM_MODEL)) prov += ` (${data.model})`; // cayó al modelo de respaldo
       t.tokens(data.usage);
       call = data.choices?.[0]?.message?.tool_calls?.[0];
       if (!respuestaInservible(call)) break;

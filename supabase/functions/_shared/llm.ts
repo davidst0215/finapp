@@ -18,14 +18,30 @@ const configurados = (Deno.env.get("LLM_PROVIDERS") ?? "")
   .split(",").map((p) => p.trim()).filter((p) => p && p !== "xiaomi");
 const PROVEEDORES = configurados.length ? configurados : ["io-net", "deepinfra", "novita"];
 
+// Modelo de respaldo: si MiMo no responde en ninguno de sus proveedores (caído, retirado, sin cupo), OpenRouter
+// pasa a este y Wabid sigue andando sin tocar nada. Claude Haiku 4.5 acertó la herramienta 12/12 igual que MiMo,
+// pero es ~0.6 s más lento (p50 2.2 s contra 1.6 s, 5-oct) y cuesta ~7× por token: respaldo, no principal.
+// Secreto LLM_FALLBACK para cambiarlo; vacío lo apaga. Sus proveedores (Bedrock y Vertex) son sin retención.
+const RESPALDO = (Deno.env.get("LLM_FALLBACK") ?? "anthropic/claude-haiku-4.5").trim();
+const PROVEEDORES_RESPALDO = RESPALDO ? ["amazon-bedrock", "google-vertex"] : [];
+
 // `only`: si los proveedores elegidos fallan, OpenRouter NO cae en otros que nadie revisó (privacidad de
 // los datos de David); `zdr`: de esos, solo endpoints sin retención de datos. Dentro de la lista, un
-// proveedor caído pasa al siguiente (`allow_fallbacks`).
-const proveedor = (orden: string[]) => ({ order: orden, only: PROVEEDORES, zdr: true, allow_fallbacks: true, ignore: ["xiaomi"] });
+// proveedor caído pasa al siguiente (`allow_fallbacks`). `order` solo nombra hosts de MiMo; los del
+// respaldo entran por `only` y OpenRouter los usa recién cuando cae al segundo modelo (probado el 5-oct).
+const proveedor = (orden: string[]) => ({
+  order: orden,
+  only: [...PROVEEDORES, ...PROVEEDORES_RESPALDO],
+  zdr: true,
+  allow_fallbacks: true,
+  ignore: ["xiaomi"],
+});
 
-// Campos fijos de cada request: modelo, proveedor y sin razonamiento (latencia).
+// Campos fijos de cada request: modelo (y el de respaldo), proveedor y sin razonamiento (latencia).
+// `model` se queda aunque vaya `models`: hay funciones que lo leen para registrar qué modelo usaron.
 export const LLM_BODY = {
   model: LLM_MODEL,
+  ...(RESPALDO ? { models: [LLM_MODEL, RESPALDO] } : {}),
   provider: proveedor(PROVEEDORES),
   reasoning: { enabled: false },
 };
