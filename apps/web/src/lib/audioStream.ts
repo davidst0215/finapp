@@ -20,12 +20,16 @@ export function puedeStreamear(): boolean {
   return typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported(MIME);
 }
 
-export function reproducirStream(res: Response, audio: HTMLAudioElement): Reproduccion {
+/** `alSonar` corre una vez, cuando el audio empieza a oírse (para mostrar el texto en ese momento). */
+export function reproducirStream(res: Response, audio: HTMLAudioElement, alSonar?: () => void): Reproduccion {
   let detenido = false;
   let sono = false;
   let lector: ReadableStreamDefaultReader<Uint8Array> | null = null;
   const urls: string[] = [];
-  const marcarSonido = () => { sono = true; };
+  const marcarSonido = () => {
+    if (!sono) alSonar?.();
+    sono = true;
+  };
   audio.addEventListener('playing', marcarSonido);
 
   let abandonar: () => void = () => {};

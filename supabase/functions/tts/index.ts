@@ -1,12 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { bearer, jwtSub } from "../_shared/jwt.ts";
-import { montosAVoz } from "../_shared/voz.ts";
-
-const ELEVENLABS_API_KEY = Deno.env.get("ELEVENLABS_API_KEY");
-const VOICE_ID = Deno.env.get("ELEVENLABS_VOICE_ID");
-const MODEL_ID = Deno.env.get("ELEVENLABS_MODEL") ?? "eleven_v4";
-const SPEED = Number(Deno.env.get("ELEVENLABS_SPEED") ?? "1.13");
+import { pedirVoz, vozConfigurada } from "../_shared/elevenlabs.ts";
 
 // Un cliente por instancia: guarda las llaves públicas de Auth (JWKS) entre pedidos, así la firma
 // del token se verifica aquí mismo en vez de preguntarle a Auth en cada frase (getUser: p50 225 ms,
@@ -27,20 +22,11 @@ const jsonError = (error: string, status: number) =>
     status, headers: { "Content-Type": "application/json", ...corsHeaders },
   });
 
-// Prepara el texto para la voz: montos a palabras (determinista) y sin formato de texto.
-function paraVoz(text: string): string {
-  let t = montosAVoz(text);
-  t = t.replace(/\*\*|\*/g, "").replace(/#{1,3}\s/g, "").replace(/(^|\n)\s*[-•]\s/g, "$1");
-  t = t.replace(/(\d+(?:\.\d+)?)%/g, "$1 por ciento");
-  t = t.replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, "");
-  return t.replace(/\s{2,}/g, " ").trim();
-}
-
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    if (!ELEVENLABS_API_KEY || !VOICE_ID) return jsonError("Voz no configurada", 500);
+    if (!vozConfigurada()) return jsonError("Voz no configurada", 500);
 
     // La anon key también es un JWT válido para el gateway: sin `sub` de usuario se corta aquí,
     // así nadie con la key pública gasta créditos de voz.
@@ -60,14 +46,7 @@ Deno.serve(async (req: Request) => {
     if (errorToken || verificado?.claims?.sub !== sub) return jsonError("No autorizado", 401);
     console.log(JSON.stringify({ evt: "tts", auth: authMs, chars: text.length }));
 
-    const response = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream?output_format=mp3_44100_128`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "xi-api-key": ELEVENLABS_API_KEY },
-        body: JSON.stringify({ text: paraVoz(text), model_id: MODEL_ID, voice_settings: { speed: SPEED } }),
-      },
-    );
+    const response = await pedirVoz(text);
     if (!response.ok || !response.body) {
       console.error("tts elevenlabs:", response.status, (await response.text()).slice(0, 300));
       return jsonError("No pude generar la voz", 502);

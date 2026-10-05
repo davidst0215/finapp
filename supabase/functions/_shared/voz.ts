@@ -35,3 +35,12 @@ export function montosAVoz(texto: string): string {
     .replace(new RegExp(String.raw`S\/\s?` + NUM, "g"), conv("soles"))
     .replace(new RegExp(String.raw`(?:US\$|\$)\s?` + NUM, "g"), conv("dolares"));
 }
+
+/** Texto listo para la voz: montos a palabras (determinista) y sin formato de texto. */
+export function paraVoz(text: string): string {
+  let t = montosAVoz(text);
+  t = t.replace(/\*\*|\*/g, "").replace(/#{1,3}\s/g, "").replace(/(^|\n)\s*[-•]\s/g, "$1");
+  t = t.replace(/(\d+(?:\.\d+)?)%/g, "$1 por ciento");
+  t = t.replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, "");
+  return t.replace(/\s{2,}/g, " ").trim();
+}
