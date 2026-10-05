@@ -29,3 +29,15 @@ test("argumentos devuelve objeto o null", () => {
   assert.deepEqual(argumentos(call("x", { a: 1 })), { a: 1 });
   assert.equal(argumentos(call("x", "nope")), null);
 });
+
+test("rellenos del modelo se reintentan", () => {
+  for (const a of ["placeholder", "Placeholder", "...", "…", "Revisando tus pagos pendientes...", "déjame revisar", "ok"]) {
+    assert.equal(respuestaInservible(call("analyze_finances", { answer: a })), true, a);
+  }
+});
+
+test("respuestas reales cortas o que mencionan 'revisando' en medio no se reintentan", () => {
+  for (const a of ["Sí, ya lo anoté.", "Llevas S/ 20.50 este mes.", "Estoy revisando que todo cuadre: vas bien."]) {
+    assert.equal(respuestaInservible(call("query", { answer: a })), false, a);
+  }
+});

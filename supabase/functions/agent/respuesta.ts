@@ -13,10 +13,16 @@ export function argumentos(call: ToolCall): Record<string, unknown> | null {
   }
 }
 
-/** true si no hay tool, los argumentos no se pueden leer o el texto a decir (`answer`) vino vacío. */
+// Rellenos que el modelo a veces escribe en vez de la respuesta.
+const RELLENO = /^(placeholder|respuesta|answer|todo|tbd|n\/?a|\.{2,}|…|revisando[\s\S]*|déjame (revisar|ver)[\s\S]*)$/i;
+
+/** true si no hay tool, los argumentos no se pueden leer o el texto a decir (`answer`) vino vacío o de relleno. */
 export function respuestaInservible(call: ToolCall): boolean {
   if (!call?.function?.name) return true;
   const args = argumentos(call);
   if (!args) return true;
-  return "answer" in args && (typeof args.answer !== "string" || args.answer.trim() === "");
+  if (!("answer" in args)) return false;
+  if (typeof args.answer !== "string") return true;
+  const texto = args.answer.trim();
+  return texto.length < 3 || RELLENO.test(texto);
 }
