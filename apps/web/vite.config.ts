@@ -26,6 +26,8 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        // Páginas estáticas públicas (política de privacidad): no las reemplaza el shell de la app.
+        navigateFallbackDenylist: [/^\/privacidad\.html$/],
         // Avisos push: public/sw-push.js agrega los eventos push y notificationclick al sw.js generado.
         // Se carga con importScripts (el navegador lo revisa al buscar actualizaciones del service worker)
         // y por eso no entra al precache.
