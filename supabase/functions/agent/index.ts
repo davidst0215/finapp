@@ -1,12 +1,13 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type User } from "jsr:@supabase/supabase-js@2";
-import { llmConfigured, llmFetch } from "../_shared/llm.ts";
+import { llmConfigured, llmConRespaldo } from "../_shared/llm.ts";
+import { pedirVoz, vozConfigurada } from "../_shared/elevenlabs.ts";
 import { PERSONA } from "./prompt.ts";
 import { MODULES } from "./registry.ts";
 import { bearer, jwtSub } from "../_shared/jwt.ts";
 import { argumentos, respuestaInservible } from "./respuesta.ts";
 import { Tiempos } from "./tiempos.ts";
-import type { AgentContext } from "./types.ts";
+import type { AgentContext, ToolResult } from "./types.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -23,6 +24,10 @@ const RULES = MODULES.map((m) => m.rules).filter(Boolean).join("\n\n");
 // Prefijo idéntico en cada pedido: el proveedor lo reutiliza de su caché y el modelo arranca antes.
 const SISTEMA = `${PERSONA}\n\n${RULES}`;
 const MAX_TEXTO = 2000; // un dictado largo cabe de sobra; más es abuso o error
+// Si el modelo no terminó en este plazo sale un segundo pedido a otro proveedor (ver _shared/respaldo.ts).
+// Io Net, el primero, respondió siempre en ≤3 s en la medición del 5-oct: el respaldo queda para las colas.
+const RESPALDO_MS = 3000;
+const VOZ_MAX = 400; // lo que se dice en voz alta; el texto completo igual llega a la pantalla
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
@@ -34,6 +39,36 @@ Deno.serve(async (req: Request) => {
       headers: { "Content-Type": "application/json", "Server-Timing": t.header(), ...corsHeaders },
     });
 
+  // Con `voz`, texto y audio van en una sola respuesta: primera línea el JSON del resultado y después el MP3
+  // mientras ElevenLabs lo genera. Ahorra el segundo viaje celular→servidor (y su validación de sesión) que
+  // costaba pedir /tts aparte. Si la voz falla, la respuesta termina tras el JSON y la app usa /tts o la del navegador.
+  const conVoz = (result: ToolResult): Response => {
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    (async () => {
+      let escritor: WritableStreamDefaultWriter<Uint8Array> | null = writable.getWriter();
+      try {
+        await escritor.write(new TextEncoder().encode(JSON.stringify(result) + "\n"));
+        const t0 = performance.now();
+        const audio = await pedirVoz(result.message.slice(0, VOZ_MAX));
+        console.log(JSON.stringify({ evt: "agent_voz", status: audio.status, ttfb: Math.round(performance.now() - t0) }));
+        if (!audio.ok || !audio.body) {
+          await audio.body?.cancel();
+          return;
+        }
+        escritor.releaseLock();
+        escritor = null;
+        await audio.body.pipeTo(writable); // si David interrumpe, también se corta la descarga de ElevenLabs
+      } catch (e) {
+        console.error("agent voz:", e instanceof Error ? e.message : String(e));
+      } finally {
+        await escritor?.close().catch(() => {});
+      }
+    })();
+    return new Response(readable, {
+      headers: { "Content-Type": "application/octet-stream", "Server-Timing": t.header(), ...corsHeaders },
+    });
+  };
+
   try {
     // Primero el token: la anon key (pública, va en el bundle) no trae `sub` y se corta antes de
     // leer el cuerpo o revelar configuración. Ese `sub` sin verificar solo arranca las lecturas
@@ -43,9 +78,11 @@ Deno.serve(async (req: Request) => {
     if (!sub) return json({ error: "No autorizado" }, 401);
     if (!llmConfigured()) return json({ error: "Modelo no configurado" }, 500);
 
-    const { text, history } = await req.json();
+    const { text, history, voz } = await req.json();
     if (!text || typeof text !== "string") return json({ error: "Se requiere 'text'" }, 400);
     if (text.length > MAX_TEXTO) return json({ error: "Mensaje demasiado largo" }, 413);
+    const quiereVoz = voz === true && vozConfigurada();
+    const responder = (result: ToolResult) => (quiereVoz && result.message ? conVoz(result) : json(result));
 
     const supabase = createClient(Deno.env.get("SUPABASE_URL") ?? "", Deno.env.get("SUPABASE_ANON_KEY") ?? "", {
       global: { headers: { Authorization: `Bearer ${token}` } },
@@ -77,9 +114,8 @@ Deno.serve(async (req: Request) => {
     // La hora va al final: lo que cambia cada minuto no debe romper el prefijo cacheado.
     const contextMsg = [...contexts.map((c) => c.prompt).filter(Boolean), `HOY: ${hoy} (hora de Lima)`].join("\n\n");
 
-    // OpenRouter manda los headers de inmediato y el cuerpo cuando el modelo termina:
-    // la fase incluye leer el cuerpo.
-    const pedirAlModelo = () => t.medir("llm", llmFetch({
+    // La fase incluye leer el cuerpo: OpenRouter manda los headers de inmediato y el cuerpo al final.
+    const pedirAlModelo = () => t.medir("llm", llmConRespaldo({
       messages: [
         { role: "system", content: SISTEMA },
         { role: "system", content: contextMsg },
@@ -95,35 +131,39 @@ Deno.serve(async (req: Request) => {
       tool_choice: "required",
       temperature: 0.15,
       max_tokens: 500,
-    }).then(async (r) => ({ ok: r.ok, status: r.status, cuerpo: await r.text() })));
+    }, RESPALDO_MS));
 
     // Una respuesta sin tool o con el texto a decir vacío se pide una vez más antes de ejecutar nada.
     let call: { function: { name: string; arguments?: string } } | undefined;
+    let prov = ""; // proveedor que respondió (para seguir la latencia por proveedor en los logs)
+    let respaldo = false;
     for (let intento = 0; intento < 2; intento++) {
       const llm = await pedirAlModelo();
+      respaldo ||= llm.respaldo;
       if (!llm.ok) {
         console.error("agent modelo:", llm.status, llm.cuerpo.slice(0, 300));
         return json({ error: "El modelo no respondió. Intenta de nuevo." }, 502);
       }
       const data = JSON.parse(llm.cuerpo);
+      prov = typeof data.provider === "string" ? data.provider : "";
       t.tokens(data.usage);
       call = data.choices?.[0]?.message?.tool_calls?.[0];
       if (!respuestaInservible(call)) break;
       console.error(`agent: respuesta inservible del modelo (intento ${intento + 1})`);
     }
     if (respuestaInservible(call) || !call) {
-      console.log(JSON.stringify({ evt: "agent", fn: "(inservible)", ...t.resumen() }));
-      return json({ action: "query", message: "No me salió la respuesta. ¿Me lo repites?" });
+      console.log(JSON.stringify({ evt: "agent", fn: "(inservible)", prov, respaldo, ...t.resumen() }));
+      return responder({ action: "query", message: "No me salió la respuesta. ¿Me lo repites?" });
     }
 
     const owner = OWNER.get(call.function.name);
-    if (!owner) return json({ action: "unknown", message: "No entendí. Intenta de nuevo." });
+    if (!owner) return responder({ action: "unknown", message: "No entendí. Intenta de nuevo." });
     const args = argumentos(call) ?? {};
     const result = await t.medir("tool", owner.handlers[call.function.name](args, ctx, dataByModule.get(owner.id)));
     // Una línea por pedido, sin contenido de David: sirve para seguir el p50 en los logs.
     // `fn` y no `tool`: resumen() ya trae `tool` (los ms de la fase) y pisaba el nombre.
-    console.log(JSON.stringify({ evt: "agent", fn: call.function.name, ...t.resumen() }));
-    return json(result);
+    console.log(JSON.stringify({ evt: "agent", fn: call.function.name, prov, respaldo, voz: quiereVoz, ...t.resumen() }));
+    return responder(result);
   } catch (error) {
     console.error("agent error:", error instanceof Error ? error.message : String(error));
     return json({ error: "Algo falló de mi lado. Intenta de nuevo." }, 500);

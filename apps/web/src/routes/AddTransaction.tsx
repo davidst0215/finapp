@@ -6,6 +6,7 @@ import { useAppStore } from '@/stores/appStore';
 import { useAuthStore } from '@/stores/authStore';
 import { supabase, functionUrl, calentarFunciones } from '@/lib/supabase';
 import { reproducirStream, type Reproduccion } from '@/lib/audioStream';
+import { separarRespuesta } from '@/lib/respuestaAgente';
 import { cn } from '@/lib/utils';
 
 type OrbState = 'idle' | 'listening' | 'thinking' | 'speaking';
@@ -122,21 +123,43 @@ export function AddTransactionPage() {
     });
   }, []);
 
-  // ── Agent call with conversation memory ──
+  // La voz que vino con la respuesta del agente. El texto aparece cuando empieza a oírse, no antes: así no
+  // queda un silencio entre leer y escuchar. Si no trajo voz o no llegó a sonar, se pide a /tts (o al navegador).
+  const hablar = useCallback(async (message: string, audio: ReadableStream<Uint8Array> | null, vigente: () => boolean) => {
+    if (audio) {
+      const reproduccion = reproducirStream(new Response(audio), new Audio(), () => {
+        if (!vigente()) return;
+        setSubtitle(message);
+        setOrbState('speaking');
+      });
+      reproduccionRef.current = reproduccion;
+      const sono = await reproduccion.fin;
+      if (sono || !vigente()) return;
+    }
+    setSubtitle(message);
+    await speak(message, vigente);
+  }, [speak]);
+
+  // ── Agente con memoria de la conversación: texto y voz llegan en una sola respuesta ──
   const callAgent = useCallback(async (text: string) => {
     const turno = ++turnoRef.current;
     const vigente = () => turnoRef.current === turno;
     cortarVoz();
     setOrbState('thinking');
     setSubtitle('');
+    navigator.vibrate?.(12); // señal breve: el pedido salió
 
     // Add to memory
     conversationRef.current.push({ role: 'user', content: text });
     if (conversationRef.current.length > 10) conversationRef.current = conversationRef.current.slice(-10);
 
+    // Interrumpir (o el tiempo límite) corta el pedido y la voz que viene con él.
+    const abort = new AbortController();
+    vozAbortRef.current = abort;
     const timeout = setTimeout(() => {
       if (!vigente()) return;
       turnoRef.current++; // la respuesta que llegue tarde ya no habla
+      abort.abort();
       setOrbState('idle');
       setSubtitle('No pude procesar, intenta de nuevo');
       setTimeout(() => setSubtitle(''), 4000);
@@ -150,27 +173,36 @@ export function AddTransactionPage() {
       }
       if (!session) throw new Error('No autenticado');
 
-      const response = await supabase.functions.invoke('agent', {
-        body: { text, history: conversationRef.current.slice(-8) },
-        headers: { Authorization: `Bearer ${session.access_token}` },
+      const response = await fetch(functionUrl('agent'), {
+        method: 'POST',
+        signal: abort.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+          'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+        },
+        body: JSON.stringify({ text, history: conversationRef.current.slice(-8), voz: true }),
       });
+      if (!response.body) throw new Error('El servidor no respondió');
+      const { resultado, audio } = await separarRespuesta(response.body);
 
       clearTimeout(timeout);
-      if (!vigente()) return; // David ya empezó otro turno o se venció el tiempo
+      if (!vigente()) { // David ya empezó otro turno o se venció el tiempo
+        void audio?.cancel();
+        return;
+      }
+      if (!response.ok || resultado.error) {
+        void audio?.cancel();
+        throw new Error(typeof resultado.error === 'string' ? resultado.error : 'Algo falló. Intenta de nuevo.');
+      }
 
-      if (response.error) throw new Error(response.error.message);
-      const data = response.data;
-      if (data.error) throw new Error(data.error);
-
-      const message = data.message as string;
+      const message = String(resultado.message ?? '');
 
       // Add to memory
       conversationRef.current.push({ role: 'assistant', content: message });
       if (conversationRef.current.length > 10) conversationRef.current = conversationRef.current.slice(-10);
 
-      // Show subtitle and speak
-      setSubtitle(message);
-      await speak(message, vigente);
+      await hablar(message, audio, vigente);
       if (!vigente()) return;
 
       // Apenas termina la voz se puede volver a hablar; el subtítulo queda un momento para leerlo.
@@ -184,8 +216,10 @@ export function AddTransactionPage() {
       setSubtitle(errMsg);
       setOrbState('idle');
       setTimeout(() => setSubtitle(''), 4000);
+    } finally {
+      if (vozAbortRef.current === abort) vozAbortRef.current = null;
     }
-  }, [cortarVoz, speak]);
+  }, [cortarVoz, hablar]);
 
   // ── Hold-to-talk ──
   const startHold = useCallback(() => {
