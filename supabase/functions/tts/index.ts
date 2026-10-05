@@ -8,6 +8,13 @@ const VOICE_ID = Deno.env.get("ELEVENLABS_VOICE_ID");
 const MODEL_ID = Deno.env.get("ELEVENLABS_MODEL") ?? "eleven_v4";
 const SPEED = Number(Deno.env.get("ELEVENLABS_SPEED") ?? "1.13");
 
+// Un cliente por instancia: guarda las llaves públicas de Auth (JWKS) entre pedidos, así la firma
+// del token se verifica aquí mismo en vez de preguntarle a Auth en cada frase (getUser: p50 225 ms,
+// p90 693 ms en los logs del agente del 5-oct).
+const supabase = createClient(Deno.env.get("SUPABASE_URL") ?? "", Deno.env.get("SUPABASE_ANON_KEY") ?? "", {
+  auth: { persistSession: false, autoRefreshToken: false },
+});
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -43,11 +50,14 @@ Deno.serve(async (req: Request) => {
     const { text } = await req.json();
     if (!text || typeof text !== "string" || text.length > 600) return jsonError("Texto inválido", 400);
 
-    // La sesión se confirma ANTES de pedir la voz: lo que cobra ElevenLabs no puede depender
-    // de que el gateway tenga verify_jwt activo.
-    const supabase = createClient(Deno.env.get("SUPABASE_URL") ?? "", Deno.env.get("SUPABASE_ANON_KEY") ?? "");
-    const { data: { user } } = await supabase.auth.getUser(token);
-    if (!user || user.id !== sub) return jsonError("No autorizado", 401);
+    // El token se confirma ANTES de pedir la voz: lo que cobra ElevenLabs no puede depender
+    // de que el gateway tenga verify_jwt activo. getClaims revisa firma y vencimiento con la llave
+    // pública (ES256); no ve un cierre de sesión anterior al vencimiento (1 h), riesgo aceptable aquí.
+    const t0 = performance.now();
+    const { data: verificado, error: errorToken } = await supabase.auth.getClaims(token);
+    const authMs = Math.round(performance.now() - t0);
+    if (errorToken || verificado?.claims?.sub !== sub) return jsonError("No autorizado", 401);
+    console.log(JSON.stringify({ evt: "tts", auth: authMs, chars: text.length }));
 
     const response = await fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream?output_format=mp3_44100_128`,
