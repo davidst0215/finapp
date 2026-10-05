@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { useAuthStore } from '@/stores/authStore';
 import { readTheme, setTheme, type ThemeMode } from '@/lib/theme';
+import { guardarEscucharAlAbrir, leerEscucharAlAbrir } from '@/lib/conversacion';
+import { Switch } from '@/components/claude/Switch';
 import { LogOut, Sun, Moon, SunMoon, Wallet, Target, PiggyBank, CreditCard, Bell, BellRing, ChevronRight, CalendarDays, BarChart3, Video, Mail, Search, Terminal, MessageSquare } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { UserAvatar } from '@/components/ui/UserAvatar';
@@ -10,6 +12,8 @@ export function MorePage() {
   const { profile, user, signOut } = useAuthStore();
   const [theme, setThemeState] = useState<ThemeMode>(readTheme);
   const chooseTheme = (mode: ThemeMode) => { setTheme(mode); setThemeState(mode); };
+  const [escucharAlAbrir, setEscucharAlAbrir] = useState(leerEscucharAlAbrir);
+  const cambiarEscucharAlAbrir = (activo: boolean) => { guardarEscucharAlAbrir(activo); setEscucharAlAbrir(activo); };
   const avatarUrl = user?.user_metadata?.['avatar_url'] as string | undefined;
 
   return (
@@ -94,6 +98,21 @@ export function MorePage() {
             </Link>
           ))}
         </GlassCard>
+      </div>
+
+      <div>
+        <p className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-2 px-1">
+          Voz
+        </p>
+        <div className="flex items-center gap-3 rounded-xl border border-slate-700 bg-slate-900 py-1.5 pl-4 pr-2">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium text-slate-100">Escuchar al abrir Wabid</p>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Configura el doble toque atrás del celular para abrir Wabid y háblale sin tocar la pantalla.
+            </p>
+          </div>
+          <Switch checked={escucharAlAbrir} onChange={cambiarEscucharAlAbrir} label="Escuchar al abrir Wabid" />
+        </div>
       </div>
 
       <div>
