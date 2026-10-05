@@ -162,6 +162,7 @@ function ClaudeBubble({ item, spacing, showMeta }: { item: ClaudeItem; spacing: 
               </button>
             )}
             {mia && voz.recortado && <span className="text-[13px] text-slate-400">(leo el inicio)</span>}
+            {voz.falloId === item.id && <span role="status" className="text-[13px] text-slate-400">No pude reproducirlo. Intenta de nuevo.</span>}
           </div>
         )}
       </div>

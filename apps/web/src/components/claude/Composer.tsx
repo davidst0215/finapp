@@ -39,10 +39,12 @@ export function Composer({ placeholder = 'Escríbele a Claude…', maxLength, di
   // Voz: lo que había en el campo al empezar a dictar (lo dictado se agrega al final) y desde cuándo se mantiene presionado.
   const base = useRef('');
   const desde = useRef(0);
+  const toqueCorto = useRef(false);
   const [aviso, setAviso] = useState<string | null>(null);
   const dictado = useDictado({
     onTexto: useCallback((t: string) => setText(unirDictado(base.current, t).slice(0, maxLength)), [maxLength]),
-    onError: useCallback((e: ErrorDictado) => setAviso(AVISOS_VOZ[e]), []),
+    // Tras un toque corto el aviso útil es "mantén presionado"; el "no te escuché" que llega después no lo pisa.
+    onError: useCallback((e: ErrorDictado) => { if (!toqueCorto.current) setAviso(AVISOS_VOZ[e]); }, []),
   });
   const trimmed = text.trim();
 
@@ -55,7 +57,7 @@ export function Composer({ placeholder = 'Escríbele a Claude…', maxLength, di
   }, [text, disabledReason]);
 
   const submit = async () => {
-    if (sending || !trimmed) return;
+    if (sending || !trimmed || dictado.escuchando) return;
     setSending(true);
     setError(null);
     try {
@@ -74,12 +76,14 @@ export function Composer({ placeholder = 'Escríbele a Claude…', maxLength, di
     detenerVoz(); // si Claude estaba leyendo, el micrófono no debe oírlo
     base.current = text;
     desde.current = Date.now();
+    toqueCorto.current = false;
     setAviso(null);
     dictado.iniciar();
   };
   const soltarDictado = () => {
     if (desde.current === 0) return;
-    if (Date.now() - desde.current < TOQUE_CORTO_MS) setAviso('Mantén presionado el orbe mientras hablas; al soltar, el texto queda en el campo.');
+    toqueCorto.current = Date.now() - desde.current < TOQUE_CORTO_MS;
+    if (toqueCorto.current) setAviso('Mantén presionado el orbe mientras hablas; al soltar, el texto queda en el campo.');
     desde.current = 0;
     dictado.detener();
   };
@@ -140,7 +144,11 @@ export function Composer({ placeholder = 'Escríbele a Claude…', maxLength, di
                 aria-label={dictado.escuchando ? 'Escuchando. Suelta para terminar de dictar' : 'Dictar mensaje. Mantén presionado'}
                 aria-pressed={dictado.escuchando}
                 disabled={sending}
-                onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); empezarDictado(); }}
+                onPointerDown={(e) => {
+                  if (e.button !== 0) return;
+                  try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* el dictado arranca igual */ }
+                  empezarDictado();
+                }}
                 onPointerUp={soltarDictado}
                 onPointerCancel={soltarDictado}
                 onContextMenu={(e) => e.preventDefault()}
@@ -154,7 +162,7 @@ export function Composer({ placeholder = 'Escríbele a Claude…', maxLength, di
             <button
               type="button"
               onClick={() => void submit()}
-              disabled={sending || !trimmed}
+              disabled={sending || !trimmed || dictado.escuchando}
               aria-label={sending ? 'Enviando…' : 'Enviar'}
               className={cn(
                 'grid h-12 w-12 flex-shrink-0 place-items-center rounded-full bg-primary-600 text-slate-950 transition-opacity active:bg-primary-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950',

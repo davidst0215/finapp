@@ -12,9 +12,14 @@ export interface EstadoVoz {
   fase: 'cargando' | 'sonando' | null;
   /** Se leyó solo el inicio (el texto pasaba de 600 caracteres). */
   recortado: boolean;
+  /** Burbuja cuya lectura no llegó a sonar (se muestra un aviso junto al botón). */
+  falloId: string | null;
 }
 
-const REPOSO: EstadoVoz = { id: null, fase: null, recortado: false };
+const REPOSO: EstadoVoz = { id: null, fase: null, recortado: false, falloId: null };
+
+// WAV mudo de ~0,05 s: desbloquea el <audio> dentro del toque (iPhone solo deja sonar el elemento si play() nace de un gesto).
+const SILENCIO = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=';
 let estado: EstadoVoz = REPOSO;
 const oyentes = new Set<() => void>();
 let turno = 0;
@@ -37,7 +42,7 @@ export function detenerVoz() {
   reproduccion?.detener();
   reproduccion = null;
   if (typeof window !== 'undefined') window.speechSynthesis?.cancel();
-  if (estado.id !== null) poner(REPOSO);
+  if (estado.id !== null || estado.falloId !== null) poner(REPOSO);
 }
 
 /** Toque en "Escuchar": detiene si ya suena esa burbuja; si no, lee esta (y corta cualquier otra). */
@@ -48,11 +53,16 @@ export function alternarVoz(id: string, texto: string) {
   if (!aLeer) return;
   const mio = turno;
   const vigente = () => turno === mio;
-  poner({ id, fase: 'cargando', recortado });
-  void leer(aLeer, vigente).finally(() => { if (vigente()) poner(REPOSO); });
+  // Todo lo que exige un gesto se hace aquí, antes de cualquier await.
+  const audio = new Audio();
+  audio.src = SILENCIO;
+  void audio.play().catch(() => {});
+  try { window.speechSynthesis?.speak(new SpeechSynthesisUtterance('')); } catch { /* sin voz del navegador */ }
+  poner({ id, fase: 'cargando', recortado, falloId: null });
+  void leer(aLeer, vigente, audio).then((sono) => { if (vigente()) poner(sono ? REPOSO : { ...REPOSO, falloId: id }); });
 }
 
-async function leer(texto: string, vigente: () => boolean): Promise<void> {
+async function leer(texto: string, vigente: () => boolean, audio: HTMLAudioElement): Promise<boolean> {
   const ac = new AbortController();
   abort = ac;
   let sono = false;
@@ -70,8 +80,9 @@ async function leer(texto: string, vigente: () => boolean): Promise<void> {
       body: JSON.stringify({ text: texto }),
     });
     if (!res.ok) throw new Error('TTS failed');
-    if (!vigente()) return;
-    const audio = new Audio();
+    if (!vigente()) return true;
+    audio.pause();
+    await new Promise((r) => setTimeout(r, 0)); // el 'pause' del silencio no debe leerse como interrupción
     audio.addEventListener('playing', () => { if (vigente()) poner({ ...estado, fase: 'sonando' }); }, { once: true });
     reproduccion = reproducirStream(res, audio);
     sono = await reproduccion.fin;
@@ -81,8 +92,10 @@ async function leer(texto: string, vigente: () => boolean): Promise<void> {
     if (abort === ac) abort = null;
   }
 
-  if (sono || !vigente() || !('speechSynthesis' in window)) return;
-  poner({ ...estado, fase: 'sonando' });
+  if (sono) return true;
+  if (!vigente()) return true;
+  if (!('speechSynthesis' in window)) return false;
+  let hablo = false;
   await new Promise<void>((ok) => {
     // Algunos navegadores nunca disparan onend/onerror: el tope evita un "sonando" eterno.
     const tope = setTimeout(ok, texto.length * 90 + 3000);
@@ -90,8 +103,10 @@ async function leer(texto: string, vigente: () => boolean): Promise<void> {
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(texto);
     u.lang = 'es-PE';
-    u.onend = listo;
+    u.onstart = () => { hablo = true; poner({ ...estado, fase: 'sonando' }); };
+    u.onend = () => { hablo = true; listo(); };
     u.onerror = listo;
     window.speechSynthesis.speak(u);
   });
+  return hablo;
 }
