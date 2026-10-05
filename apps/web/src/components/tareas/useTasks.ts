@@ -1,8 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useCachedState } from '@/lib/moduleCache';
-import { vaultApi, VaultApiError } from './api';
+import { readCache, useCachedState, writeCache } from '@/lib/moduleCache';
+import { vaultApi, VaultApiError, type SyncResponse } from './api';
 import { errorMessage } from './format';
 import type { CreateTaskInput, TaskRef, TasksResponse, TaskStatus, VaultTask } from './types';
+
+const CACHE_KEY = 'tareas';
+
+/**
+ * Al abrir la app deja Tareas en memoria, así la primera visita también pinta al instante.
+ * Lee solo la base (sin GitHub); si falla no pasa nada: la pantalla carga como siempre.
+ */
+export function prefetchTasks() {
+  if (readCache(CACHE_KEY)) return;
+  vaultApi
+    .tasks()
+    .then((res) => {
+      if (!readCache(CACHE_KEY)) writeCache(CACHE_KEY, res); // lo que ya trajo la pantalla es más nuevo
+    })
+    .catch(() => {});
+}
 
 /** Pasado este tiempo sin recargar, volver a la pestaña vuelve a pedir los datos. */
 const STALE_AFTER_MS = 60_000;
@@ -18,10 +34,11 @@ const moveFailure = (e: unknown): ActionResult =>
     ? { ok: false, message: 'Quedó duplicada: se copió al destino pero no se quitó del origen. Revisa y borra una.' }
     : failure(e);
 
+/** Si la última sincronización con GitHub es más vieja que esto, al abrir se sincroniza por detrás. */
+const SYNC_AFTER_MS = 60_000;
+
 interface LoadOptions {
-  /** Pide al servidor sincronizar con GitHub antes (él decide si pasó más de un minuto). */
-  refresh: boolean;
-  /** Sincroniza ya, sin esperar el minuto (botón de refrescar). */
+  /** Reindexa todo con GitHub antes de leer (botón de refrescar). */
   force?: boolean;
   /** Una recarga de fondo no avisa de errores si ya hay datos en pantalla. */
   silent?: boolean;
@@ -51,7 +68,7 @@ function findTask(data: TasksResponse | null, id: string): VaultTask | null {
  * (completar, deshacer) y se descartan las respuestas que llegan tarde.
  */
 export function useTasks() {
-  const [data, setData] = useCachedState<TasksResponse>('tareas');
+  const [data, setData] = useCachedState<TasksResponse>(CACHE_KEY);
   const [fetching, setFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set());
@@ -88,7 +105,7 @@ export function useTasks() {
   }, []);
 
   const load = useCallback(
-    async ({ refresh, force = false, silent = false }: LoadOptions) => {
+    async ({ force = false, silent = false }: LoadOptions = {}) => {
       const mine = ++seq.current;
       inFlight.current += 1;
       setFetching(true);
@@ -97,13 +114,13 @@ export function useTasks() {
           // Vault grande: la sincronización llega por tandas; se sigue hasta completar (tope de seguridad).
           for (let i = 0; i < 6; i++) if (!(await vaultApi.sync()).partial) break;
         }
-        let res = await vaultApi.tasks({ refresh: force ? false : refresh });
+        let res = await vaultApi.tasks();
         if (mine !== seq.current) return;
         commit(res); // lo ya indexado se ve mientras llega el resto
         // Primera sync de un vault grande: por tandas, con el mismo tope de seguridad.
         for (let i = 0; res.partial && i < 6; i++) {
           if (!(await vaultApi.sync()).partial) i = 99;
-          res = await vaultApi.tasks({ refresh: false });
+          res = await vaultApi.tasks();
           if (mine !== seq.current) return;
           commit(res);
         }
@@ -120,23 +137,55 @@ export function useTasks() {
     [commit],
   );
 
-  // Al abrir: pide sincronizar con GitHub.
+  /**
+   * Pinta lo ya indexado en la base y sincroniza con GitHub por detrás; solo vuelve a pedir si llegaron
+   * cambios. Antes la pantalla esperaba a GitHub en cada apertura (vault: p50 1.2 s, p90 2.6 s).
+   */
+  const revalidate = useCallback(
+    async (silent: boolean) => {
+      await load({ silent });
+      const syncedAt = dataRef.current?.syncedAt;
+      if (syncedAt && Date.now() - Date.parse(syncedAt) < SYNC_AFTER_MS) return;
+      inFlight.current += 1;
+      setFetching(true); // la línea de estado dice «Sincronizando…» mientras tanto
+      try {
+        let changed = false;
+        let last: SyncResponse | null = null;
+        for (let i = 0; i < 6; i++) {
+          last = await vaultApi.syncChanges();
+          changed ||= last.added + last.updated + last.removed > 0;
+          if (!last.partial) break;
+        }
+        if (changed) await load({ silent: true });
+        else if (last && dataRef.current) commit({ ...dataRef.current, syncedAt: last.syncedAt }); // solo la hora
+      } catch {
+        // GitHub caído: queda lo indexado a la vista; la próxima apertura lo vuelve a intentar.
+      } finally {
+        inFlight.current -= 1;
+        if (inFlight.current === 0) setFetching(false);
+      }
+    },
+    [commit, load],
+  );
+
   useEffect(() => {
-    void load({ refresh: true });
-  }, [load]);
+    void revalidate(false);
+  }, [revalidate]);
 
   // Al volver a la pestaña después de más de un minuto: recarga de fondo, sin tapar lo que ya se ve.
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState === 'visible' && Date.now() - loadedAt.current > STALE_AFTER_MS) {
-        void load({ refresh: true, silent: true });
+        void revalidate(true);
       }
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
-  }, [load]);
+  }, [revalidate]);
 
-  const syncNow = useCallback(() => load({ refresh: false, force: true }), [load]);
+  const reload = useCallback(() => revalidate(false), [revalidate]);
+
+  const syncNow = useCallback(() => load({ force: true }), [load]);
 
   /** Completa en el sitio (queda tachada hasta la siguiente carga). */
   const complete = useCallback(
@@ -153,7 +202,7 @@ export function useTasks() {
         return OK;
       } catch (e) {
         patchTask(task.id, { status: task.status });
-        void load({ refresh: false, silent: true }); // lo habitual: la línea cambió en el archivo
+        void load({ silent: true }); // lo habitual: la línea cambió en el archivo
         return failure(e);
       } finally {
         mark(task.id, false);
@@ -181,7 +230,7 @@ export function useTasks() {
         return OK;
       } catch (e) {
         patchTask(id, { status: 'completed' });
-        void load({ refresh: false, silent: true });
+        void load({ silent: true });
         return failure(e);
       } finally {
         mark(id, false);
@@ -196,10 +245,10 @@ export function useTasks() {
       mark(task.id, true);
       try {
         await vaultApi.moveTask(refOf(task), folder);
-        await load({ refresh: false }); // las líneas se desplazan: se pide de nuevo
+        await load(); // las líneas se desplazan: se pide de nuevo
         return OK;
       } catch (e) {
-        void load({ refresh: false, silent: true });
+        void load({ silent: true });
         return moveFailure(e);
       } finally {
         mark(task.id, false);
@@ -213,7 +262,7 @@ export function useTasks() {
       seq.current += 1;
       try {
         await vaultApi.createTask(input);
-        await load({ refresh: false });
+        await load();
         return OK;
       } catch (e) {
         return failure(e);
@@ -222,5 +271,5 @@ export function useTasks() {
     [load],
   );
 
-  return { data, fetching, error, busy, reload: load, syncNow, complete, restore, move, create };
+  return { data, fetching, error, busy, reload, syncNow, complete, restore, move, create };
 }
