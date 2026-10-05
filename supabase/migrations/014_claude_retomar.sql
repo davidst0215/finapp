@@ -66,5 +66,8 @@ ALTER TABLE claude_sessions
     ADD COLUMN IF NOT EXISTS continued_from VARCHAR(100),
     ADD COLUMN IF NOT EXISTS start_cwd      VARCHAR(300);   -- carpeta donde NACIÓ la sesión: `claude --resume` busca la conversación ahí (cwd cambia con cada cd)
 
+-- Sesiones anteriores a 014: el cwd guardado es la mejor pista disponible (mejor que el del primer evento tras desplegar).
+UPDATE claude_sessions SET start_cwd = cwd WHERE start_cwd IS NULL AND cwd IS NOT NULL;
+
 COMMENT ON COLUMN claude_messages.resume_task_id IS 'Tarea del runner que retoma la sesión con este mensaje (status retomando/entregado/no_retomado).';
 COMMENT ON COLUMN claude_sessions.continued_from IS 'Sesión original de la que se bifurcó esta (retomar con --fork-session).';
