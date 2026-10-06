@@ -1,6 +1,7 @@
 import { comentario, conComentario } from "../prompt.ts";
 import { type AgentContext, type AgentModule, tool } from "../types.ts";
 import { type FiltroRecurrentes, type Recurrente, resumenRecurrentes } from "./recurrentes.ts";
+import { rangoSemana } from "./semana.ts";
 
 type Account = { account_id: string; account_name: string; current_balance: number; account_type: string };
 type Category = { category_id: string; category_name: string; category_type: string };
@@ -25,8 +26,9 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
   const monthStart = `${year}-${String(month).padStart(2, "0")}-01`;
   const monthEnd = new Date(year, month, 0).toISOString().slice(0, 10);
   const nextMonthStart = month === 12 ? `${year + 1}-01-01` : `${year}-${String(month + 1).padStart(2, "0")}-01`;
+  const semana = rangoSemana(limaNow);
 
-  const [accountsRes, categoriesRes, goalsRes, summaryRes, prevSummaryRes, spendRes, prevSpendRes, budgetsRes, recentRes, recurringRes, paidRes] = await Promise.all([
+  const [accountsRes, categoriesRes, goalsRes, summaryRes, prevSummaryRes, spendRes, prevSpendRes, budgetsRes, recentRes, recurringRes, paidRes, weekRes, last7Res] = await Promise.all([
     supabase.from("accounts").select("account_id, account_name, current_balance, account_type").eq("user_id", user.id).eq("is_active", true),
     supabase.from("categories").select("category_id, category_name, category_type").eq("is_active", true).or(`user_id.eq.${user.id},user_id.is.null`),
     supabase.from("savings_goals").select("goal_id, goal_name, target_amount, current_amount, target_date").eq("user_id", user.id).eq("is_completed", false),
@@ -45,6 +47,8 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
     // Pagos de este mes en hora de Lima: un pago a las 20:00 del 30 es del 30, no del 1 (UTC).
     supabase.from("transactions").select("recurring_id").eq("user_id", user.id).eq("is_recurring", true)
       .gte("transaction_date", `${monthStart}T00:00:00-05:00`).lt("transaction_date", `${nextMonthStart}T00:00:00-05:00`),
+    supabase.rpc("fn_get_spending_by_category", { p_start_date: semana.lunes, p_end_date: semana.hoy }),
+    supabase.rpc("fn_get_spending_by_category", { p_start_date: semana.hace7, p_end_date: semana.hoy }),
   ]);
 
   const accounts = (accountsRes.data ?? []) as Account[];
@@ -90,6 +94,17 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
         : "";
       ctxLines.push(`- ${c.category_name}: S/${c.total_amount} (${c.percentage}%)${comp}`);
     }
+  }
+  // Siempre, aunque sea cero: sin estas líneas MiMo no sabía qué decir a «¿cuánto gasté esta semana?» y
+  // devolvía la respuesta vacía (4 de 4 veces, 5-oct). Con un error de lectura se omite: cero sería falso.
+  if (!weekRes.error && !last7Res.error) {
+    type Gasto = { category_name: string; total_amount: number };
+    const sumar = (filas: Gasto[]) => filas.reduce((s, c) => s + Number(c.total_amount), 0);
+    const week = (weekRes.data ?? []) as Gasto[];
+    const last7 = (last7Res.data ?? []) as Gasto[];
+    ctxLines.push(`\nESTA SEMANA (lunes ${semana.lunes} a hoy ${semana.hoy}): gastos S/${sumar(week).toFixed(2)}`);
+    for (const c of week.slice(0, 6)) ctxLines.push(`- ${c.category_name}: S/${c.total_amount}`);
+    ctxLines.push(`ÚLTIMOS 7 DÍAS (${semana.hace7} a ${semana.hoy}): gastos S/${sumar(last7).toFixed(2)}`);
   }
   if (budgets.length > 0) {
     ctxLines.push("\nPRESUPUESTOS:");

@@ -1,6 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type User } from "jsr:@supabase/supabase-js@2";
-import { LLM_MODEL, llmConfigured, llmConRespaldo } from "../_shared/llm.ts";
+import { LLM_FALLBACK, LLM_MODEL, llmConfigured, llmConRespaldo } from "../_shared/llm.ts";
 import { pedirVoz, vozConfigurada } from "../_shared/elevenlabs.ts";
 import { PERSONA } from "./prompt.ts";
 import { MODULES } from "./registry.ts";
@@ -115,7 +115,9 @@ Deno.serve(async (req: Request) => {
     const contextMsg = [...contexts.map((c) => c.prompt).filter(Boolean), `HOY: ${hoy} (hora de Lima)`].join("\n\n");
 
     // La fase incluye leer el cuerpo: OpenRouter manda los headers de inmediato y el cuerpo al final.
-    const pedirAlModelo = () => t.medir("llm", llmConRespaldo({
+    // `modelo` fuerza uno solo (sin la lista de respaldo): se usa para el reintento.
+    const pedirAlModelo = (modelo?: string) => t.medir("llm", llmConRespaldo({
+      ...(modelo ? { model: modelo, models: [modelo] } : {}),
       messages: [
         { role: "system", content: SISTEMA },
         { role: "system", content: contextMsg },
@@ -133,12 +135,14 @@ Deno.serve(async (req: Request) => {
       max_tokens: 500,
     }, RESPALDO_MS));
 
-    // Una respuesta sin tool o con el texto a decir vacío se pide una vez más antes de ejecutar nada.
+    // Una respuesta sin tool o con el texto a decir vacío se pide una vez más antes de ejecutar nada. El reintento
+    // va al modelo de respaldo: MiMo repetía la misma respuesta vacía (4 de 4 en «¿cuánto gasté esta semana?»)
+    // y Claude Haiku, con el mismo contexto, contestó bien.
     let call: { function: { name: string; arguments?: string } } | undefined;
     let prov = ""; // proveedor que respondió (para seguir la latencia por proveedor en los logs)
     let respaldo = false;
     for (let intento = 0; intento < 2; intento++) {
-      const llm = await pedirAlModelo();
+      const llm = await pedirAlModelo(intento > 0 && LLM_FALLBACK ? LLM_FALLBACK : undefined);
       respaldo ||= llm.respaldo;
       if (!llm.ok) {
         console.error("agent modelo:", llm.status, llm.cuerpo.slice(0, 300));

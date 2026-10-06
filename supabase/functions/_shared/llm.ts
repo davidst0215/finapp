@@ -23,6 +23,8 @@ const PROVEEDORES = configurados.length ? configurados : ["io-net", "deepinfra",
 // pero es ~0.6 s más lento (p50 2.2 s contra 1.6 s, 5-oct) y cuesta ~7× por token: respaldo, no principal.
 // Secreto LLM_FALLBACK para cambiarlo; vacío lo apaga. Sus proveedores (Bedrock y Vertex) son sin retención.
 const RESPALDO = (Deno.env.get("LLM_FALLBACK") ?? "anthropic/claude-haiku-4.5").trim();
+/** Modelo de respaldo ("" si está apagado). El agente también lo usa para reintentar una respuesta vacía. */
+export const LLM_FALLBACK = RESPALDO;
 const PROVEEDORES_RESPALDO = RESPALDO ? ["amazon-bedrock", "google-vertex"] : [];
 
 // `only`: si los proveedores elegidos fallan, OpenRouter NO cae en otros que nadie revisó (privacidad de
