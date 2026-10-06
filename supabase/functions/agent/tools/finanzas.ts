@@ -102,9 +102,11 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
     const sumar = (filas: Gasto[]) => filas.reduce((s, c) => s + Number(c.total_amount), 0);
     const week = (weekRes.data ?? []) as Gasto[];
     const last7 = (last7Res.data ?? []) as Gasto[];
-    ctxLines.push(`\nESTA SEMANA (lunes ${semana.lunes} a hoy ${semana.hoy}): gastos S/${sumar(week).toFixed(2)}`);
+    // Fechas en palabras: con "2026-10-05" MiMo llegó a decir "el lunes veinte de octubre" (5-oct).
+    const enPalabras = (f: string) => `${Number(f.slice(8, 10))} de ${MESES[Number(f.slice(5, 7))]}`;
+    ctxLines.push(`\nESTA SEMANA (desde el lunes ${enPalabras(semana.lunes)} hasta hoy ${enPalabras(semana.hoy)}): gastos S/${sumar(week).toFixed(2)}`);
     for (const c of week.slice(0, 6)) ctxLines.push(`- ${c.category_name}: S/${c.total_amount}`);
-    ctxLines.push(`ÚLTIMOS 7 DÍAS (${semana.hace7} a ${semana.hoy}): gastos S/${sumar(last7).toFixed(2)}`);
+    ctxLines.push(`ÚLTIMOS 7 DÍAS (del ${enPalabras(semana.hace7)} a hoy): gastos S/${sumar(last7).toFixed(2)}`);
   }
   if (budgets.length > 0) {
     ctxLines.push("\nPRESUPUESTOS:");
