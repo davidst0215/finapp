@@ -1,24 +1,11 @@
 // Textos del saldo de IA. Puro y sin React: se prueba con Node (format.test.ts).
-import type { Proyeccion } from './types';
-
-/** Debajo de este restante (US$) el saldo se marca como alerta. Igual que el servidor (_shared/saldo.ts). */
-export const UMBRAL_BAJO_USD = 2;
+// El servidor ya manda el texto de alcance y si el saldo está bajo (supabase/functions/_shared/saldo.ts):
+// aquí solo queda dar formato a montos, caracteres y fechas.
 
 export const usd = (n: number) => `US$ ${n.toFixed(2)}`;
 
-export function duracion(dias: number): string {
-  if (dias < 30) return dias <= 1 ? 'un día' : `unos ${dias} días`;
-  const meses = Math.round(dias / 30);
-  return meses === 1 ? 'un mes' : `unos ${meses} meses`;
-}
-
-export function textoProyeccion(p: Proyeccion): string {
-  if (p.tipo === 'agotado') return 'Saldo agotado';
-  if (p.tipo === 'mas_de_12_meses') return 'A este ritmo dura más de 12 meses';
-  return `A este ritmo alcanza para ${duracion(p.dias)}`;
-}
-
-const num = (n: number) => n.toLocaleString('es-PE');
+// Separador de miles fijo (coma): no depende del locale del navegador ni de Node.
+const num = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
 export const caracteres = (usados: number, limite: number) => `${num(usados)} de ${num(limite)} caracteres`;
 

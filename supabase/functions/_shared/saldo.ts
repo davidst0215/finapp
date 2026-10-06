@@ -1,7 +1,7 @@
 // Saldo de IA de Wabid: lo que queda en OpenRouter (modelo) y el consumo de ElevenLabs (voz).
 // Lógica pura, sin globals de Deno: se prueba con Node (saldo.test.ts). Las llaves nunca salen de aquí:
 // el resultado solo trae números y mensajes cortos, jamás la llave ni el cuerpo crudo de un tercero.
-import { palabras } from "./voz.ts";
+import { apocope, palabras } from "./voz.ts";
 
 /** Debajo de este restante (US$) la app lo marca como alerta y la voz aconseja recargar. */
 export const UMBRAL_BAJO_USD = 2;
@@ -17,11 +17,15 @@ export type SaldoOpenRouter =
     estado: "ok";
     restante: number;
     credito: number;
-    usado: number;
+    /** Gasto del día UTC: se reinicia a las 19:00 de Lima. */
     hoy: number;
     semana: number;
     mes: number;
     proyeccion: Proyeccion;
+    /** Frase lista para mostrar o decir: "A este ritmo te alcanza para unos dos meses". */
+    alcance: string;
+    /** Restante por debajo de UMBRAL_BAJO_USD: la app lo marca como alerta. */
+    bajo: boolean;
   }
   | { estado: "error"; mensaje: string };
 
@@ -71,16 +75,16 @@ function errorOpenRouter(r: Cruda): string | null {
 
 /**
  * `key` = GET /api/v1/key (tope y consumo de esta llave); `credits` = GET /api/v1/credits (cuenta).
- * Lo disponible es el menor de los dos topes: el que se acabe primero corta el servicio. Si solo
- * responde uno se usa ese; si ninguno, error.
+ * Lo disponible es el menor de los topes que se conocen: el que se acabe primero corta el servicio.
+ * Un tope de llave con `limit_reset` se renueva solo (diario, semanal o mensual): no es autonomía, así que
+ * se ignora y manda la cuenta. Si /credits falla (403 u otro) se usa el tope de la llave cuando lo hay.
  */
 export function mapearOpenRouter(key: Cruda, credits: Cruda, ahora: Date = new Date()): SaldoOpenRouter {
   const dk = errorOpenRouter(key) === null ? obj(obj(key?.cuerpo).data) : null;
   const dc = errorOpenRouter(credits) === null ? obj(obj(credits?.cuerpo).data) : null;
 
-  // Cada tope: restante y total. La llave sin límite (limit null) no aporta tope.
   const topes: { restante: number; total: number }[] = [];
-  if (dk) {
+  if (dk && (dk.limit_reset ?? null) === null) {
     const limite = num(dk.limit), restante = num(dk.limit_remaining);
     if (limite !== null && restante !== null) topes.push({ restante, total: limite });
   }
@@ -89,21 +93,28 @@ export function mapearOpenRouter(key: Cruda, credits: Cruda, ahora: Date = new D
     if (total !== null && usado !== null) topes.push({ restante: total - usado, total });
   }
   if (topes.length === 0) {
-    return { estado: "error", mensaje: errorOpenRouter(key) ?? errorOpenRouter(credits) ?? "OpenRouter respondió datos que no entiendo" };
+    // Un fallo de la llave manda; si solo falló /credits no es culpa de la llave.
+    return {
+      estado: "error",
+      mensaje: errorOpenRouter(key) ??
+        (errorOpenRouter(credits) !== null || !dc ? "No pude leer los créditos de OpenRouter" : "OpenRouter respondió datos que no entiendo"),
+    };
   }
   const tope = topes.reduce((a, b) => (b.restante < a.restante ? b : a));
 
   const semana = num(dk?.usage_weekly) ?? 0, mes = num(dk?.usage_monthly) ?? 0;
   const restante = Math.max(0, Math.round(tope.restante * 10000) / 10000);
+  const proyeccion = proyectar(restante, ritmoDiario(semana, mes, ahora));
   return {
     estado: "ok",
     restante,
     credito: tope.total,
-    usado: num(dk?.usage) ?? (dc ? num(dc.total_usage) ?? 0 : 0),
     hoy: num(dk?.usage_daily) ?? 0,
     semana,
     mes,
-    proyeccion: proyectar(restante, ritmoDiario(semana, mes, ahora)),
+    proyeccion,
+    alcance: textoAlcance(proyeccion),
+    bajo: restante < UMBRAL_BAJO_USD,
   };
 }
 
@@ -168,36 +179,43 @@ export function conCache<T>(cargar: () => Promise<T>, vigente: (v: T) => boolean
   };
 }
 
-/** Se guarda en caché si algo salió bien: un error pasajero no debe quedar fijo 60 s. */
-export const saldoVigente = (s: Saldo) => s.openrouter.estado === "ok";
+/** Solo se guarda un resultado sin errores: un fallo pasajero (de cualquiera de los dos) no debe quedar fijo 60 s. */
+export const saldoVigente = (s: Saldo) => s.openrouter.estado === "ok" && s.elevenlabs.estado !== "error";
 
 // --- Frase para la voz ---------------------------------------------------------------------------------------------
 
 export const usd = (n: number) => `US$ ${n.toFixed(2)}`;
 
-/** "unos nueve meses", "unos once días". Los números van en palabras: la voz los lee igual y el texto queda limpio. */
+/** "unos nueve meses", "unos veintiún días", "menos de un día". Los números van en palabras: la voz los lee igual y el texto queda limpio. */
 export function duracion(dias: number): string {
-  if (dias < 30) return dias <= 1 ? "un día" : `unos ${palabras(dias)} días`;
+  if (dias < 1) return "menos de un día";
+  if (dias < 2) return "un día";
+  if (dias < 30) return `unos ${apocope(palabras(dias))} días`;
   const meses = Math.round(dias / 30);
   return meses === 1 ? "un mes" : `unos ${palabras(meses)} meses`;
 }
 
-/** Respuesta hablada corta. Montos en cifras con formato US$ 9.73: el sistema los convierte a palabras. */
+/** Frase de alcance, igual en pantalla y en voz. */
+export function textoAlcance(p: Proyeccion): string {
+  if (p.tipo === "agotado") return "Saldo agotado";
+  if (p.tipo === "mas_de_12_meses") return "A este ritmo te dura más de doce meses";
+  return `A este ritmo te alcanza para ${duracion(p.dias)}`;
+}
+
+const minuscula = (t: string) => t.charAt(0).toLowerCase() + t.slice(1);
+
+/**
+ * Respuesta hablada, dos frases como máximo. Montos en cifras con formato US$ 9.73 (el sistema los pasa a palabras).
+ * Se habla del mes y no del día: el "hoy" de OpenRouter es el día UTC y se reinicia a las 19:00 de Lima.
+ */
 export function mensajeVoz(s: Saldo): string {
   const o = s.openrouter;
   if (o.estado !== "ok") return "No pude consultar tu saldo de OpenRouter ahora. Inténtalo en un momento.";
 
-  let frase: string;
-  if (o.proyeccion.tipo === "agotado") frase = "Se te acabó el saldo de OpenRouter.";
-  else {
-    const alcance = o.proyeccion.tipo === "dias" ? `te alcanza para ${duracion(o.proyeccion.dias)}` : "te dura más de doce meses";
-    frase = `Te quedan ${usd(o.restante)} en OpenRouter; a este ritmo ${alcance}.`;
-  }
-  frase += ` Hoy llevas ${usd(o.hoy)} y este mes ${usd(o.mes)}.`;
-  if (o.restante < UMBRAL_BAJO_USD) frase += " Conviene recargar pronto.";
-  if (s.elevenlabs.estado === "ok") {
-    const v = s.elevenlabs;
-    frase += ` En voz usaste ${v.usados} de ${v.limite} caracteres.`;
-  }
-  return frase;
+  const primera = o.proyeccion.tipo === "agotado"
+    ? "Se te acabó el saldo de OpenRouter, conviene recargar."
+    : `Te quedan ${usd(o.restante)} en OpenRouter${o.bajo ? ", conviene recargar" : ""}; ${minuscula(o.alcance)}.`;
+  const v = s.elevenlabs;
+  const voz = v.estado === "ok" && v.limite > 0 ? ` y la voz va en ${Math.round((v.usados / v.limite) * 100)}%` : "";
+  return `${primera} Este mes llevas ${usd(o.mes)}${voz}.`;
 }

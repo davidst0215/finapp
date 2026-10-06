@@ -1,6 +1,6 @@
 import { Info, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { caracteres, fechaCorta, horaLima, textoProyeccion, UMBRAL_BAJO_USD, usd } from './format';
+import { caracteres, fechaCorta, horaLima, usd } from './format';
 import type { Saldo, SaldoVoz } from './types';
 import { useSaldo } from './useSaldo';
 
@@ -32,7 +32,7 @@ function Cuerpo({ saldo }: { saldo: Saldo }) {
   if (o.estado === 'error') {
     return <p className="text-sm text-expense">{o.mensaje}</p>;
   }
-  const bajo = o.restante < UMBRAL_BAJO_USD;
+  const { bajo } = o;
   return (
     <>
       <p className="text-sm text-slate-400">Te quedan en OpenRouter</p>
@@ -41,11 +41,11 @@ function Cuerpo({ saldo }: { saldo: Saldo }) {
         <span className="text-sm tabular-nums text-slate-500">de {usd(o.credito)}</span>
       </p>
       <p className={cn('mt-1.5 text-sm', bajo ? 'font-medium text-expense' : 'text-slate-300')}>
-        {bajo && o.proyeccion.tipo !== 'agotado' ? 'Queda poco: conviene recargar. ' : ''}
-        {textoProyeccion(o.proyeccion)}
+        {bajo && o.restante > 0 ? 'Queda poco: conviene recargar. ' : ''}
+        {o.alcance}
       </p>
-      <dl className="mt-4 grid grid-cols-3 gap-2 border-t border-slate-800 pt-3">
-        {([['Hoy', o.hoy], ['Semana', o.semana], ['Mes', o.mes]] as const).map(([etiqueta, valor]) => (
+      <dl className="mt-4 grid grid-cols-[1.5fr_1fr_1fr] gap-3 border-t border-slate-800 pt-3">
+        {([['Desde las 7 p. m.', o.hoy], ['Semana', o.semana], ['Mes', o.mes]] as const).map(([etiqueta, valor]) => (
           <div key={etiqueta}>
             <dt className="text-xs text-slate-500">{etiqueta}</dt>
             <dd className="mt-0.5 text-base font-bold tabular-nums text-slate-100">{usd(valor)}</dd>

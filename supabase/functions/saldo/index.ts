@@ -5,6 +5,7 @@
 // Secretos: OPENROUTER_API_KEY, ELEVENLABS_API_KEY, WABID_OWNER_ID (los tres ya existen).
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { esDueno } from "../_shared/dueno.ts";
 import { corsHeaders, json } from "../_shared/http.ts";
 import { bearer, jwtSub } from "../_shared/jwt.ts";
 import { obtenerSaldo } from "../_shared/saldoServicio.ts";
@@ -29,7 +30,7 @@ Deno.serve(async (req: Request) => {
     // Solo el dueño; sin WABID_OWNER_ID configurado falla cerrado.
     const ownerId = Deno.env.get("WABID_OWNER_ID");
     if (!ownerId) return json({ error: "Falta configurar WABID_OWNER_ID" }, 503);
-    if (sub !== ownerId) return json({ error: "No autorizado" }, 403);
+    if (!esDueno(sub, ownerId)) return json({ error: "No autorizado" }, 403);
 
     return json(await obtenerSaldo());
   } catch (e) {

@@ -5,6 +5,8 @@ import type { Saldo } from './types';
 
 async function readError(error: unknown): Promise<string> {
   if (error instanceof FunctionsHttpError) {
+    // 404 = la función aún no está desplegada: no es un problema de conexión.
+    if ((error.context as Response).status === 404) return 'Saldo no disponible aún';
     try {
       const body = await (error.context as Response).json();
       if (typeof body?.error === 'string') return body.error;

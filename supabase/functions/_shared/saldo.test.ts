@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { conCache, consultarSaldo, duracion, mapearElevenLabs, mapearOpenRouter, mensajeVoz, MSG_SIN_PERMISO, proyectar, ritmoDiario, type Saldo } from "./saldo.ts";
+import { conCache, consultarSaldo, duracion, mapearElevenLabs, mapearOpenRouter, mensajeVoz, MSG_SIN_PERMISO, proyectar, ritmoDiario, saldoVigente, textoAlcance, type Saldo } from "./saldo.ts";
 import { paraVoz } from "./voz.ts";
 
 const KEY = { status: 200, cuerpo: { data: { limit: 10, limit_remaining: 9.73, usage: 0.27, usage_daily: 0.1, usage_weekly: 0.26, usage_monthly: 0.27 } } };
@@ -64,7 +64,8 @@ test("ritmo diario: sin gasto es 0", () => {
 test("OpenRouter: datos reales de /key y /credits", () => {
   // Martes 12:00 UTC: semana 0.26 / 1.5 = 0.1733 al día (el mes da 0.27 / 5.5 = 0.049); 9.73 / 0.1733 = 56.
   assert.deepEqual(mapearOpenRouter(KEY, CREDITS, MARTES), {
-    estado: "ok", restante: 9.73, credito: 10, usado: 0.27, hoy: 0.1, semana: 0.26, mes: 0.27, proyeccion: { tipo: "dias", dias: 56 },
+    estado: "ok", restante: 9.73, credito: 10, hoy: 0.1, semana: 0.26, mes: 0.27, proyeccion: { tipo: "dias", dias: 56 },
+    alcance: "A este ritmo te alcanza para unos dos meses", bajo: false,
   });
   // Lunes 06:00 UTC con el mismo gasto semanal: antes (semana / 7) daba 261 días, ahora el mínimo de 1 día da 37.
   const lunes = mapearOpenRouter(KEY, CREDITS, utc("2026-10-05T06:00:00Z"));
@@ -85,6 +86,40 @@ test("OpenRouter: llave sin límite usa los créditos de la cuenta; si /credits 
   assert.equal(a.estado === "ok" && a.proyeccion.tipo, "mas_de_12_meses");
   const b = mapearOpenRouter(KEY, { status: 500, cuerpo: null }, MARTES);
   assert.equal(b.estado === "ok" && b.restante, 9.73);
+});
+
+test("OpenRouter: una llave con limit_reset se renueva sola: no es autonomía, manda la cuenta", () => {
+  const conReinicio = { status: 200, cuerpo: { data: { ...KEY.cuerpo.data, limit: 10, limit_remaining: 9.73, limit_reset: "monthly" } } };
+  const cuenta = { status: 200, cuerpo: { data: { total_credits: 10, total_usage: 7 } } };
+  const r = mapearOpenRouter(conReinicio, cuenta, MARTES);
+  assert.equal(r.estado === "ok" && r.restante, 3, "créditos − uso de la cuenta, no limit_remaining");
+  assert.equal(r.estado === "ok" && r.bajo, false);
+  // Sin los créditos de la cuenta tampoco se inventa autonomía con el tope que se renueva.
+  assert.deepEqual(mapearOpenRouter(conReinicio, { status: 403, cuerpo: null }, MARTES), { estado: "error", mensaje: "No pude leer los créditos de OpenRouter" });
+  // limit_reset null explícito (el caso real de David) sí cuenta como tope fijo.
+  const fijo = mapearOpenRouter({ status: 200, cuerpo: { data: { ...KEY.cuerpo.data, limit_reset: null } } }, CREDITS, MARTES);
+  assert.equal(fijo.estado === "ok" && fijo.restante, 9.73);
+});
+
+test("OpenRouter: si /credits falla (403) se usa el tope de la llave y no se culpa a la llave", () => {
+  const r = mapearOpenRouter(KEY, { status: 403, cuerpo: { error: "forbidden" } }, MARTES);
+  assert.equal(r.estado === "ok" && r.restante, 9.73);
+  assert.equal(r.estado === "ok" && r.credito, 10);
+  // Sin tope en la llave y sin créditos: error, pero del dato que falta, no de la llave.
+  const sinLimite = { status: 200, cuerpo: { data: { limit: null, limit_remaining: null, usage_weekly: 0, usage_monthly: 0 } } };
+  assert.deepEqual(mapearOpenRouter(sinLimite, { status: 403, cuerpo: null }, MARTES), { estado: "error", mensaje: "No pude leer los créditos de OpenRouter" });
+});
+
+test("OpenRouter: el servidor manda el saldo bajo y el texto de alcance ya listos", () => {
+  const poco = { status: 200, cuerpo: { data: { total_credits: 10, total_usage: 8.8 } } };
+  const r = mapearOpenRouter({ status: 200, cuerpo: { data: { usage_daily: 0, usage_weekly: 0.5, usage_monthly: 0.5 } } }, poco, MARTES);
+  assert.equal(r.estado === "ok" && r.bajo, true); // 1.2 < 2
+  assert.equal(r.estado === "ok" && r.alcance, "A este ritmo te alcanza para unos tres días"); // 0.5/1.5 = 0.33/día -> 3.6 días
+  const justo = mapearOpenRouter(null, { status: 200, cuerpo: { data: { total_credits: 10, total_usage: 8 } } }, MARTES);
+  assert.equal(justo.estado === "ok" && justo.bajo, false, "exactamente US$ 2 ya no es bajo");
+  const cero = mapearOpenRouter(null, { status: 200, cuerpo: { data: { total_credits: 10, total_usage: 10 } } }, MARTES);
+  assert.equal(cero.estado === "ok" && cero.bajo, true);
+  assert.equal(cero.estado === "ok" && cero.alcance, "Saldo agotado");
 });
 
 test("OpenRouter: restante negativo se corta en cero y queda agotado", () => {
@@ -168,37 +203,66 @@ test("caché: 60 s, concurrentes comparten consulta y los fallos no se guardan",
   assert.equal(n, 3, "vencido: reconsulta");
 });
 
+test("caché: no se guarda un resultado con error de ElevenLabs ni de OpenRouter", () => {
+  const ok = mapearOpenRouter(KEY, CREDITS, MARTES);
+  const base = { openrouter: ok, elevenlabs: { estado: "ok", usados: 1, limite: 2, renueva: null, plan: null }, actualizado: "" } as Saldo;
+  assert.equal(saldoVigente(base), true);
+  assert.equal(saldoVigente({ ...base, elevenlabs: { estado: "sin_permiso", mensaje: MSG_SIN_PERMISO } }), true, "sin_permiso es estable: se guarda");
+  assert.equal(saldoVigente({ ...base, elevenlabs: { estado: "error", mensaje: "ElevenLabs no respondió" } }), false);
+  assert.equal(saldoVigente({ ...base, openrouter: { estado: "error", mensaje: "x" } }), false);
+});
+
 const saldoOk = (over: Record<string, unknown> = {}): Saldo => ({
-  openrouter: { estado: "ok", restante: 9.73, credito: 10, usado: 0.27, hoy: 0.1, semana: 0.26, mes: 0.27, proyeccion: { tipo: "dias", dias: 261 }, ...over } as never,
+  openrouter: { estado: "ok", restante: 9.73, credito: 10, hoy: 0.1, semana: 0.26, mes: 0.27, proyeccion: { tipo: "dias", dias: 261 }, alcance: "A este ritmo te alcanza para unos nueve meses", bajo: false, ...over } as never,
   elevenlabs: { estado: "sin_permiso", mensaje: MSG_SIN_PERMISO },
   actualizado: "2026-10-06T12:00:00.000Z",
 });
 
-test("duración hablada: días, meses y singulares", () => {
+test("duración hablada: apócope, singulares y menos de un día", () => {
+  assert.equal(duracion(0), "menos de un día");
   assert.equal(duracion(1), "un día");
+  assert.equal(duracion(2), "unos dos días");
   assert.equal(duracion(11), "unos once días");
+  assert.equal(duracion(21), "unos veintiún días");
   assert.equal(duracion(29), "unos veintinueve días");
-  assert.equal(duracion(35), "un mes");
+  assert.equal(duracion(31), "un mes");
   assert.equal(duracion(261), "unos nueve meses");
   assert.equal(duracion(365), "unos doce meses");
 });
 
-test("voz: monto en cifras con formato (la voz lo pasa a palabras) y meses de alcance", () => {
-  const texto = mensajeVoz(saldoOk());
-  assert.equal(texto, "Te quedan US$ 9.73 en OpenRouter; a este ritmo te alcanza para unos nueve meses. Hoy llevas US$ 0.10 y este mes US$ 0.27.");
-  assert.match(paraVoz(texto), /^Te quedan nueve dólares con setenta y tres centavos en OpenRouter/);
-  assert.match(paraVoz(texto), /Hoy llevas diez centavos y este mes veintisiete centavos\.$/);
+test("alcance: misma frase para pantalla y voz", () => {
+  assert.equal(textoAlcance({ tipo: "dias", dias: 0 }), "A este ritmo te alcanza para menos de un día");
+  assert.equal(textoAlcance({ tipo: "dias", dias: 68 }), "A este ritmo te alcanza para unos dos meses");
+  assert.equal(textoAlcance({ tipo: "mas_de_12_meses" }), "A este ritmo te dura más de doce meses");
+  assert.equal(textoAlcance({ tipo: "agotado" }), "Saldo agotado");
 });
 
-test("voz: ritmo cero, saldo agotado, saldo bajo y voz con datos", () => {
-  assert.match(mensajeVoz(saldoOk({ semana: 0, proyeccion: { tipo: "mas_de_12_meses" } })), /te dura más de doce meses/);
-  const agotado = mensajeVoz(saldoOk({ restante: 0, proyeccion: { tipo: "agotado" } }));
-  assert.match(agotado, /^Se te acabó el saldo de OpenRouter\./);
-  assert.match(agotado, /recargar/);
-  assert.match(mensajeVoz(saldoOk({ restante: 1.5, proyeccion: { tipo: "dias", dias: 20 } })), /unos veinte días\..*recargar pronto/);
-  assert.equal(mensajeVoz(saldoOk()).includes("caracteres"), false, "sin permiso la voz no dice nada de ElevenLabs");
-  const conVoz = { ...saldoOk(), elevenlabs: { estado: "ok", usados: 1200, limite: 100000, renueva: null, plan: null } } as Saldo;
-  assert.match(mensajeVoz(conVoz), /En voz usaste 1200 de 100000 caracteres\.$/);
+test("voz: dos frases, monto en cifras con formato y sin el 'hoy' de UTC", () => {
+  const texto = mensajeVoz(saldoOk());
+  assert.equal(texto, "Te quedan US$ 9.73 en OpenRouter; a este ritmo te alcanza para unos nueve meses. Este mes llevas US$ 0.27.");
+  assert.equal(texto.split(/\.\s/).length, 2);
+  assert.equal(/hoy/i.test(texto), false);
+  assert.match(paraVoz(texto), /^Te quedan nueve dólares con setenta y tres centavos en OpenRouter/);
+  assert.match(paraVoz(texto), /Este mes llevas veintisiete centavos\.$/);
+});
+
+test("voz: ritmo cero, saldo agotado y saldo bajo", () => {
+  assert.match(mensajeVoz(saldoOk({ proyeccion: { tipo: "mas_de_12_meses" }, alcance: "A este ritmo te dura más de doce meses" })), /a este ritmo te dura más de doce meses\./);
+  const agotado = mensajeVoz(saldoOk({ restante: 0, proyeccion: { tipo: "agotado" }, alcance: "Saldo agotado", bajo: true }));
+  assert.equal(agotado, "Se te acabó el saldo de OpenRouter, conviene recargar. Este mes llevas US$ 0.27.");
+  const bajo = mensajeVoz(saldoOk({ restante: 1.5, bajo: true, alcance: "A este ritmo te alcanza para unos veintiún días" }));
+  assert.equal(bajo, "Te quedan US$ 1.50 en OpenRouter, conviene recargar; a este ritmo te alcanza para unos veintiún días. Este mes llevas US$ 0.27.");
+});
+
+test("voz: con datos de ElevenLabs solo el porcentaje usado; sin datos, nada", () => {
+  assert.equal(mensajeVoz(saldoOk()).includes("voz"), false, "sin permiso la voz no dice nada de ElevenLabs");
+  const conVoz = { ...saldoOk(), elevenlabs: { estado: "ok", usados: 12480, limite: 100000, renueva: null, plan: null } } as Saldo;
+  const texto = mensajeVoz(conVoz);
+  assert.match(texto, /Este mes llevas US\$ 0\.27 y la voz va en 12%\.$/);
+  assert.equal(texto.split(/\.\s/).length, 2);
+  assert.match(paraVoz(texto), /la voz va en 12 por ciento\.$/);
+  const sinLimite = { ...saldoOk(), elevenlabs: { estado: "ok", usados: 5, limite: 0, renueva: null, plan: null } } as Saldo;
+  assert.equal(mensajeVoz(sinLimite).includes("voz"), false, "límite 0: no se divide entre cero");
 });
 
 test("voz: si OpenRouter falla, mensaje corto sin detalles", () => {

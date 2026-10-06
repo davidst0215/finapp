@@ -2,7 +2,20 @@
 export type Proyeccion = { tipo: 'dias'; dias: number } | { tipo: 'mas_de_12_meses' } | { tipo: 'agotado' };
 
 export type SaldoOpenRouter =
-  | { estado: 'ok'; restante: number; credito: number; usado: number; hoy: number; semana: number; mes: number; proyeccion: Proyeccion }
+  | {
+    estado: 'ok';
+    restante: number;
+    credito: number;
+    /** Gasto del día UTC: se reinicia a las 19:00 de Lima. */
+    hoy: number;
+    semana: number;
+    mes: number;
+    proyeccion: Proyeccion;
+    /** Frase de alcance ya redactada por el servidor. */
+    alcance: string;
+    /** Restante bajo el umbral: se marca como alerta. */
+    bajo: boolean;
+  }
   | { estado: 'error'; mensaje: string };
 
 export type SaldoVoz =
