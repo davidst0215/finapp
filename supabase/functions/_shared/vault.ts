@@ -17,6 +17,7 @@ import { resolveDue } from "./vault/fechas.ts";
 import {
   opCreateTask, opMoveTask, opSetStatus, PartialMoveError, VaultError, type FileWrite,
 } from "./vault/ops.ts";
+import { armarCatalogo, CatalogoCache, parametrosBusqueda, recortarFicha, topePorFicha, type Catalogo, type CatalogoRow } from "./vault/catalogo.ts";
 import { rowsForFile } from "./vault/rows.ts";
 import {
   buildAnswerMessages, clienteChips, mensajeMemoria, parseAnswer, pickRelated, toSources, type ClienteChip, type Hit,
@@ -365,7 +366,11 @@ async function indexQuietly(db: SupabaseClient, userId: string, writes: FileWrit
 }
 
 // --- Memoria ---------------------------------------------------------------------------------------
-export type SearchInput = { q: unknown; cliente?: unknown; answer?: unknown; limit?: unknown };
+export type SearchInput = {
+  q: unknown; cliente?: unknown; answer?: unknown; limit?: unknown;
+  /** Rutas de fichas YA validadas contra el catálogo (resolverFichas): se leen completas en vez de buscar por palabras. */
+  fichaPaths?: string[];
+};
 export type SearchResult = {
   q: string;
   answer: string | null;
@@ -377,6 +382,33 @@ export type SearchResult = {
   /** Mensaje corto para la voz (solo si se pidió respuesta). */
   spoken: string | null;
 };
+
+const catalogoCache = new CatalogoCache();
+
+/**
+ * Catálogo de fichas para el contexto del agente. Se reutiliza mientras no cambie vault_sync.tree_sha: en el caso común
+ * cuesta una consulta de una fila. Si la migración 015 (vault_catalogo) aún no está aplicada, arma el catálogo sin frases.
+ */
+export async function cargarCatalogo(db: SupabaseClient, userId: string): Promise<Catalogo> {
+  const sha = (await getSyncState(db, userId))?.tree_sha ?? null;
+  const cached = catalogoCache.get(userId, sha);
+  if (cached) return cached;
+  let rows: CatalogoRow[];
+  const rpc = await db.rpc("vault_catalogo");
+  if (!rpc.error) {
+    rows = (rpc.data ?? []) as CatalogoRow[];
+  } else {
+    console.error("vault: vault_catalogo no disponible, catálogo sin frases:", rpc.error.message);
+    rows = await selectAll<CatalogoRow>((from, to) =>
+      db.from("vault_docs").select("path, title, cliente, proyecto").eq("user_id", userId).eq("kind", "ficha").order("path").range(from, to)
+    );
+  }
+  const cat = armarCatalogo(rows);
+  catalogoCache.set(userId, sha, cat);
+  return cat;
+}
+
+type FichaDoc = { path: string; title: string; cliente: string | null; proyecto: string | null; padre: string | null; tags: string[] | null; links: string[] | null; content: string | null };
 
 async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -400,12 +432,35 @@ export async function searchMemory(db: SupabaseClient, userId: string, input: Se
         .order("path").range(from, to),
   );
 
+  // Fichas que eligió la IA: se leen completas (solo fichas del usuario, aunque la ruta no viniera validada). Las notas
+  // sueltas siguen buscándose por palabras como complemento.
+  const fichaPaths = [...new Set((input.fichaPaths ?? []).filter((p): p is string => typeof p === "string"))].slice(0, 2);
+  const fichasP: PromiseLike<FichaDoc[]> = fichaPaths.length
+    ? db.from("vault_docs").select("path, title, cliente, proyecto, padre, tags, links, content").eq("user_id", userId).eq("kind", "ficha").in("path", fichaPaths)
+        .then(({ data, error }) => {
+          if (error) throw new VaultError(`No pude leer las fichas: ${error.message}`, 500);
+          const rows = (data ?? []) as FichaDoc[];
+          return fichaPaths.flatMap((p) => rows.filter((d) => d.path === p)); // en el orden en que se eligieron
+        })
+    : Promise.resolve([]);
+
+  // Primero se leen las fichas: si ninguna existe (catálogo cacheado con una ficha ya borrada), la búsqueda por palabras
+  // vuelve a cubrir fichas y notas en vez de quedarse solo con notas.
+  const completos: Record<string, string> = {};
+  const fichaDocs = await fichasP;
+  const fichaHits: Hit[] = fichaDocs.map((d) => {
+    completos[d.path] = recortarFicha(d.content ?? "", topePorFicha(fichaDocs.length), q);
+    return { path: d.path, kind: "ficha", title: d.title, cliente: d.cliente, proyecto: d.proyecto, padre: d.padre, tags: d.tags ?? [], links: d.links ?? [], score: 1, snippet: "", context: null };
+  });
+
   let hits: Hit[] = [];
   if (q) {
-    const { data, error } = await db.rpc("vault_search", { p_query: q, p_cliente: cliente, p_kinds: null, p_limit: limit, p_context: wantAnswer });
+    const busca = parametrosBusqueda(fichaHits.length, limit);
+    const { data, error } = await db.rpc("vault_search", { p_query: q, p_cliente: cliente, p_kinds: busca.kinds, p_limit: busca.limit, p_context: wantAnswer });
     if (error) throw new VaultError(`No pude buscar en el vault: ${error.message}`, 500);
     hits = (data ?? []) as Hit[];
   }
+  hits = [...fichaHits, ...hits];
   const catalog = await catalogP;
   const clientes = clienteChips(catalog);
   const base = { q, clientes, indexed: catalog.length };
@@ -424,12 +479,12 @@ export async function searchMemory(db: SupabaseClient, userId: string, input: Se
   let spoken: string | null = null;
   let shown = hits;
   if (wantAnswer) {
-    const fuentes = hits.slice(0, 4);
+    const fuentes = hits.slice(0, fichaHits.length ? fichaHits.length + 2 : 4);
     if (!llmConfigured()) {
       answerError = "El modelo no está configurado.";
     } else {
       try {
-        const res = await withTimeout(llmFetch({ messages: buildAnswerMessages(q, fuentes), temperature: 0.1, max_tokens: 260 }), 12_000);
+        const res = await withTimeout(llmFetch({ messages: buildAnswerMessages(q, fuentes, completos), temperature: 0.1, max_tokens: 260 }), 12_000);
         if (!res.ok) throw new Error(`modelo ${res.status}`);
         const data = await res.json();
         const parsed = parseAnswer(String(data?.choices?.[0]?.message?.content ?? ""), fuentes.length);

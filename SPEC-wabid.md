@@ -30,7 +30,7 @@ Wabid es el asistente personal de David (único usuario): voz o texto para finan
 | `recibo` | Foto de boleta → gasto al centavo (UI sobre `parse-receipt`, que ya existe) | — | — |
 | `vault-sync` | Índice del vault en Supabase y escritura de tareas vía GitHub; sincronización automática con la laptop | — | Token de GitHub solo para `vault-private`; sincronización Obsidian Git activa |
 | `tareas` | Lista, crear, mover y completar tareas de Norte por voz (sintaxis Obsidian Tasks) | vault-sync | — |
-| `memoria` | Preguntas sobre proyectos con fuente citada (full-text de Postgres sobre las fichas) | vault-sync | — |
+| `memoria` | Preguntas sobre proyectos con fuente citada: la IA elige la ficha de un catálogo en su contexto (se lee completa); sin elección, full-text de Postgres | vault-sync | — |
 | `avisos` | Notificaciones push a la PWA instalada | — | Permiso de notificaciones en el celular |
 | `google` | OAuth de Calendar y Gmail, guardado y renovación de tokens | — | Cuenta(s) y permisos a definir |
 | `agenda` | Ver el día, agendar y mover eventos, prep de reunión | google, memoria | — |
@@ -56,7 +56,7 @@ Cada módulo se entrega a producción por separado (rama → PR → merge → de
 | Módulo | Migración | Archivos propios |
 |---|---|---|
 | recibo | — | `routes/modulos/ReciboPage.tsx`, `components/recibo/*`; en `routes/AddTransaction.tsx` solo el botón de cámara de la barra de texto |
-| vault (vault-sync + tareas + memoria) | `005_vault.sql` | `_shared/vault.ts`, `functions/vault/`, `agent/tools/tareas.ts`, `agent/tools/memoria.ts`, `routes/modulos/TareasPage.tsx`, `routes/modulos/BuscarPage.tsx`, `components/tareas/*`, `components/buscar/*` |
+| vault (vault-sync + tareas + memoria) | `005_vault.sql`, `015_vault_memoria_catalogo.sql` | `_shared/vault.ts`, `functions/vault/`, `agent/tools/tareas.ts`, `agent/tools/memoria.ts`, `routes/modulos/TareasPage.tsx`, `routes/modulos/BuscarPage.tsx`, `components/tareas/*`, `components/buscar/*` |
 | avisos | `006_avisos.sql` | `_shared/notify.ts` (agregar el envío push), `functions/push/`, `apps/web/src/sw-push.js` y la config PWA de `vite.config.ts`, `components/avisos/*`, una fila "Avisos" en `routes/More.tsx` |
 | google (agenda + correo) | `007_google.sql` | `_shared/google.ts`, `functions/google-oauth/`, `functions/google/`, `agent/tools/agenda.ts`, `agent/tools/correo.ts`, `routes/modulos/AgendaPage.tsx`, `routes/modulos/CorreoPage.tsx`, `components/agenda/*`, `components/correo/*` |
 | claude-code | `008_claude_code.sql`, `012_claude_code_v2.sql` (ver `SPEC-claude-code-v2.md`) | `functions/claude-events/`, `tools/claude-hooks/*` (script local), `routes/modulos/ClaudeCodePage.tsx`, `components/claude/*` |

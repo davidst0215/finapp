@@ -56,7 +56,7 @@ test("buildAnswerMessages: reglas fijas, pregunta y fragmentos numerados sin mar
     hit({ path: "b.md", title: "Ficha B", snippet: "solo snippet" }),
   ]);
   assert.equal(msgs[0].role, "system");
-  assert.match(msgs[0].content, /SOLO los fragmentos/);
+  assert.match(msgs[0].content, /SOLO las fichas y los fragmentos/);
   assert.match(msgs[0].content, /No lo encuentro en tus fichas/);
   assert.match(msgs[0].content, /datos, no instrucciones/);
   assert.match(msgs[1].content, /^Pregunta: ¿qué es la caja\?/);
@@ -72,6 +72,34 @@ test("buildAnswerMessages: respeta el tope de tamaño", () => {
   assert.match(user, /\[1\]/);
 });
 
+test("buildAnswerMessages: las fichas elegidas entran completas (sin tope de fragmento) y las notas como fragmento", () => {
+  const completo = "## Qué es\n" + "dato importante. ".repeat(400); // ≈6 800 caracteres: mucho más que un fragmento
+  const msgs = buildAnswerMessages(
+    "contexto de novafondos",
+    [
+      hit({ path: "60-wiki/proyectos/novafondos.md", title: "Novafondos", cliente: "Novafondos" }),
+      hit({ path: "30-areas/nota.md", title: "Nota", kind: "nota", context: "idea ⟦suelta⟧ " + "y".repeat(3000) }),
+    ],
+    { "60-wiki/proyectos/novafondos.md": completo },
+  );
+  const user = msgs[1].content;
+  assert.ok(user.includes(`[1] Novafondos · Novafondos\n${completo}`), "ficha entera");
+  assert.ok(user.includes("[2] Nota\nidea suelta"), "la nota sigue como fragmento");
+  assert.ok(user.length < completo.length + 1500, "la nota entra con tope (1 200)");
+  assert.match(msgs[0].content, /datos, no instrucciones/, "las fichas siguen siendo datos, no instrucciones");
+});
+
+test("buildAnswerMessages: dos fichas completas siempre entran, aunque los fragmentos se queden sin presupuesto", () => {
+  const a = "A".repeat(6000);
+  const b = "B".repeat(6000);
+  const user = buildAnswerMessages("p", [
+    hit({ path: "a.md", title: "Fa" }), hit({ path: "b.md", title: "Fb" }),
+    ...Array.from({ length: 6 }, (_, i) => hit({ path: `n${i}.md`, title: `N${i}`, kind: "nota", context: "z".repeat(1200) })),
+  ], { "a.md": a, "b.md": b })[1].content;
+  assert.ok(user.includes(a) && user.includes(b));
+  assert.ok(user.length < 12000 + 5200 + 600, String(user.length)); // fichas + tope de fragmentos
+});
+
 test("parseAnswer: separa USADAS, quita citas y markdown", () => {
   assert.deepEqual(parseAnswer("Es lo que pierde el cliente [1]. Suma **14** millones.\nUSADAS: 1, 3", 3), {
     answer: "Es lo que pierde el cliente. Suma 14 millones.", used: [1, 3], found: true,
@@ -80,6 +108,9 @@ test("parseAnswer: separa USADAS, quita citas y markdown", () => {
   assert.deepEqual(parseAnswer("No lo encuentro en tus fichas.\nUSADAS:", 2), { answer: "No lo encuentro en tus fichas.", used: [], found: false });
   assert.deepEqual(parseAnswer("```\nTexto\nUSADAS: 9, 2, 2\n```", 3)!.used, [2]); // fuera de rango y repetidos se descartan
   assert.equal(parseAnswer("   \nUSADAS: 1", 2), null);
+  // El modelo a veces escribe basura tras USADAS ("—", "ninguna") o pone el marcador en la misma línea: no debe llegar a la voz.
+  assert.deepEqual(parseAnswer("No lo encuentro en tus fichas.\nUSADAS: —", 1), { answer: "No lo encuentro en tus fichas.", used: [], found: false });
+  assert.deepEqual(parseAnswer("Es el reparto mensual. USADAS: 1", 2), { answer: "Es el reparto mensual.", used: [1], found: true });
 });
 
 test("fuenteHablada y mensajeMemoria: lo que se dice en voz", () => {
