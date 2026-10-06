@@ -3,6 +3,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { readTheme, setTheme, type ThemeMode } from '@/lib/theme';
 import { guardarEscucharAlAbrir, leerEscucharAlAbrir } from '@/lib/conversacion';
 import { Switch } from '@/components/claude/Switch';
+import { SaldoIA } from '@/components/saldo/SaldoIA';
 import { LogOut, Sun, Moon, SunMoon, Wallet, Target, PiggyBank, CreditCard, Bell, BellRing, ChevronRight, CalendarDays, BarChart3, Video, Mail, Search, Terminal, MessageSquare } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { UserAvatar } from '@/components/ui/UserAvatar';
@@ -113,6 +114,13 @@ export function MorePage() {
           </div>
           <Switch checked={escucharAlAbrir} onChange={cambiarEscucharAlAbrir} label="Escuchar al abrir Wabid" />
         </div>
+      </div>
+
+      <div>
+        <p className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-2 px-1">
+          Saldo de IA
+        </p>
+        <SaldoIA />
       </div>
 
       <div>

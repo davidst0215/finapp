@@ -6,7 +6,7 @@ const U = ["cero", "uno", "dos", "tres", "cuatro", "cinco", "seis", "siete", "oc
 const D = ["", "", "", "treinta", "cuarenta", "cincuenta", "sesenta", "setenta", "ochenta", "noventa"];
 const C = ["", "ciento", "doscientos", "trescientos", "cuatrocientos", "quinientos", "seiscientos", "setecientos", "ochocientos", "novecientos"];
 
-const apocope = (s: string) => s.replace(/veintiuno$/, "veintiún").replace(/uno$/, "un");
+export const apocope = (s: string) => s.replace(/veintiuno$/, "veintiún").replace(/uno$/, "un");
 
 export function palabras(n: number): string {
   if (n < 30) return U[n];
