@@ -19,7 +19,11 @@ type Cita = { type?: string; url_citation?: { url?: string; title?: string } };
 
 async function searchWeb(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const consulta = str(args.consulta).trim() || ctx.text;
-  const hoy = ctx.limaNow.toISOString().slice(0, 10);
+  // Fecha y hora de Lima en palabras. Cerca de medianoche las páginas de otros países ya fechan sus notas al día
+  // siguiente; con solo "2026-10-05" el modelo podía tomar esa fecha como hoy (David oyó «martes 6» un lunes 5).
+  const hoy = new Date().toLocaleString("es-PE", {
+    timeZone: "America/Lima", weekday: "long", day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit",
+  });
   const t0 = performance.now();
   try {
     const r = await fetch(LLM_URL, {
@@ -28,7 +32,7 @@ async function searchWeb(args: Record<string, unknown>, ctx: AgentContext): Prom
       signal: AbortSignal.timeout(TIEMPO_MAX_MS),
       body: JSON.stringify({
         ...LLM_BODY,
-        // Exa explícito: con el modelo de respaldo (Claude) OpenRouter usaría la búsqueda nativa, con otra tarifa.
+        // Exa explícito: si algún día se enciende el modelo de respaldo (Claude), OpenRouter usaría su búsqueda nativa, con otra tarifa.
         plugins: [{ id: "web", engine: "exa", max_results: 3 }],
         temperature: 0.2,
         max_tokens: 300,
@@ -37,7 +41,7 @@ async function searchWeb(args: Record<string, unknown>, ctx: AgentContext): Prom
             role: "system",
             // Probado el 5-oct: sin estos límites salían 3 oraciones con fechas entre paréntesis y montos de 4 decimales
             // ("S/ 3.4357", que la voz no sabe leer), y en deportes mezclaba un partido viejo con uno reciente.
-            content: `Respondes por voz a David, en Lima, Perú. Hoy es ${hoy}. Con lo que dicen los resultados de la búsqueda, responde en 1 o 2 oraciones, máximo 40 palabras, con el dato principal primero. Si hay varios resultados en el tiempo, usa el más reciente; si los resultados no responden la pregunta o son viejos, dilo. Si el dato cambia durante el día, di de cuándo es con palabras ("hoy a las seis de la tarde"). Montos con 2 decimales (S/ 3.44, US$ 20.00). Sin listas, enlaces, paréntesis ni markdown.`,
+            content: `Respondes por voz a David, en Lima, Perú. Ahora en Lima es ${hoy}: esa es la fecha de hoy, aunque los resultados vengan fechados en otras zonas horarias. Con lo que dicen los resultados de la búsqueda, responde en 1 o 2 oraciones, máximo 40 palabras, con el dato principal primero. Si hay varios resultados en el tiempo, usa el más reciente; si los resultados no responden la pregunta o son viejos, dilo. Si el dato cambia durante el día, di de cuándo es con palabras ("hoy a las seis de la tarde"). Montos con 2 decimales (S/ 3.44, US$ 20.00). Sin listas, enlaces, paréntesis ni markdown.`,
           },
           { role: "user", content: consulta },
         ],
