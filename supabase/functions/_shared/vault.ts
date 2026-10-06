@@ -17,7 +17,7 @@ import { resolveDue } from "./vault/fechas.ts";
 import {
   opCreateTask, opMoveTask, opSetStatus, PartialMoveError, VaultError, type FileWrite,
 } from "./vault/ops.ts";
-import { armarCatalogo, CatalogoCache, recortarFicha, topePorFicha, type Catalogo, type CatalogoRow } from "./vault/catalogo.ts";
+import { armarCatalogo, CatalogoCache, parametrosBusqueda, recortarFicha, topePorFicha, type Catalogo, type CatalogoRow } from "./vault/catalogo.ts";
 import { rowsForFile } from "./vault/rows.ts";
 import {
   buildAnswerMessages, clienteChips, mensajeMemoria, parseAnswer, pickRelated, toSources, type ClienteChip, type Hit,
@@ -444,19 +444,22 @@ export async function searchMemory(db: SupabaseClient, userId: string, input: Se
         })
     : Promise.resolve([]);
 
+  // Primero se leen las fichas: si ninguna existe (catálogo cacheado con una ficha ya borrada), la búsqueda por palabras
+  // vuelve a cubrir fichas y notas en vez de quedarse solo con notas.
+  const completos: Record<string, string> = {};
+  const fichaDocs = await fichasP;
+  const fichaHits: Hit[] = fichaDocs.map((d) => {
+    completos[d.path] = recortarFicha(d.content ?? "", topePorFicha(fichaDocs.length), q);
+    return { path: d.path, kind: "ficha", title: d.title, cliente: d.cliente, proyecto: d.proyecto, padre: d.padre, tags: d.tags ?? [], links: d.links ?? [], score: 1, snippet: "", context: null };
+  });
+
   let hits: Hit[] = [];
   if (q) {
-    const { data, error } = await db.rpc("vault_search", {
-      p_query: q, p_cliente: cliente, p_kinds: fichaPaths.length ? ["nota"] : null, p_limit: fichaPaths.length ? 2 : limit, p_context: wantAnswer,
-    });
+    const busca = parametrosBusqueda(fichaHits.length, limit);
+    const { data, error } = await db.rpc("vault_search", { p_query: q, p_cliente: cliente, p_kinds: busca.kinds, p_limit: busca.limit, p_context: wantAnswer });
     if (error) throw new VaultError(`No pude buscar en el vault: ${error.message}`, 500);
     hits = (data ?? []) as Hit[];
   }
-  const completos: Record<string, string> = {};
-  const fichaHits: Hit[] = (await fichasP).map((d) => {
-    completos[d.path] = recortarFicha(d.content ?? "", topePorFicha(fichaPaths.length), q);
-    return { path: d.path, kind: "ficha", title: d.title, cliente: d.cliente, proyecto: d.proyecto, padre: d.padre, tags: d.tags ?? [], links: d.links ?? [], score: 1, snippet: "", context: null };
-  });
   hits = [...fichaHits, ...hits];
   const catalog = await catalogP;
   const clientes = clienteChips(catalog);
