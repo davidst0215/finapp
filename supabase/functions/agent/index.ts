@@ -93,13 +93,13 @@ Deno.serve(async (req: Request) => {
     const [user, contexts] = await Promise.all([
       t.medir("auth", supabase.auth.getUser(token).then((r) => r.data.user)),
       t.medir("ctx", Promise.all(MODULES.map(async (m) => {
-        if (!m.loadContext) return { id: m.id, prompt: "", data: undefined };
+        if (!m.loadContext) return { id: m.id, prompt: "", data: undefined, estable: false };
         try {
           return { id: m.id, ...(await m.loadContext(ctx)) };
         } catch (e) {
           // Un módulo caído no debe tumbar a los demás.
           console.error(`contexto ${m.id}:`, e instanceof Error ? e.message : e);
-          return { id: m.id, prompt: `(${m.id}: sin datos por un error temporal)`, data: undefined };
+          return { id: m.id, prompt: `(${m.id}: sin datos por un error temporal)`, data: undefined, estable: false };
         }
       }))),
     ]);
@@ -111,8 +111,10 @@ Deno.serve(async (req: Request) => {
     const hoy = new Date().toLocaleString("es-PE", {
       timeZone: "America/Lima", weekday: "long", day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit",
     });
-    // La hora va al final: lo que cambia cada minuto no debe romper el prefijo cacheado.
-    const contextMsg = [...contexts.map((c) => c.prompt).filter(Boolean), `HOY: ${hoy} (hora de Lima)`].join("\n\n");
+    // Lo estable (catálogo de fichas) va justo después de SISTEMA y lo volátil al final, con la hora en último lugar:
+    // lo que cambia en cada pedido no debe romper el prefijo cacheado.
+    const estableMsg = contexts.filter((c) => c.estable).map((c) => c.prompt).filter(Boolean).join("\n\n");
+    const contextMsg = [...contexts.filter((c) => !c.estable).map((c) => c.prompt).filter(Boolean), `HOY: ${hoy} (hora de Lima)`].join("\n\n");
 
     // La fase incluye leer el cuerpo: OpenRouter manda los headers de inmediato y el cuerpo al final.
     // `modelo` fuerza uno solo (sin la lista de respaldo): se usa para el reintento.
@@ -120,6 +122,7 @@ Deno.serve(async (req: Request) => {
       ...(modelo ? { model: modelo, models: [modelo] } : {}),
       messages: [
         { role: "system", content: SISTEMA },
+        ...(estableMsg ? [{ role: "system", content: estableMsg }] : []),
         { role: "system", content: contextMsg },
         ...(Array.isArray(history)
           ? history.slice(-8).map((h: { role: string; content: string }) => ({
