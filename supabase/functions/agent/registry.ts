@@ -4,6 +4,7 @@ import { correo } from "./tools/correo.ts";
 import { finanzas } from "./tools/finanzas.ts";
 import { reuniones } from "./tools/reuniones.ts";
 import { internet } from "./tools/internet.ts";
+import { saldo } from "./tools/saldo.ts";
 import { memoria } from "./tools/memoria.ts";
 import { tareas } from "./tools/tareas.ts";
 import { type AgentModule, tool } from "./types.ts";
@@ -33,4 +34,5 @@ export const MODULES: AgentModule<any>[] = [
   tareas,
   memoria,
   internet,
+  saldo,
 ];
