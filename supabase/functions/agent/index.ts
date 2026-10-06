@@ -135,9 +135,9 @@ Deno.serve(async (req: Request) => {
       max_tokens: 500,
     }, RESPALDO_MS));
 
-    // Una respuesta sin tool o con el texto a decir vacío se pide una vez más antes de ejecutar nada. El reintento
-    // va al modelo de respaldo: MiMo repetía la misma respuesta vacía (4 de 4 en «¿cuánto gasté esta semana?»)
-    // y Claude Haiku, con el mismo contexto, contestó bien.
+    // Una respuesta sin tool o con el texto a decir vacío se pide una vez más antes de ejecutar nada. Si hay modelo de
+    // respaldo encendido (LLM_FALLBACK), el reintento va a él; hoy está apagado y se reintenta con MiMo. La causa
+    // conocida de respuestas vacías (faltaba el gasto de la semana en el contexto) ya está resuelta.
     let call: { function: { name: string; arguments?: string } } | undefined;
     let prov = ""; // proveedor que respondió (para seguir la latencia por proveedor en los logs)
     let respaldo = false;
