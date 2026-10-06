@@ -38,10 +38,24 @@ export const MSG_SIN_PERMISO = "Voz: activa el permiso 'User → Read' de la API
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" ? v as Record<string, unknown> : {});
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
-/** Días que alcanza el saldo al ritmo de la semana (gasto semanal / 7). Sin ritmo, o más de un año: "más de 12 meses". */
-export function proyectar(restante: number, semana: number): Proyeccion {
+const DIA_MS = 86_400_000;
+
+/**
+ * Gasto diario estimado. `usage_weekly` y `usage_monthly` de OpenRouter son de la semana (desde el lunes) y del mes
+ * calendario en UTC (https://openrouter.ai/docs/api-reference/limits), no de los últimos 7 o 30 días: se divide cada
+ * uno entre los días transcurridos de su periodo (completos + fracción de hoy, mínimo 1 para que el primer rato del
+ * día no dispare la cifra) y se toma el mayor, que es el estimado conservador.
+ */
+export function ritmoDiario(semana: number, mes: number, ahora: Date): number {
+  const fraccionHoy = (ahora.getUTCHours() * 3600 + ahora.getUTCMinutes() * 60 + ahora.getUTCSeconds()) * 1000 / DIA_MS;
+  const diasSemana = Math.max(1, (ahora.getUTCDay() + 6) % 7 + fraccionHoy); // lunes = 0
+  const diasMes = Math.max(1, ahora.getUTCDate() - 1 + fraccionHoy);
+  return Math.max(semana / diasSemana, mes / diasMes);
+}
+
+/** Días que alcanza el saldo al ritmo diario dado. Sin ritmo, o más de un año: "más de 12 meses". */
+export function proyectar(restante: number, porDia: number): Proyeccion {
   if (!(restante > 0)) return { tipo: "agotado" };
-  const porDia = semana / 7;
   if (!(porDia > 0)) return { tipo: "mas_de_12_meses" };
   const dias = restante / porDia;
   return dias > DIAS_MAX ? { tipo: "mas_de_12_meses" } : { tipo: "dias", dias: Math.floor(dias) };
@@ -60,7 +74,7 @@ function errorOpenRouter(r: Cruda): string | null {
  * Lo disponible es el menor de los dos topes: el que se acabe primero corta el servicio. Si solo
  * responde uno se usa ese; si ninguno, error.
  */
-export function mapearOpenRouter(key: Cruda, credits: Cruda): SaldoOpenRouter {
+export function mapearOpenRouter(key: Cruda, credits: Cruda, ahora: Date = new Date()): SaldoOpenRouter {
   const dk = errorOpenRouter(key) === null ? obj(obj(key?.cuerpo).data) : null;
   const dc = errorOpenRouter(credits) === null ? obj(obj(credits?.cuerpo).data) : null;
 
@@ -79,7 +93,7 @@ export function mapearOpenRouter(key: Cruda, credits: Cruda): SaldoOpenRouter {
   }
   const tope = topes.reduce((a, b) => (b.restante < a.restante ? b : a));
 
-  const semana = num(dk?.usage_weekly) ?? 0;
+  const semana = num(dk?.usage_weekly) ?? 0, mes = num(dk?.usage_monthly) ?? 0;
   const restante = Math.max(0, Math.round(tope.restante * 10000) / 10000);
   return {
     estado: "ok",
@@ -88,8 +102,8 @@ export function mapearOpenRouter(key: Cruda, credits: Cruda): SaldoOpenRouter {
     usado: num(dk?.usage) ?? (dc ? num(dc.total_usage) ?? 0 : 0),
     hoy: num(dk?.usage_daily) ?? 0,
     semana,
-    mes: num(dk?.usage_monthly) ?? 0,
-    proyeccion: proyectar(restante, semana),
+    mes,
+    proyeccion: proyectar(restante, ritmoDiario(semana, mes, ahora)),
   };
 }
 
@@ -132,7 +146,7 @@ export async function consultarSaldo(llaves: Llaves, pedir: Pedir, ahora: Date =
     el ? pedir("https://api.elevenlabs.io/v1/user/subscription", el) : null,
   ]);
   return {
-    openrouter: or ? mapearOpenRouter(key, credits) : { estado: "error", mensaje: "Falta la API key de OpenRouter" },
+    openrouter: or ? mapearOpenRouter(key, credits, ahora) : { estado: "error", mensaje: "Falta la API key de OpenRouter" },
     elevenlabs: mapearElevenLabs(el ? voz : "sin_configurar"),
     actualizado: ahora.toISOString(),
   };

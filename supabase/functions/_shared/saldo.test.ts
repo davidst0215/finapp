@@ -1,14 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { conCache, consultarSaldo, duracion, mapearElevenLabs, mapearOpenRouter, mensajeVoz, MSG_SIN_PERMISO, proyectar, type Saldo } from "./saldo.ts";
+import { conCache, consultarSaldo, duracion, mapearElevenLabs, mapearOpenRouter, mensajeVoz, MSG_SIN_PERMISO, proyectar, ritmoDiario, type Saldo } from "./saldo.ts";
 import { paraVoz } from "./voz.ts";
 
 const KEY = { status: 200, cuerpo: { data: { limit: 10, limit_remaining: 9.73, usage: 0.27, usage_daily: 0.1, usage_weekly: 0.26, usage_monthly: 0.27 } } };
 const CREDITS = { status: 200, cuerpo: { data: { total_credits: 10, total_usage: 0.27 } } };
 
-test("proyección: restante entre el ritmo diario (semana / 7)", () => {
-  assert.deepEqual(proyectar(9.73, 0.26), { tipo: "dias", dias: 261 }); // 9.73 / (0.26/7) = 261.9
-  assert.deepEqual(proyectar(5, 7), { tipo: "dias", dias: 5 }); // US$ 1 al día
+// 2026-10-06 es martes; 2026-10-05, lunes; 2026-10-01, jueves. Los periodos de OpenRouter son UTC.
+const utc = (iso: string) => new Date(iso);
+const MARTES = utc("2026-10-06T12:00:00Z");
+
+test("proyección: restante entre el ritmo diario", () => {
+  assert.deepEqual(proyectar(9.73, 0.26 / 7), { tipo: "dias", dias: 261 }); // 9.73 / 0.0371 = 261.9
+  assert.deepEqual(proyectar(5, 1), { tipo: "dias", dias: 5 });
 });
 
 test("proyección: ritmo cero o casi cero = más de 12 meses", () => {
@@ -18,21 +22,53 @@ test("proyección: ritmo cero o casi cero = más de 12 meses", () => {
 });
 
 test("proyección: el límite de 12 meses es 365 días", () => {
-  assert.deepEqual(proyectar(365, 7), { tipo: "dias", dias: 365 });
-  assert.deepEqual(proyectar(366, 7), { tipo: "mas_de_12_meses" });
+  assert.deepEqual(proyectar(365, 1), { tipo: "dias", dias: 365 });
+  assert.deepEqual(proyectar(366, 1), { tipo: "mas_de_12_meses" });
 });
 
 test("proyección: ritmo alto da pocos días y restante 0 o negativo = agotado", () => {
-  assert.deepEqual(proyectar(2, 70), { tipo: "dias", dias: 0 });
+  assert.deepEqual(proyectar(2, 10), { tipo: "dias", dias: 0 });
   assert.deepEqual(proyectar(0, 5), { tipo: "agotado" });
   assert.deepEqual(proyectar(-1, 5), { tipo: "agotado" });
   assert.deepEqual(proyectar(0, 0), { tipo: "agotado" });
 });
 
+test("ritmo diario: a mitad de semana divide entre los días transcurridos (completos + fracción de hoy)", () => {
+  // Martes a mediodía UTC: 1.5 días de semana y 5.5 de mes. Gana el mayor: la semana.
+  assert.ok(Math.abs(ritmoDiario(0.3, 0.3, MARTES) - 0.3 / 1.5) < 1e-9);
+});
+
+test("ritmo diario: inicio de semana (lunes) no divide entre 7 ni entre cero: mínimo de 1 día", () => {
+  const lunes1am = utc("2026-10-05T01:00:00Z"); // 0.04 días de semana -> 1
+  assert.equal(ritmoDiario(0.1, 0, lunes1am), 0.1);
+  const lunes18 = utc("2026-10-05T18:00:00Z"); // 0.75 días -> 1
+  assert.equal(ritmoDiario(0.1, 0, lunes18), 0.1);
+  const domingo = utc("2026-10-11T12:00:00Z"); // 6.5 días
+  assert.ok(Math.abs(ritmoDiario(0.65, 0, domingo) - 0.1) < 1e-9);
+});
+
+test("ritmo diario: inicio de mes y día 1 usan el mínimo de 1 día; gana el periodo de mayor ritmo", () => {
+  const dia1 = utc("2026-10-01T03:00:00Z"); // jueves: semana 3.125 días, mes -> 1
+  assert.equal(ritmoDiario(0.3, 0.3, dia1), 0.3);
+  // Mes empezó el jueves 1; semana del lunes 28-sep al domingo: el lunes 5-oct la semana (1 día) y el mes (4.5 días).
+  const lunes = utc("2026-10-05T12:00:00Z");
+  assert.equal(ritmoDiario(0.05, 2, lunes), 2 / 4.5, "el mes manda cuando la semana apenas empieza");
+  assert.equal(ritmoDiario(1, 0.5, lunes), 1, "la semana manda si gastó más por día");
+});
+
+test("ritmo diario: sin gasto es 0", () => {
+  assert.equal(ritmoDiario(0, 0, MARTES), 0);
+  assert.equal(ritmoDiario(0, 0, utc("2026-10-01T00:00:00Z")), 0);
+});
+
 test("OpenRouter: datos reales de /key y /credits", () => {
-  assert.deepEqual(mapearOpenRouter(KEY, CREDITS), {
-    estado: "ok", restante: 9.73, credito: 10, usado: 0.27, hoy: 0.1, semana: 0.26, mes: 0.27, proyeccion: { tipo: "dias", dias: 261 },
+  // Martes 12:00 UTC: semana 0.26 / 1.5 = 0.1733 al día (el mes da 0.27 / 5.5 = 0.049); 9.73 / 0.1733 = 56.
+  assert.deepEqual(mapearOpenRouter(KEY, CREDITS, MARTES), {
+    estado: "ok", restante: 9.73, credito: 10, usado: 0.27, hoy: 0.1, semana: 0.26, mes: 0.27, proyeccion: { tipo: "dias", dias: 56 },
   });
+  // Lunes 06:00 UTC con el mismo gasto semanal: antes (semana / 7) daba 261 días, ahora el mínimo de 1 día da 37.
+  const lunes = mapearOpenRouter(KEY, CREDITS, utc("2026-10-05T06:00:00Z"));
+  assert.equal(lunes.estado === "ok" && lunes.proyeccion.tipo === "dias" && lunes.proyeccion.dias, 37);
 });
 
 test("OpenRouter: manda el menor de los dos topes", () => {
@@ -43,11 +79,11 @@ test("OpenRouter: manda el menor de los dos topes", () => {
 });
 
 test("OpenRouter: llave sin límite usa los créditos de la cuenta; si /credits falla usa solo la llave", () => {
-  const sinLimite = { status: 200, cuerpo: { data: { limit: null, limit_remaining: null, usage: 1, usage_daily: 0, usage_weekly: 0, usage_monthly: 1 } } };
-  const a = mapearOpenRouter(sinLimite, CREDITS);
+  const sinLimite = { status: 200, cuerpo: { data: { limit: null, limit_remaining: null, usage: 1, usage_daily: 0, usage_weekly: 0, usage_monthly: 0 } } };
+  const a = mapearOpenRouter(sinLimite, CREDITS, MARTES);
   assert.equal(a.estado === "ok" && a.restante, 9.73);
   assert.equal(a.estado === "ok" && a.proyeccion.tipo, "mas_de_12_meses");
-  const b = mapearOpenRouter(KEY, { status: 500, cuerpo: null });
+  const b = mapearOpenRouter(KEY, { status: 500, cuerpo: null }, MARTES);
   assert.equal(b.estado === "ok" && b.restante, 9.73);
 });
 
@@ -96,7 +132,7 @@ test("consultarSaldo: pide solo GET de consulta con la llave correcta y arma el 
     if (url.endsWith("/key")) return KEY;
     if (url.endsWith("/credits")) return CREDITS;
     return { status: 401, cuerpo: { detail: { status: "missing_permissions" } } };
-  }, new Date("2026-10-06T12:00:00Z"));
+  }, MARTES);
   assert.deepEqual(pedidos.sort(), [
     "https://api.elevenlabs.io/v1/user/subscription|xi-api-key|el-clave",
     "https://openrouter.ai/api/v1/credits|Authorization|Bearer or-clave",
