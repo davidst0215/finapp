@@ -10,17 +10,18 @@ const DIAS_MAX = 365; // más allá se dice "más de 12 meses"
 /** Respuesta cruda de un tercero: `null` = no hubo respuesta (red, tiempo agotado). */
 export type Cruda = { status: number; cuerpo: unknown } | null;
 
-export type Proyeccion = { tipo: "dias"; dias: number } | { tipo: "mas_de_12_meses" } | { tipo: "agotado" };
+/** `desconocida`: no hay gasto de la llave (falló /key), así que no se puede estimar el ritmo. */
+export type Proyeccion = { tipo: "dias"; dias: number } | { tipo: "mas_de_12_meses" } | { tipo: "agotado" } | { tipo: "desconocida" };
 
 export type SaldoOpenRouter =
   | {
     estado: "ok";
     restante: number;
     credito: number;
-    /** Gasto del día UTC: se reinicia a las 19:00 de Lima. */
-    hoy: number;
-    semana: number;
-    mes: number;
+    /** Gasto del día UTC (se reinicia a las 19:00 de Lima), de la semana y del mes; null si /key no respondió. */
+    hoy: number | null;
+    semana: number | null;
+    mes: number | null;
     proyeccion: Proyeccion;
     /** Frase lista para mostrar o decir: "A este ritmo te alcanza para unos dos meses". */
     alcance: string;
@@ -102,14 +103,17 @@ export function mapearOpenRouter(key: Cruda, credits: Cruda, ahora: Date = new D
   }
   const tope = topes.reduce((a, b) => (b.restante < a.restante ? b : a));
 
-  const semana = num(dk?.usage_weekly) ?? 0, mes = num(dk?.usage_monthly) ?? 0;
   const restante = Math.max(0, Math.round(tope.restante * 10000) / 10000);
-  const proyeccion = proyectar(restante, ritmoDiario(semana, mes, ahora));
+  // Sin /key no hay gasto: un 0 inventado daría "dura más de 12 meses". El restante sí se sabe (créditos de la cuenta).
+  const semana = dk ? num(dk.usage_weekly) ?? 0 : null, mes = dk ? num(dk.usage_monthly) ?? 0 : null;
+  const proyeccion: Proyeccion = semana === null || mes === null
+    ? restante > 0 ? { tipo: "desconocida" } : { tipo: "agotado" }
+    : proyectar(restante, ritmoDiario(semana, mes, ahora));
   return {
     estado: "ok",
     restante,
     credito: tope.total,
-    hoy: num(dk?.usage_daily) ?? 0,
+    hoy: dk ? num(dk.usage_daily) ?? 0 : null,
     semana,
     mes,
     proyeccion,
@@ -179,8 +183,9 @@ export function conCache<T>(cargar: () => Promise<T>, vigente: (v: T) => boolean
   };
 }
 
-/** Solo se guarda un resultado sin errores: un fallo pasajero (de cualquiera de los dos) no debe quedar fijo 60 s. */
-export const saldoVigente = (s: Saldo) => s.openrouter.estado === "ok" && s.elevenlabs.estado !== "error";
+/** Solo se guarda un resultado completo: un fallo pasajero (de /key, de ElevenLabs o del OpenRouter entero) no debe quedar fijo 60 s. */
+export const saldoVigente = (s: Saldo) =>
+  s.openrouter.estado === "ok" && s.openrouter.proyeccion.tipo !== "desconocida" && s.elevenlabs.estado !== "error";
 
 // --- Frase para la voz ---------------------------------------------------------------------------------------------
 
@@ -198,6 +203,7 @@ export function duracion(dias: number): string {
 /** Frase de alcance, igual en pantalla y en voz. */
 export function textoAlcance(p: Proyeccion): string {
   if (p.tipo === "agotado") return "Saldo agotado";
+  if (p.tipo === "desconocida") return "No pude calcular el ritmo ahora";
   if (p.tipo === "mas_de_12_meses") return "A este ritmo te dura más de doce meses";
   return `A este ritmo te alcanza para ${duracion(p.dias)}`;
 }
@@ -214,7 +220,10 @@ export function mensajeVoz(s: Saldo): string {
 
   const primera = o.proyeccion.tipo === "agotado"
     ? "Se te acabó el saldo de OpenRouter, conviene recargar."
+    : o.proyeccion.tipo === "desconocida"
+    ? `Te quedan ${usd(o.restante)} en OpenRouter${o.bajo ? ", conviene recargar" : ""}.`
     : `Te quedan ${usd(o.restante)} en OpenRouter${o.bajo ? ", conviene recargar" : ""}; ${minuscula(o.alcance)}.`;
+  if (o.mes === null) return primera; // sin gasto no hay segunda frase: no se inventa un 0
   const v = s.elevenlabs;
   const voz = v.estado === "ok" && v.limite > 0 ? ` y la voz va en ${Math.round((v.usados / v.limite) * 100)}%` : "";
   return `${primera} Este mes llevas ${usd(o.mes)}${voz}.`;

@@ -122,6 +122,27 @@ test("OpenRouter: el servidor manda el saldo bajo y el texto de alcance ya listo
   assert.equal(cero.estado === "ok" && cero.alcance, "Saldo agotado");
 });
 
+test("OpenRouter: si /key falla el restante sale de la cuenta, pero el ritmo y el gasto quedan desconocidos (no 0)", () => {
+  for (const caida of [null, { status: 429, cuerpo: {} }, { status: 503, cuerpo: "<html>" }] as const) {
+    const r = mapearOpenRouter(caida, CREDITS, MARTES);
+    assert.equal(r.estado, "ok");
+    if (r.estado !== "ok") return;
+    assert.equal(r.restante, 9.73);
+    assert.deepEqual(r.proyeccion, { tipo: "desconocida" });
+    assert.equal(r.alcance, "No pude calcular el ritmo ahora");
+    assert.deepEqual([r.hoy, r.semana, r.mes], [null, null, null]);
+    assert.equal(r.bajo, false);
+    const s: Saldo = { openrouter: r, elevenlabs: { estado: "ok", usados: 1, limite: 10, renueva: null, plan: null }, actualizado: "" };
+    assert.equal(mensajeVoz(s), "Te quedan US$ 9.73 en OpenRouter.", "la voz solo dice el restante");
+    assert.equal(saldoVigente(s), false, "el parcial no se guarda en caché");
+  }
+  // Sin /key y sin saldo, agotado sí se sabe; con saldo bajo la voz lo avisa sin inventar gasto.
+  const agotado = mapearOpenRouter(null, { status: 200, cuerpo: { data: { total_credits: 10, total_usage: 10 } } }, MARTES);
+  assert.equal(agotado.estado === "ok" && agotado.proyeccion.tipo, "agotado");
+  const bajo = mapearOpenRouter(null, { status: 200, cuerpo: { data: { total_credits: 10, total_usage: 9 } } }, MARTES);
+  assert.equal(mensajeVoz({ openrouter: bajo, elevenlabs: { estado: "sin_permiso", mensaje: MSG_SIN_PERMISO }, actualizado: "" }), "Te quedan US$ 1.00 en OpenRouter, conviene recargar.");
+});
+
 test("OpenRouter: restante negativo se corta en cero y queda agotado", () => {
   const r = mapearOpenRouter(null, { status: 200, cuerpo: { data: { total_credits: 10, total_usage: 10.2 } } });
   assert.equal(r.estado === "ok" && r.restante, 0);
