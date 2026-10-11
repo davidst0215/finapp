@@ -35,7 +35,7 @@ export function AccountsPage() {
   const [currency, setCurrency] = useState<Moneda>('PEN');
   const [balance, setBalance] = useState('');
   const [saving, setSaving] = useState(false);
-  const { tc } = useTipoCambio();
+  const { tc, listo } = useTipoCambio();
 
   useEffect(() => {
     fetchAccounts();
@@ -90,7 +90,8 @@ export function AccountsPage() {
         <p className={cn('text-2xl font-bold', totalBalance >= 0 ? 'text-income' : 'text-expense')}>
           {formatCurrency(totalBalance)}
         </p>
-        <NotaCambio texto={notaConversion(conversionDePatrimonio(patri, tc), hoy)} className="mt-1" />
+        {/* Primera carga (sin tipo de cambio ni lectura terminada): sin nota, para no decir «falta» cuando solo está llegando */}
+        <NotaCambio texto={!tc && !listo ? null : notaConversion(conversionDePatrimonio(patri, tc), hoy)} className="mt-1" />
       </div>
 
       {/* Formulario nueva cuenta */}

@@ -1,7 +1,7 @@
 import {
   buscarCuenta, fraseCuentaCreada, fraseCuentas, MONEDA_HABLADA, monto, numeroDictado, opcionesHabladas, TIPO_HABLADO, type TipoCuenta, validarCuentaNueva,
 } from "../../_shared/cuentas.ts";
-import { patrimonio, textoTc, type Tasa, ultimaTasa } from "../../_shared/fx.ts";
+import { patrimonio, redondear, textoTc, type Tasa, ultimaTasa } from "../../_shared/fx.ts";
 import { comentario, conComentario } from "../prompt.ts";
 import { conDetalle } from "../respuesta.ts";
 import { type AgentContext, type AgentModule, type ToolResult, tool } from "../types.ts";
@@ -15,6 +15,8 @@ type Goal = { goal_id: string; goal_name: string; target_amount: number; current
 type Data = { accounts: Account[]; categories: Category[]; goals: Goal[]; recurring: Recurrente[]; paidIds: Set<string>; recurrentesOk: boolean; tc: Tasa | null };
 
 const simbolo = (moneda: string | null | undefined) => (moneda === "USD" ? "US$" : "S/");
+/** Un total de la base impreso en el contexto: a céntimos, sin restos de coma flotante (el modelo dice las cifras tal cual vienen). */
+const c2 = (n: unknown) => redondear(Number(n));
 
 const MESES = ["", "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
 const FRECUENCIA: Record<string, string> = { daily: "diario", weekly: "semanal", biweekly: "quincenal", monthly: "mensual", quarterly: "trimestral", annual: "anual" };
@@ -96,9 +98,9 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
   }
   if (cur) {
     ctxLines.push(`${ctxLines.length ? "\n" : ""}MES ACTUAL (${MESES[month]} ${year}, día ${day}/${daysInMonth}, quedan ${daysInMonth - day} días):`);
-    ctxLines.push(`- Ingresos: S/${cur.total_income}`, `- Gastos: S/${cur.total_expenses}`, `- Balance neto: S/${cur.net_balance}`);
+    ctxLines.push(`- Ingresos: S/${c2(cur.total_income)}`, `- Gastos: S/${c2(cur.total_expenses)}`, `- Balance neto: S/${c2(cur.net_balance)}`);
     if (Number(cur.expenses_usd) > 0 || Number(cur.income_usd) > 0) {
-      ctxLines.push(`- De eso en dólares: gastos US$ ${cur.expenses_usd}, ingresos US$ ${cur.income_usd}`);
+      ctxLines.push(`- De eso en dólares: gastos US$ ${c2(cur.expenses_usd)}, ingresos US$ ${c2(cur.income_usd)}`);
     }
     if (cur.total_expenses > 0) {
       const dailyAvg = cur.total_expenses / day;
@@ -107,7 +109,7 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
   }
   if (prev) {
     ctxLines.push(`\nMES ANTERIOR (${MESES[prevMonth]}):`);
-    ctxLines.push(`- Ingresos: S/${prev.total_income}`, `- Gastos: S/${prev.total_expenses}`, `- Balance: S/${prev.net_balance}`);
+    ctxLines.push(`- Ingresos: S/${c2(prev.total_income)}`, `- Gastos: S/${c2(prev.total_expenses)}`, `- Balance: S/${c2(prev.net_balance)}`);
     if (cur && prev.total_expenses > 0) {
       const pct = ((cur.total_expenses - prev.total_expenses) / prev.total_expenses * 100).toFixed(1);
       ctxLines.push(`- Cambio en gastos vs anterior: ${Number(pct) > 0 ? "+" : ""}${pct}%`);
@@ -161,11 +163,12 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
     }
   }
   if (recurring.length > 0) {
-    const total = recurring.reduce((s, r) => s + Number(r.amount), 0);
+    // Un pago en dólares que no se pudo convertir (sin tipo de cambio) no es soles: no entra en el total.
+    const total = recurring.reduce((s, r) => s + (r.currency_code === "USD" ? 0 : Number(r.amount)), 0);
     const pagados = recurring.filter((r) => paidIds.has(r.recurring_id)).length;
     ctxLines.push("\nRECURRENTES (suscripciones y pagos fijos):", `Total fijo mensual: S/${total.toFixed(2)}. Pagados este mes: ${pagados}/${recurring.length}`);
     for (const r of recurring) {
-      ctxLines.push(`- ${r.description}: S/${r.amount} (${r.frequency}) ${paidIds.has(r.recurring_id) ? "✓ PAGADO" : "PENDIENTE"} próximo: ${r.next_due_date}`);
+      ctxLines.push(`- ${r.description}: ${simbolo(r.currency_code)}${r.amount}${r.original ? ` (${r.original})` : ""} (${r.frequency}) ${paidIds.has(r.recurring_id) ? "✓ PAGADO" : "PENDIENTE"} próximo: ${r.next_due_date}`);
     }
   }
   if (recent.length > 0) {
@@ -366,7 +369,7 @@ export const finanzas: AgentModule<Data> = {
         frequency: args.frequency, start_date: hoy, next_due_date: hoy, is_active: true, auto_register: false,
       });
       if (error) return err(error.message);
-      return { action: "create_recurring", message: `Recurrente "${args.description}" de S/ ${Number(args.amount).toFixed(2)} (${FRECUENCIA[str(args.frequency)] ?? args.frequency}) creado.` };
+      return { action: "create_recurring", message: `Recurrente "${args.description}" de ${simbolo(account.currency_code)} ${Number(args.amount).toFixed(2)} (${FRECUENCIA[str(args.frequency)] ?? args.frequency}) creado.` };
     },
     async edit_transaction(args, { supabase, user }) {
       // Editar el monto mueve el saldo de la cuenta por la diferencia (trigger de la migración 016): aquí no se toca current_balance.

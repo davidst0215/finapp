@@ -5,7 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   aSoles, primerJson, DIAS_HISTORIAL, DIAS_SOLAPE, FUENTE_BCRP, FUENTE_RESPALDO, hayQueRefrescar, historial, parsearBcrp, parsearRespaldo, patrimonio,
-  refrescar, reiniciarIntentos, restarDias, tasaDeFecha, textoTc, tipoCambioVigente, type Db, type Tasa, ultimaTasa, urlBcrp,
+  refrescar, reiniciarIntentos, desviado, ultimaConsulta, restarDias, tasaDeFecha, textoTc, tipoCambioVigente, type Db, type Tasa, ultimaTasa, urlBcrp,
 } from "./fx.ts";
 
 // Respuesta REAL de la API (11-oct-2026, consulta del 1 al 11): fines de semana ausentes, feriados «n.d.», valores con muchos decimales.
@@ -30,6 +30,13 @@ test("parsearBcrp: tolera el aviso de PHP que BCRP pega después del JSON (visto
   assert.deepEqual(parsearBcrp(BCRP_CON_AVISO_PHP), parsearBcrp(BCRP_REAL));
 });
 
+test("parsearBcrp: tolera un aviso ANTES del JSON, incluso con llaves sueltas", () => {
+  const aviso = "<br />\n<font size='1'><b>Notice</b>: Undefined index {x} in /var/www/a.php on line {3<br />\n";
+  assert.deepEqual(parsearBcrp(aviso + BCRP_REAL), parsearBcrp(BCRP_REAL));
+  assert.equal(parsearBcrp(aviso + BCRP_REAL)?.length, 3);
+  assert.equal(parsearBcrp(aviso + FIREWALL), null, "un aviso sin JSON detrás sigue siendo null");
+});
+
 test("primerJson: respeta llaves y comillas dentro de textos", () => {
   assert.equal(primerJson('basura {"a":"} {","b":{"c":1}} cola }'), '{"a":"} {","b":{"c":1}}');
   assert.equal(primerJson('{"a":"\\"}"}x'), '{"a":"\\"}"}');
@@ -51,9 +58,9 @@ test("parsearBcrp: una consulta sin días publicados da [] (no null)", () => {
   assert.deepEqual(parsearBcrp('{"config":{},"periods":[]}'), []);
 });
 
-test("parsearBcrp: valores absurdos se descartan (un dólar no vale 0 ni 3400 soles)", () => {
-  const j = JSON.stringify({ periods: [{ name: "01.Oct.26", values: ["0"] }, { name: "02.Oct.26", values: ["3400"] }, { name: "03.Oct.26", values: ["-3"] }, { name: "04.Oct.26", values: ["3.4"] }, { name: "Basura", values: ["3.4"] }, { name: "05.Xxx.26", values: ["3.4"] }] });
-  assert.deepEqual(parsearBcrp(j), [{ fecha: "2026-10-04", valor: 3.4 }]);
+test("parsearBcrp: valores absurdos se descartan (un dólar vale entre 2 y 6 soles, no 0, 1.99, 6.01 ni 3400)", () => {
+  const j = JSON.stringify({ periods: [{ name: "01.Oct.26", values: ["0"] }, { name: "02.Oct.26", values: ["3400"] }, { name: "03.Oct.26", values: ["-3"] }, { name: "04.Oct.26", values: ["3.4"] }, { name: "Basura", values: ["3.4"] }, { name: "05.Xxx.26", values: ["3.4"] }, { name: "06.Oct.26", values: ["1.99"] }, { name: "07.Oct.26", values: ["6.01"] }, { name: "08.Oct.26", values: ["2"] }, { name: "09.Oct.26", values: ["6"] }] });
+  assert.deepEqual(parsearBcrp(j), [{ fecha: "2026-10-04", valor: 3.4 }, { fecha: "2026-10-08", valor: 2 }, { fecha: "2026-10-09", valor: 6 }]);
 });
 
 test("parsearRespaldo: toma PEN; rechaza lo que no sea éxito o lo absurdo", () => {
@@ -61,6 +68,8 @@ test("parsearRespaldo: toma PEN; rechaza lo que no sea éxito o lo absurdo", () 
   assert.equal(parsearRespaldo({ result: "error", rates: { PEN: 3.4 } }), null);
   assert.equal(parsearRespaldo({ result: "success", rates: {} }), null);
   assert.equal(parsearRespaldo({ result: "success", rates: { PEN: 0 } }), null);
+  assert.equal(parsearRespaldo({ result: "success", rates: { PEN: 1.5 } }), null);
+  assert.equal(parsearRespaldo({ result: "success", rates: { PEN: 7 } }), null);
   assert.equal(parsearRespaldo(null), null);
 });
 
@@ -132,6 +141,7 @@ type Fila = Record<string, unknown>;
 function baseFalsa(inicial: Fila[] = [], opts: { falla?: boolean } = {}) {
   const filas = [...inicial];
   const upserts: Fila[][] = [];
+  const opciones: ({ ignoreDuplicates?: boolean } | undefined)[] = [];
   const db = {
     from: (_t: string) => {
       let data = filas;
@@ -148,12 +158,13 @@ function baseFalsa(inicial: Fila[] = [], opts: { falla?: boolean } = {}) {
           return b;
         },
         limit: (n: number) => ((data = data.slice(0, n)), b),
-        upsert: async (nuevas: Fila[]) => {
+        upsert: async (nuevas: Fila[], o?: { ignoreDuplicates?: boolean }) => {
           if (opts.falla) return { error: { message: "rls" } };
           upserts.push(nuevas);
+          opciones.push(o);
           for (const n of nuevas) {
             const i = filas.findIndex((r) => r.par === n.par && r.fecha === n.fecha);
-            if (i >= 0) filas[i] = { ...filas[i], ...n }; else filas.push(n);
+            if (i >= 0) { if (!o?.ignoreDuplicates) filas[i] = { ...filas[i], ...n }; } else filas.push(n);
           }
           return { error: null };
         },
@@ -163,7 +174,7 @@ function baseFalsa(inicial: Fila[] = [], opts: { falla?: boolean } = {}) {
       return b;
     },
   };
-  return { db: db as unknown as Db, filas, upserts };
+  return { db: db as unknown as Db, filas, upserts, opciones };
 }
 type Pedido = { url: string };
 /** fetch guionado por URL: cada fuente responde con un texto, un estado o se cae. */
@@ -214,6 +225,55 @@ test("refrescar: firewall de BCRP (HTML) → usa el respaldo con la fecha de hoy
   assert.equal(pedidos.length, 3, "BCRP dos veces (el firewall es intermitente) y luego el respaldo");
 });
 
+test("refrescar: el respaldo NUNCA pisa una fila ya guardada (ni la oficial de BCRP ni otra de respaldo) y lo pide al insertar", async () => {
+  const oficial = fila(HOY, 3.45, "2026-10-11T10:00:00Z", FUENTE_BCRP);
+  const { db, filas, opciones } = baseFalsa([oficial]);
+  const { f } = redFalsa(FIREWALL, RESP_OK);
+  const r = await refrescar(db, { ahora: AHORA, hoy: HOY, f });
+  assert.equal(r?.fuente, FUENTE_RESPALDO);
+  assert.deepEqual(opciones, [{ onConflict: "par,fecha", ignoreDuplicates: true }]);
+  assert.deepEqual(filas, [oficial], "la fila oficial de hoy quedó intacta");
+});
+
+test("refrescar: BCRP sí pisa lo que hubiera (lo oficial corrige al respaldo de ese día)", async () => {
+  const { db, filas, opciones } = baseFalsa([fila("2026-10-07", 3.4, "2026-10-08T10:00:00Z", FUENTE_RESPALDO)]);
+  const { f } = redFalsa(BCRP_REAL, RESP_OK);
+  await refrescar(db, { ahora: AHORA, hoy: HOY, f });
+  assert.deepEqual(opciones, [{ onConflict: "par,fecha" }]);
+  const siete = filas.find((x) => x.fecha === "2026-10-07")!;
+  assert.deepEqual([siete.valor, siete.fuente], [3.453, FUENTE_BCRP]);
+});
+
+test("desviado: más de 10 % del valor guardado es un error de la fuente; sin valor guardado no hay con qué comparar", () => {
+  assert.equal(desviado(3.9, 3.45), true);
+  assert.equal(desviado(3.0, 3.45), true);
+  assert.equal(desviado(3.7, 3.45), false); // +7,2 %
+  assert.equal(desviado(3.795, 3.45), false); // justo +10 %
+  assert.equal(desviado(3.9, null), false);
+  assert.equal(desviado(3.9, undefined), false);
+});
+
+test("refrescar: un valor de BCRP que salta más de 10 % se descarta y el respaldo (razonable) toma su lugar", async () => {
+  const previo = fila("2026-10-07", 3.45, "2026-10-08T00:00:00Z");
+  const { db, filas } = baseFalsa([previo]);
+  const roto = '{"periods":[{"name":"08.Oct.26","values":["3.99"]},{"name":"09.Oct.26","values":["4.1"]}]}';
+  const { f } = redFalsa(roto, RESP_OK);
+  const r = await refrescar(db, { ahora: AHORA, hoy: HOY, f });
+  assert.equal(r?.fuente, FUENTE_RESPALDO);
+  assert.deepEqual(filas.map((x) => [x.fecha, x.valor]), [["2026-10-07", 3.45], [HOY, 3.442249]], "el 3.99 y el 4.1 no entraron");
+});
+
+test("refrescar: si BCRP y el respaldo se desvían más de 10 % no se guarda nada; sin valor previo sí se acepta (no hay referencia)", async () => {
+  const previo = [fila("2026-10-07", 3.45, "2026-10-08T00:00:00Z")];
+  const roto = '{"periods":[{"name":"08.Oct.26","values":["3.99"]}]}';
+  const a = baseFalsa(previo);
+  assert.equal(await refrescar(a.db, { ahora: AHORA, hoy: HOY, f: redFalsa(roto, { result: "success", rates: { PEN: 4.2 } }).f }), null);
+  assert.deepEqual(a.filas, previo);
+  const b = baseFalsa();
+  assert.equal((await refrescar(b.db, { ahora: AHORA, hoy: HOY, f: redFalsa(roto, RESP_OK).f }))?.fuente, FUENTE_BCRP);
+  assert.deepEqual(b.filas.map((x) => x.valor), [3.99]);
+});
+
 test("refrescar: BCRP sin días publicados, o caído, también cae al respaldo", async () => {
   for (const bcrp of ['{"periods":[]}', { status: 500 }, "cae"] as const) {
     const { db, filas } = baseFalsa();
@@ -256,6 +316,19 @@ test("tipoCambioVigente: lo reciente se devuelve sin tocar la red", async () => 
   assert.equal(r.actualizado, false);
   assert.equal(r.tasa?.valor, 3.453);
   assert.equal(pedidos.length, 0);
+});
+
+test("tipoCambioVigente: la vigencia sale del MÁXIMO de obtenido_en, no de la fila de la fecha más nueva", async () => {
+  reiniciarIntentos();
+  // la fila del día más nuevo es de una consulta vieja (el respaldo no la pisó), pero otra fila se trajo hace 1 h
+  const { db } = baseFalsa([fila(HOY, 3.44, "2026-10-09T00:00:00Z", FUENTE_RESPALDO), fila("2026-10-07", 3.453, "2026-10-11T16:00:00Z")]);
+  assert.equal(await ultimaConsulta(db), "2026-10-11T16:00:00Z");
+  assert.equal((await ultimaTasa(db))?.obtenido_en, "2026-10-09T00:00:00Z");
+  const { f, pedidos } = redFalsa(BCRP_REAL, RESP_OK);
+  const r = await tipoCambioVigente(db, { ahora: AHORA, hoy: HOY, f });
+  assert.equal(r.actualizado, false);
+  assert.equal(pedidos.length, 0, "se consultó hace 1 h: no hay que volver a pedir");
+  assert.equal(await ultimaConsulta(baseFalsa().db), null);
 });
 
 test("tipoCambioVigente: vencido → refresca y devuelve el nuevo; los números llegan como número", async () => {

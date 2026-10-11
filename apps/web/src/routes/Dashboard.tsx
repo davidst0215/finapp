@@ -29,7 +29,7 @@ export function DashboardPage() {
   const profile = useAuthStore(s => s.profile);
   const { transactions, accounts, fetchTransactions, fetchAccounts, loadingTransactions } = useAppStore();
   const [summary, setSummary] = useCachedState<MonthlySummary>('finanzas.resumen');
-  const { tc } = useTipoCambio();
+  const { tc, listo } = useTipoCambio();
 
   useEffect(() => {
     fetchTransactions(10);
@@ -46,7 +46,8 @@ export function DashboardPage() {
   // Balance en soles: las cuentas en dólares se convierten con el tipo de cambio vigente; la tarjeta resta (su saldo es deuda).
   const balance = patrimonio(accounts, tc);
   const totalBalance = balance.soles;
-  const notaBalance = notaConversion(conversionDePatrimonio(balance, tc), diaLima(new Date()));
+  // Primera carga (todavía sin tipo de cambio ni lectura terminada): sin nota, para no decir «falta» cuando solo está llegando.
+  const notaBalance = !tc && !listo ? null : notaConversion(conversionDePatrimonio(balance, tc), diaLima(new Date()));
   // Dólares dentro del resumen del mes (la base ya los convirtió con el tipo de cambio de cada día).
   const usdMes = [
     summary?.expenses_usd ? `${formatCurrency(summary.expenses_usd, 'USD')} en gastos` : null,

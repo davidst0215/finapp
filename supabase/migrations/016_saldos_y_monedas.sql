@@ -26,12 +26,14 @@
 --   Otros tipos (savings, cash, investment, loan, other) se mueven como una cuenta normal, igual que hoy los suma la web.
 --   ('loan' queda como activo, tal como lo suma hoy el patrimonio; si David quiere verlo como deuda es otra decisión.)
 --
--- POR QUÉ NO HAY BACKFILL
---   Los saldos actuales son los que David dejó y quedan INTACTOS: esta migración no toca ninguna fila de accounts ni de transactions.
---   Recalcular "saldo inicial + movimientos" inventaría saldos iniciales que nunca existieron y pisaría los que él puso a mano.
---   El modelo que queda es: saldo_hoy = saldo_al_aplicar_016 + Σ efecto(movimientos nuevos o editados). Un movimiento anterior a 016
---   que se edite o borre sí mueve el saldo por la diferencia: el invariante es «saldo − Σ efecto(movimientos) es constante», es decir,
---   el saldo inicial implícito de cada cuenta es `saldo_hoy − Σ efecto(movimientos existentes)` y no cambia nunca.
+-- POR QUÉ NO HAY BACKFILL NI MARCA
+--   Al aplicar 016 NO existían movimientos: verificado en producción el 11-oct-2026 (solo lectura), 0 transactions, 0 accounts y
+--   0 recurring_transactions. No hay pasado que recalcular ni filas "anteriores a 016" que distinguir, así que no hace falta backfill
+--   ni una columna que marque qué movimientos ya se aplicaron al saldo.
+--   Aun así, la migración no toca ninguna fila de accounts ni de transactions: si en otra base hubiera datos previos, sus saldos
+--   quedarían intactos (recalcular "saldo inicial + movimientos" inventaría saldos iniciales que nunca existieron).
+--   El modelo es: saldo_hoy = saldo_inicial + Σ efecto(movimientos). Con datos previos, editar o borrar un movimiento anterior a 016
+--   mueve el saldo por la diferencia: el invariante es «saldo − Σ efecto(movimientos) es constante» (lo prueba check-016.mjs).
 --
 -- IDEMPOTENTE: CREATE ... IF NOT EXISTS / OR REPLACE, DROP ... IF EXISTS antes de cada trigger y política. Correrla dos veces no
 -- aplica nada dos veces (no toca datos).
@@ -211,7 +213,7 @@ REVOKE ALL ON FUNCTION fn_cuenta_validar_cambio() FROM PUBLIC, anon, authenticat
 CREATE TABLE IF NOT EXISTS fx_rates (
     par         VARCHAR(7)   NOT NULL CHECK (par ~ '^[A-Z]{3}/PEN$'),
     fecha       DATE         NOT NULL,
-    valor       NUMERIC(12,6) NOT NULL CHECK (valor > 0),
+    valor       NUMERIC(12,6) NOT NULL CHECK (valor BETWEEN 2 AND 6),   -- soles por dólar: fuera de ahí es un dato roto, no un tipo de cambio
     fuente      VARCHAR(80)  NOT NULL,
     obtenido_en TIMESTAMPTZ  NOT NULL DEFAULT NOW(),   -- cuándo lo trajo la edge function (decide si hay que refrescar)
     PRIMARY KEY (par, fecha)
@@ -222,8 +224,8 @@ ALTER TABLE fx_rates ENABLE ROW LEVEL SECURITY;
 -- Dato público, no de un usuario: cualquier sesión lo lee. Solo la edge function (rol de servicio) escribe.
 DROP POLICY IF EXISTS fx_rates_select ON fx_rates;
 CREATE POLICY fx_rates_select ON fx_rates FOR SELECT TO authenticated USING (TRUE);
-REVOKE ALL ON fx_rates FROM anon;
-REVOKE INSERT, UPDATE, DELETE ON fx_rates FROM authenticated;
+REVOKE ALL ON fx_rates FROM anon, authenticated;
+GRANT SELECT ON fx_rates TO authenticated;
 
 -- Soles por 1 unidad de p_moneda en p_fecha. PEN = 1. Antes de la primera fecha conocida vale la primera conocida (mejor que 1);
 -- sin ninguna fila para esa moneda devuelve NULL: «no sé convertir», nunca «vale lo mismo».
@@ -248,7 +250,7 @@ LANGUAGE sql
 STABLE
 SET search_path = public, pg_temp
 AS $$
-    SELECT p_monto * fx_tasa(p_moneda, p_fecha)
+    SELECT ROUND(p_monto * fx_tasa(p_moneda, p_fecha), 2)
 $$;
 
 -- ------------------------------------------------------------
@@ -305,7 +307,7 @@ BEGIN
         JOIN categories c ON c.category_id = md.category_id
         WHERE md.transaction_type = 'expense'
         GROUP BY c.category_name
-        ORDER BY cat_amount DESC
+        ORDER BY cat_amount DESC NULLS LAST
         LIMIT 1
     )
     SELECT

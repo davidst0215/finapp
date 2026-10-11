@@ -22,7 +22,8 @@ export interface Punto {
   valor: number;
 }
 
-const plausible = (n: number) => Number.isFinite(n) && n >= 1 && n <= 20;
+// Un dólar vale entre 2 y 6 soles (igual que el CHECK de fx_rates y que _shared/fx.ts): fuera de ahí es un dato roto.
+const plausible = (n: number) => Number.isFinite(n) && n >= 2 && n <= 6;
 
 /** Fila de fx_rates (o respuesta de la función) -> TipoCambio. null si no es utilizable. */
 export function leerTipoCambio(fila: unknown): TipoCambio | null {
