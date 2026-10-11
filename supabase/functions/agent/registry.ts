@@ -6,6 +6,8 @@ import { reuniones } from "./tools/reuniones.ts";
 import { internet } from "./tools/internet.ts";
 import { saldo } from "./tools/saldo.ts";
 import { memoria } from "./tools/memoria.ts";
+import { notas } from "./tools/notas.ts";
+import { hechos } from "./tools/hechos.ts";
 import { tareas } from "./tools/tareas.ts";
 import { conDetalle } from "./respuesta.ts";
 import { type AgentModule, tool } from "./types.ts";
@@ -36,6 +38,8 @@ export const MODULES: AgentModule<any>[] = [
   reuniones,
   tareas,
   memoria,
+  notas,
+  hechos, // después de memoria: su bloque `estable` va tras el catálogo de fichas y no rompe su prefijo cacheado
   internet,
   saldo,
 ];

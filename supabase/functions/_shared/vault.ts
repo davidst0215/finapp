@@ -23,6 +23,7 @@ import {
 import {
   carpetasDeFicha, carpetasParaPendientes, construirIndice, fichaProy, type FichaProy, type Indice, type PendientesIn, type Resolucion, resolverProyecto,
 } from "./vault/proyectos.ts";
+import { lineaNota, limpiarNota, opAnotar } from "./vault/notas.ts";
 import { rowsForFile } from "./vault/rows.ts";
 import {
   buildAnswerMessages, clienteChips, mensajeMemoria, parseAnswer, pickRelated, textoPendientes, toSources, type ClienteChip, type Hit,
@@ -359,6 +360,26 @@ export async function moveTask(
     if (e instanceof PartialMoveError) await indexQuietly(db, userId, [e.dest]); // la copia ya existe: que se vea
     throw e;
   }
+}
+
+/**
+ * Agrega una nota al final de `20-projects/<carpeta>/notas.md` (ver vault/notas.ts) y la deja en el índice al instante
+ * (vault_docs, kind 'nota'): `search_memory` la encuentra sin esperar la sincronización de 5 minutos.
+ * `hoy` y `minutos` son la fecha y la hora de Lima (relojLima).
+ */
+export async function agregarNota(
+  db: SupabaseClient,
+  userId: string,
+  env: VaultEnv,
+  input: { folder: unknown; texto: unknown; hoy: string; minutos: number },
+): Promise<{ folder: string; label: string; changed: boolean }> {
+  const texto = limpiarNota(input.texto);
+  if (!texto) throw new VaultError("Falta el texto de la nota", 400);
+  const folder = await destinationFor(db, userId, env, input.folder);
+  const info = classify(folder, env.config);
+  const res = await opAnotar(github(env), { folder, label: info.label, linea: lineaNota(texto, input.hoy, input.minutos) });
+  await indexQuietly(db, userId, [res.write]);
+  return { folder, label: info.label, changed: res.changed };
 }
 
 /** La escritura en GitHub ya ocurrió: si el índice falla no se le dice a David que fracasó; se sincroniza luego. */

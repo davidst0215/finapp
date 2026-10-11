@@ -85,7 +85,7 @@ Archivos compartidos que se pueden tocar con una sola línea: `agent/registry.ts
 
 - Siempre: validar el usuario en cada edge function; montos al centavo con `NUMERIC`; fechas en `America/Lima`; prueba de punta a punta antes de cada deploy.
 - Preguntar antes: cambios de esquema, dependencias nuevas, permisos nuevos de Google, cualquier envío de correo o evento a terceros.
-- Nunca: enviar correos o crear eventos sin confirmación de David; secretos en el repo; escribir en el vault fuera de las tareas.
+- Nunca: enviar correos o crear eventos sin confirmación de David; secretos en el repo; escribir en el vault fuera de las tareas (`pendientes.md`) y las notas por voz (`20-projects/<carpeta>/notas.md`, pedidas por David el 11-oct-2026); nunca en las fichas de `60-wiki`.
 
 ## Criterios de éxito
 

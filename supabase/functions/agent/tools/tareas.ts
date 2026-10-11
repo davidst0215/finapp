@@ -17,7 +17,7 @@ import { buildTasksView, isOpen, toViewTask, type ViewTask } from "../../_shared
 import { planearTarea } from "./tareasPlan.ts";
 
 const rules = `TAREAS (Norte, el vault de David):
-- Tarea = algo por hacer. "agrega / anota / apunta / agéndame / recuérdame …" → create_task. "ya terminé / completé X", "marca X como hecha", "reabre X", "X está en curso" → update_task. "qué tengo pendiente / vencidas / para hoy / en el cajón / de <proyecto>" → list_tasks.
+- Tarea = algo por hacer. "agrega / apunta / agéndame / recuérdame …" + una acción pendiente → create_task. Lo que se decidió o pasó ("anota que decidimos …") es una nota (add_note), no una tarea. "ya terminé / completé X", "marca X como hecha", "reabre X", "X está en curso" → update_task. "qué tengo pendiente / vencidas / para hoy / en el cajón / de <proyecto>" → list_tasks.
 - "agéndame revisar X el jueves", "pendiente para mañana a las 5", "recuérdame X el lunes" → create_task con due y, si dio hora, time en 24 h ("a las 5" de la tarde = 17:00). Calendario (calendar_create_event) solo si dice "en mi calendario" o es una reunión o cita.
 - "Recuérdame" no suena a la hora: el resumen de las 7:00 del día incluye la tarea. No prometas una alarma.
 - "pagué / gasté / compré" es finanzas, no tareas.
@@ -25,14 +25,14 @@ const rules = `TAREAS (Norte, el vault de David):
 - Proyecto: sus palabras tal cual ("nova fondos", "tdv bolsa", "maqui perú"); el sistema las reconoce. Sin proyecto, vacío: va al cajón. Si el sistema pregunta cuál ("¿app o normativa?") o confirma ("¿En Vera?") y David responde, repite create_task con la tarea original (mira el historial) y el proyecto completo.
 - Voz: una frase; el detalle va a la pantalla.`;
 
-const str = (v: unknown) => (typeof v === "string" ? v : "");
-const err = (message: string): ToolResult => ({ action: "error", message });
+export const str = (v: unknown) => (typeof v === "string" ? v : "");
+export const err = (message: string): ToolResult => ({ action: "error", message });
 const hoyDe = (ctx: AgentContext) => relojLima(ctx.limaNow).hoy;
 
 /** Una línea por proyecto pedido, sin el texto de David: sirve para ver cuántas veces no se encuentra o queda ambiguo. */
-const logProyecto = (m: Resolucion) =>
+export const logProyecto = (m: Resolucion, evt = "tareas") =>
   console.log(JSON.stringify({
-    evt: "tareas", proyecto_resuelto: m.kind === "one", candidatos: m.kind === "one" ? 1 : m.kind === "many" ? m.opciones.length : 0,
+    evt, proyecto_resuelto: m.kind === "one", candidatos: m.kind === "one" ? 1 : m.kind === "many" ? m.opciones.length : 0,
     aproximado: m.kind !== "none" && m.aproximado,
   }));
 
@@ -53,7 +53,7 @@ const guard = (fn: Handler): Handler => async (args, ctx) => {
   }
 };
 
-function acceso(ctx: AgentContext) {
+export function acceso(ctx: AgentContext) {
   const env = vaultEnv();
   assertOwner(ctx.user.id, env);
   return { env, db: ctx.supabase, userId: ctx.user.id, hoy: hoyDe(ctx) };
