@@ -199,7 +199,7 @@ export const tareas: AgentModule = {
       filter: { type: "string", enum: ["today", "overdue", "project", "inbox", "summary"], description: "today=para hoy, overdue=vencidas, project=de un proyecto/frente, inbox=cajón desastre, summary=resumen general" },
       project: { type: "string", description: "Solo con filter=project: proyecto o frente con las palabras de David" },
     }, ["filter"]),
-    tool("create_task", "Crea una tarea nueva en Norte (algo por hacer: 'agrega', 'anota', 'agéndame…', 'recuérdame…'), con fecha y hora si las dijo.", {
+    tool("create_task", "Crea una tarea nueva en Norte (algo por hacer: 'agrega', 'apunta', 'agéndame…', 'recuérdame…'; no para decisiones, que son notas), con fecha y hora si las dijo.", {
       text: { type: "string", description: "La tarea, corta y en infinitivo (ej. 'Llamar a Ana')" },
       project: { type: "string", description: "Proyecto o frente con las palabras de David ('nova fondos', 'maqui colombia cobranzas'); vacío si no lo dijo (va al cajón)" },
       due: { type: "string", description: "Cuándo: 'hoy', 'mañana', 'viernes', '+3' o AAAA-MM-DD si dijo día y mes" },

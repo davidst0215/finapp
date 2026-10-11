@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { GitHubConflict, type RepoFiles } from "./github.ts";
-import { anexarNota, lineaNota, limpiarNota, MAX_NOTA, notasHeader, notasPath, opAnotar } from "./notas.ts";
+import { anexarNota, lineaNota, limpiarNota, MAX_NOTA, MENSAJE_NOTA_LARGA, notasHeader, notasPath, opAnotar } from "./notas.ts";
 import { classifyPath } from "./docs.ts";
 import { parseTasks } from "./tasks.ts";
 import { rowsForFile } from "./rows.ts";
@@ -52,15 +52,27 @@ test("la línea lleva la fecha y la hora de Lima: «- 2026-10-11 14:30 · texto�
   assert.equal(notasPath("tdv-bolsa"), "20-projects/tdv-bolsa/notas.md");
 });
 
-test("limpiarNota: una sola línea de texto plano, con tope y sin cortar un emoji", () => {
+test("limpiarNota: una sola línea de texto plano y SIN recorte (lo largo lo rechaza quien llama)", () => {
   assert.equal(limpiarNota("  decidimos   cesión\ny\r\n- [ ] otra cosa\t"), "decidimos cesión y - [ ] otra cosa");
   assert.equal(limpiarNota("a\u0000b\u2028c"), "a b c");
   assert.equal(limpiarNota(undefined), "");
   assert.equal(limpiarNota("   "), "");
   const larga = limpiarNota("x".repeat(MAX_NOTA + 50));
-  assert.equal(larga.length, MAX_NOTA);
-  const corte = limpiarNota("x".repeat(MAX_NOTA - 1) + "😀 fin");
-  assert.ok(!/[\uD800-\uDBFF]$/.test(corte), "no deja medio emoji al final");
+  assert.equal(larga.length, MAX_NOTA + 50, "no recorta en silencio: quien llama compara con MAX_NOTA y rechaza");
+  assert.equal(limpiarNota("x".repeat(MAX_NOTA)).length, MAX_NOTA, "justo en el tope cabe");
+  assert.equal(MENSAJE_NOTA_LARGA, "La nota es muy larga; dímela más corta.");
+});
+
+test("limpiarNota: [[enlaces]], ![[incrustados]], imágenes y %%comentarios%% pierden su sintaxis de Obsidian", () => {
+  assert.equal(limpiarNota("ver [[Novafondos]] y [[tdv|TDV]]"), "ver [Novafondos] y [tdv|TDV]");
+  assert.equal(limpiarNota("![[plano.png]] y ![[otra#sec]]"), "[plano.png] y [otra#sec]");
+  assert.equal(limpiarNota("![logo](https://x.test/p.png)"), "[logo](https://x.test/p.png)", "sin ! no se incrusta la imagen");
+  assert.equal(limpiarNota("antes %%oculto%% después"), "antes %oculto% después");
+  assert.equal(limpiarNota("[[[triple]]]"), "[triple]");
+  assert.equal(limpiarNota("cesión de 0,02 % mensual, 50% y ¡ojo!"), "cesión de 0,02 % mensual, 50% y ¡ojo!", "un % suelto y un ! normal no se tocan");
+  // y el índice no inventa relaciones: sin [[..]] no hay wikilinks
+  const { doc } = rowsForFile(P, anexarNota(null, lineaNota(limpiarNota("ver [[Novafondos]] ![[x]]"), "2026-10-11", 1), "# H")!, "s");
+  assert.deepEqual(doc?.links, []);
 });
 
 test("una nota con saltos no puede abrir una casilla ni un encabezado: sigue siendo UNA línea que no es tarea", () => {
@@ -72,8 +84,9 @@ test("una nota con saltos no puede abrir una casilla ni un encabezado: sigue sie
 });
 
 test("anexarNota: archivo nuevo → encabezado + línea; existente → al final sin tocar lo anterior", () => {
-  assert.equal(anexarNota(null, L1, notasHeader(LABEL)), `# Notas — ${LABEL}\n\n${L1}\n`);
-  assert.equal(anexarNota("", L1, notasHeader(LABEL)), `# Notas — ${LABEL}\n\n${L1}\n`, "un archivo vacío también recibe encabezado");
+  assert.equal(anexarNota(null, L1, notasHeader(LABEL)), `---\ntype: notas\n---\n# Notas — ${LABEL}\n\n${L1}\n`);
+  assert.equal(anexarNota("", L1, notasHeader(LABEL)), anexarNota(null, L1, notasHeader(LABEL)), "un archivo vacío se trata como nuevo");
+  assert.equal(anexarNota(" \n\n", L1, "# H"), `# H\n\n${L1}\n`);
 
   const antes = "# Notas — X\n\n- 2026-10-01 09:00 · primera\n\nUn párrafo que escribió David a mano.\n";
   const despues = anexarNota(antes, L1, "# Notas — X")!;
@@ -97,12 +110,24 @@ test("anexarNota: la misma línea ya al final (un reintento del cliente) no se d
   assert.ok(anexarNota(una, lineaNota("decidimos cesión de 0,02 % mensual", "2026-10-11", 14 * 60 + 31), "# H"));
 });
 
-test("opAnotar: crea notas.md si no existe, con encabezado, y el commit dice dónde", async () => {
+test("notasHeader: frontmatter con cliente y proyecto como las fichas; los valores con signos van entre comillas y sin inyectar claves", () => {
+  assert.equal(notasHeader("Novafondos App", { cliente: "Novafondos", proyecto: "novafondos-app" }), "---\ntype: notas\ncliente: Novafondos\nproyecto: novafondos-app\n---\n# Notas — Novafondos App");
+  assert.equal(notasHeader("Cajón desastre", { cliente: null, proyecto: "cajon-desastre" }), "---\ntype: notas\nproyecto: cajon-desastre\n---\n# Notas — Cajón desastre");
+  assert.equal(notasHeader("X", { cliente: "Maqui CO" }), "---\ntype: notas\ncliente: Maqui CO\n---\n# Notas — X");
+  const raro = notasHeader("X", { cliente: 'Acme: "Sur"\ntype: ficha-proyecto', proyecto: "a" });
+  assert.equal(raro.split("\n").filter((l) => l.startsWith("type:")).length, 1, "un cliente con salto de línea no agrega otra clave");
+  assert.match(raro, /\ncliente: "Acme: Sur type: ficha-proyecto"\n/);
+});
+
+test("opAnotar: crea notas.md si no existe, con frontmatter cliente/proyecto y encabezado, y el commit dice dónde", async () => {
   const repo = new FakeRepo();
-  const r = await opAnotar(repo, { folder: "novafondos-app", label: LABEL, linea: L1 });
+  const r = await opAnotar(repo, { folder: "novafondos-app", label: LABEL, cliente: "Novafondos", linea: L1 });
   assert.equal(r.changed, true);
   assert.equal(r.write.path, P);
-  assert.equal(repo.text(P), `# Notas — ${LABEL}\n\n${L1}\n`);
+  assert.equal(repo.text(P), `---\ntype: notas\ncliente: Novafondos\nproyecto: novafondos-app\n---\n# Notas — ${LABEL}\n\n${L1}\n`);
+  // lo que verá el índice: el filtro por cliente de vault_search lo encuentra, y sigue siendo una nota (no una ficha) con título
+  const { doc } = rowsForFile(P, repo.text(P)!, "s");
+  assert.deepEqual([doc?.kind, doc?.cliente, doc?.proyecto, doc?.title], ["nota", "Novafondos", "novafondos-app", `Notas — ${LABEL}`]);
   assert.equal(r.write.text, repo.text(P));
   assert.equal(repo.puts[0].sha, null, "creación: sin sha");
   assert.equal(repo.puts[0].message, "wabid: nota en novafondos-app: decidimos cesión de 0,02 % mensual");
@@ -111,11 +136,12 @@ test("opAnotar: crea notas.md si no existe, con encabezado, y el commit dice dó
 
 test("opAnotar: agrega al final de un archivo existente SIN pisar lo que hay, con el sha leído", async () => {
   const repo = new FakeRepo();
-  const previo = `# Notas — ${LABEL}\n\n- 2026-10-01 09:00 · primera\n`;
+  const previo = `# Notas — ${LABEL}\n\n- 2026-10-01 09:00 · primera\n`; // sin frontmatter: un archivo existente NO se reescribe para agregárselo
   repo.set(P, previo);
   const shaPrevio = repo.files.get(P)!.sha;
-  const r = await opAnotar(repo, { folder: "novafondos-app", label: LABEL, linea: L1 });
+  const r = await opAnotar(repo, { folder: "novafondos-app", label: LABEL, cliente: "Novafondos", linea: L1 });
   assert.equal(repo.text(P), previo + L1 + "\n");
+  assert.ok(!repo.text(P)!.includes("type: notas"), "ni frontmatter ni nada de la cabecera nueva");
   assert.equal(repo.puts[0].sha, shaPrevio, "escribe con el sha que leyó");
   assert.equal(r.write.sha, repo.files.get(P)!.sha, "devuelve el sha nuevo (el del blob escrito) para indexar");
 });

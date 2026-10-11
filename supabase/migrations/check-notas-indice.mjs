@@ -54,11 +54,11 @@ const indexar = async (user, path, text, sha) => {
 const FICHA = "60-wiki/proyectos/novafondos.md";
 await indexar(U, FICHA, "---\ntype: ficha-proyecto\ncliente: Novafondos\n---\n# Novafondos\n\n## Qué es\nSistema de fondos colectivos.\n", "f1");
 const P = notasPath("novafondos-app");
-await indexar(OTRO, P, anexarNota(null, lineaNota("la cesión del otro usuario es secreta", "2026-10-11", 600), notasHeader("Otro")), "o1");
+await indexar(OTRO, P, anexarNota(null, lineaNota("la cesión del otro usuario es secreta", "2026-10-11", 600), notasHeader("Otro", { cliente: "Novafondos", proyecto: "novafondos-app" })), "o1");
 
 // --- La nota de Wabid ---
 const L1 = lineaNota("decidimos cesión de 0,02 % mensual", "2026-10-11", 14 * 60 + 30);
-const texto1 = anexarNota(null, L1, notasHeader("Saya Investments › Novafondos app"));
+const texto1 = anexarNota(null, L1, notasHeader("Saya Investments › Novafondos app", { cliente: "Novafondos", proyecto: "novafondos-app" }));
 await indexar(U, P, texto1, "n1");
 
 const buscar = (q, kinds = null) => como(U, `SELECT path, kind, title FROM vault_search($1, NULL, $2::text[], 8, true)`, [q, kinds]);
@@ -73,6 +73,11 @@ hits = await buscar("cesión mensual", ["nota"]);
 assert.deepEqual(hits.map((h) => h.path), [P]);
 const ctxRow = (await como(U, `SELECT context FROM vault_search('cesión mensual', NULL, ARRAY['nota'], 8, true)`))[0].context;
 assert.ok(ctxRow.includes("⟦"), "con fragmento marcado para que el modelo redacte la respuesta");
+
+// el filtro por cliente de vault_search (el `cliente` de search_memory) la encuentra gracias al frontmatter del archivo nuevo, y es solo la mía
+const porCliente = await como(U, `SELECT path, cliente, proyecto FROM vault_search($1, $2, ARRAY['nota'], 8, false)`, ["cesión", "novafondos"]);
+assert.deepEqual(porCliente.map((h) => [h.path, h.cliente, h.proyecto]), [[P, "Novafondos", "novafondos-app"]]);
+assert.equal((await como(U, `SELECT count(*)::int AS n FROM vault_search($1, $2, ARRAY['nota'], 8, false)`, ["cesión", "TDV"]))[0].n, 0, "otro cliente: nada");
 
 // --- Una segunda nota (otro sha): el índice se reemplaza, no se duplica, y sigue sin tareas ---
 const L2 = lineaNota("cobranza queda para octubre", "2026-10-11", 15 * 60);

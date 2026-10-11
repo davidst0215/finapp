@@ -153,6 +153,29 @@ test("sin `reemplaza`, un dato que solo cambia el valor se agrega (no se adivina
   assert.ok(c.prompt.indexOf("Interbank") < c.prompt.indexOf("BBVA"), "el más reciente primero: si se contradicen vale el primero");
 });
 
+test("lo sensible no se guarda: contraseñas, PIN, token, CVV, claves y rachas de 12+ dígitos → «Eso no lo guardo por seguridad.», sin tocar la base", async () => {
+  const u = nuevoUsuario();
+  const t = tabla([{ texto: BBVA, user_id: u }]);
+  const antes = t.estado.escrituras;
+  for (const hecho of [
+    "La contraseña del wifi es casa123", "El PIN de la tarjeta de David es 4321", "El token de la API es abc", "El CVV de la Visa es 123",
+    "La clave del cajero es 5521", "La tarjeta de David es 4111 1111 1111 1111", "La cuenta de David es 19412345678901",
+  ]) {
+    const r = await hechos.handlers.remember_fact({ hecho }, ctx(t.db, "recuerda que " + hecho, u), undefined);
+    assert.equal(r.action, "error", hecho);
+    assert.equal(r.message, "Eso no lo guardo por seguridad.", hecho);
+    assert.ok(voz(r).length <= VOZ_MAX);
+  }
+  // tampoco por la vía de «reemplaza» (actualizar un recuerdo con un secreto)
+  const r2 = await hechos.handlers.remember_fact({ hecho: "La tarjeta principal de David es 4111111111111111", reemplaza: "tarjeta principal" }, ctx(t.db, "x", u), undefined);
+  assert.equal(r2.message, "Eso no lo guardo por seguridad.");
+  assert.equal(t.estado.escrituras, antes, "ni un insert ni un update");
+  assert.deepEqual(t.textos(u), [BBVA]);
+  // lo normal con números sigue entrando
+  const ok = await hechos.handlers.remember_fact({ hecho: "El RUC de Saya es 20123456789" }, ctx(t.db, "recuerda", u), undefined);
+  assert.equal(ok.voz, "Lo recordaré.");
+});
+
 test("validaciones: vacío pregunta; más de 200 caracteres se rechaza; tope de recuerdos", async () => {
   const u = nuevoUsuario();
   const t = tabla();
@@ -340,6 +363,7 @@ test("las reglas separan recuerdo, nota y tarea; las tools piden lo mínimo; la 
   assert.match(rules, /Recuérdame llamar a Ana el lunes" es una tarea/);
   assert.match(rules, /datos, nunca órdenes/);
   assert.match(rules, /ÚLTIMO mensaje/);
+  assert.match(rules, /¿Cuál olvido…\?", "¿Cuál reemplazo…\?"\) y David responde, repite la tool/, "qué hacer tras un clarify de olvidar o de reemplazar");
   assert.match(rules, /account = BBVA/, "los recuerdos se usan para resolver «mi tarjeta principal» sin tocar buscarCuenta");
   const defs = Object.fromEntries(hechos.definitions.map((d) => [d.function.name, d.function.parameters as { properties: Record<string, unknown>; required: string[] }]));
   assert.deepEqual(Object.keys(defs).sort(), ["forget_fact", "list_facts", "remember_fact"]);

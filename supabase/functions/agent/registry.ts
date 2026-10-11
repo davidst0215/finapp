@@ -27,7 +27,8 @@ const general: AgentModule = {
   },
 };
 
-// Cada módulo de Wabid se agrega aquí con una línea. El orden no importa.
+// Cada módulo de Wabid se agrega aquí con una línea. El orden solo importa para los contextos `estable`: se concatenan en este orden
+// tras la persona y las reglas, así que lo que cambia más seguido (hechos) va DESPUÉS del catálogo de fichas (memoria) y no rompe su prefijo cacheado.
 // deno-lint-ignore no-explicit-any
 export const MODULES: AgentModule<any>[] = [
   general,

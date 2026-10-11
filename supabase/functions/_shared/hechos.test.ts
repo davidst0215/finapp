@@ -4,8 +4,33 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  armarBloque, buscarHechos, type Hecho, HechosCache, MAX_CHARS_CONTEXTO, MAX_EN_CONTEXTO, mismoHecho, palabras, preguntaCual, validarHecho,
+  armarBloque, buscarHechos, esSensible, type Hecho, HechosCache, MAX_CHARS_CONTEXTO, MAX_EN_CONTEXTO, MENSAJE_SENSIBLE, mismoHecho, palabras,
+  preguntaCual, validarHecho,
 } from "./hechos.ts";
+
+test("esSensible: contraseñas, PIN, token, CVV, claves y rachas de 12 o más dígitos (también con espacios o guiones)", () => {
+  for (const peligroso of [
+    "La contraseña del banco es Hola123", "La CONTRASEÑA de David es x", "El PIN de la tarjeta es 4321", "su pin es 0000", "El token de GitHub es ghp_abc",
+    "El CVV es 123", "El cvc de la visa es 456", "La clave del cajero es 5521", "Las claves de David están en la nota", "su password es 1234",
+    "La tarjeta de David es 4111111111111111", "Tarjeta 4111 1111 1111 1111", "Tarjeta 4111-1111-1111-1111", "La cuenta BCP es 19412345678901",
+    "Número 123456789012",
+  ]) assert.equal(esSensible(peligroso), true, peligroso);
+  for (const inocuo of [
+    "La tarjeta principal de David es la BBVA", "Marco es de Saya", "El RUC de Saya es 20123456789", "El DNI de David termina en 4521",
+    "El celular de Ana es 987 654 321", "David nació el 12 de marzo de 1990", "La reunión es el 2026-10-11 a las 14:30",
+  ]) assert.equal(esSensible(inocuo), false, inocuo);
+  assert.equal(esSensible("11 dígitos: 12345678901"), false, "11 dígitos no son una racha de 12");
+  assert.equal(esSensible("12 dígitos: 123456789012"), true);
+  assert.equal(esSensible("Un token de cortesía"), true, "la palabra sola basta: es una red de seguridad, no un análisis");
+  assert.equal(esSensible("La contrasenia mal escrita es otra cosa"), false, "solo las palabras exactas");
+});
+
+test("validarHecho rechaza lo sensible con «Eso no lo guardo por seguridad.» antes de mirar el largo", () => {
+  assert.deepEqual(validarHecho("La contraseña del wifi es casa123"), { ok: false, error: "Eso no lo guardo por seguridad." });
+  assert.equal(MENSAJE_SENSIBLE, "Eso no lo guardo por seguridad.");
+  assert.deepEqual(validarHecho("Tarjeta 4111 1111 1111 1111"), { ok: false, error: MENSAJE_SENSIBLE });
+  assert.equal(validarHecho("La tarjeta principal de David es la BBVA").ok, true);
+});
 
 let n = 0;
 const h = (texto: string, minutosAtras = n): Hecho => ({

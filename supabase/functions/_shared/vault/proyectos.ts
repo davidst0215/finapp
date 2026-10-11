@@ -64,6 +64,8 @@ export type Destino = FolderInfo & {
   palabras: string[];
   /** Solo las suyas (carpeta, proyecto, frente): desempatan frente a las que vienen de las fichas. */
   propias: string[];
+  /** El `cliente` que más repiten las fichas que hablan de esta carpeta ("Maqui CO"), sin "personal"; null si ninguna lo dice. */
+  cliente: string | null;
 };
 
 export type Indice = {
@@ -76,6 +78,9 @@ export type Indice = {
 /** Una ficha que nombra más que esto es un índice general (Norte, parqueados): no aporta alias. */
 const MAX_REFS_FICHA = 4;
 const sinPersonal = (c: string | null) => (c && norm(c) !== "personal" ? c : null);
+/** El valor que más se repite, o null si no hay ninguno. */
+const masFrecuente = (xs: string[]): string | null =>
+  [...xs.reduce((m, c) => m.set(c, (m.get(c) ?? 0) + 1), new Map<string, number>())].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 
 /** "bolsa-de-costos" → "Bolsa de costos". */
 const frase = (slug: string): string => {
@@ -127,7 +132,8 @@ export function construirIndice(cfg: Config, carpetas: string[], fichas: FichaPr
   const base = todos.map((d): Destino => {
     const propias = unicos([...tokens(d.folder), ...tokens(d.project), ...(d.frente ? tokens(d.frente) : [])]);
     const delFichas = (fichasDe.get(d.folder) ?? []).flatMap(identidad);
-    return { ...d, grupo: grupoDe(d), grupoEtiqueta: d.project, etiquetaFicha: true, palabras: unicos([...propias, ...delFichas]), propias };
+    const cliente = masFrecuente((fichasDe.get(d.folder) ?? []).map((f) => sinPersonal(f.cliente)).filter(Boolean) as string[]);
+    return { ...d, grupo: grupoDe(d), grupoEtiqueta: d.project, etiquetaFicha: true, palabras: unicos([...propias, ...delFichas]), propias, cliente };
   });
 
   // Etiqueta del grupo: la de la configuración; si no, el cliente de las fichas ("Maqui CO") y, si no hay, el prefijo.
@@ -140,7 +146,7 @@ export function construirIndice(cfg: Config, carpetas: string[], fichas: FichaPr
       continue;
     }
     const clientes = base.filter((x) => x.grupo === d.grupo).flatMap((x) => (fichasDe.get(x.folder) ?? []).map((f) => sinPersonal(f.cliente)).filter(Boolean) as string[]);
-    const frecuente = [...clientes.reduce((m, c) => m.set(c, (m.get(c) ?? 0) + 1), new Map<string, number>())].sort((a, b) => b[1] - a[1])[0]?.[0];
+    const frecuente = masFrecuente(clientes);
     etiquetas.set(d.grupo, frecuente ?? pretty(d.grupo));
     if (frecuente) conCliente.add(d.grupo);
   }

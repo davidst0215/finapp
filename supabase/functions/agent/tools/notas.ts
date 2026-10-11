@@ -33,7 +33,7 @@ const addNote = async (args: Record<string, unknown>, ctx: AgentContext): Promis
     if ("respuesta" in planeado) return planeado.respuesta;
     const { plan } = planeado;
 
-    await agregarNota(db, userId, env, { folder: plan.folder, texto: plan.texto, hoy, minutos: relojLima(ctx.limaNow).minutos });
+    await agregarNota(db, userId, env, { folder: plan.folder, texto: plan.texto, cliente: plan.cliente, hoy, minutos: relojLima(ctx.limaNow).minutos });
     // Pantalla: con el texto. Voz: sin repetirlo (David acaba de decirlo), solo dónde quedó.
     return {
       action: "add_note",

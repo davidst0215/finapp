@@ -24,10 +24,24 @@ export const categoriaValida = (v: unknown): string | null => (typeof v === "str
 // --- Validar lo dictado -------------------------------------------------------------------------------------
 export type ValidacionHecho = { ok: true; texto: string } | { ok: false; error: string; pregunta?: boolean };
 
+export const MENSAJE_SENSIBLE = "Eso no lo guardo por seguridad.";
+const PALABRAS_SENSIBLES = /\b(claves?|contrasenas?|passwords?|pins?|tokens?|cvv|cvc)\b/;
+
+/**
+ * Lo que la memoria no guarda: contraseñas, PIN, tokens, CVV y números de tarjeta o de cuenta (12 o más dígitos seguidos, también con
+ * espacios o guiones entre ellos). Los recuerdos viajan al modelo en cada pedido y quedan en la base: no son una bóveda.
+ * Es una red de seguridad, no una garantía: un número dicho con palabras no se detecta.
+ */
+export function esSensible(texto: string): boolean {
+  if (PALABRAS_SENSIBLES.test(norm(texto))) return true;
+  return /\d{12,}/.test(texto.replace(/(?<=\d)[ -](?=\d)/g, ""));
+}
+
 /** Una frase en una sola línea. Pasarse de 200 caracteres es un error (se pide más corto): un recuerdo cortado a medias engaña. */
 export function validarHecho(raw: unknown): ValidacionHecho {
   const texto = String(raw ?? "").replace(/[\u0000-\u001f\u007f\u0085\u2028\u2029]+/g, " ").replace(/\s{2,}/g, " ").trim();
   if (!/[\p{L}\p{N}]/u.test(texto)) return { ok: false, error: "¿Qué quieres que recuerde?", pregunta: true };
+  if (esSensible(texto)) return { ok: false, error: MENSAJE_SENSIBLE };
   if (texto.length > MAX_HECHO) return { ok: false, error: `Eso es muy largo para recordarlo (máximo ${MAX_HECHO} letras). Dímelo más corto.` };
   return { ok: true, texto };
 }

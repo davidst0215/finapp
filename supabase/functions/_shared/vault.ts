@@ -23,7 +23,7 @@ import {
 import {
   carpetasDeFicha, carpetasParaPendientes, construirIndice, fichaProy, type FichaProy, type Indice, type PendientesIn, type Resolucion, resolverProyecto,
 } from "./vault/proyectos.ts";
-import { lineaNota, limpiarNota, opAnotar } from "./vault/notas.ts";
+import { lineaNota, limpiarNota, MAX_NOTA, MENSAJE_NOTA_LARGA, opAnotar } from "./vault/notas.ts";
 import { rowsForFile } from "./vault/rows.ts";
 import {
   buildAnswerMessages, clienteChips, mensajeMemoria, parseAnswer, pickRelated, textoPendientes, toSources, type ClienteChip, type Hit,
@@ -371,13 +371,15 @@ export async function agregarNota(
   db: SupabaseClient,
   userId: string,
   env: VaultEnv,
-  input: { folder: unknown; texto: unknown; hoy: string; minutos: number },
+  input: { folder: unknown; texto: unknown; hoy: string; minutos: number; cliente?: string | null },
 ): Promise<{ folder: string; label: string; changed: boolean }> {
   const texto = limpiarNota(input.texto);
   if (!texto) throw new VaultError("Falta el texto de la nota", 400);
+  if (texto.length > MAX_NOTA) throw new VaultError(MENSAJE_NOTA_LARGA, 400); // nunca se recorta en silencio
   const folder = await destinationFor(db, userId, env, input.folder);
   const info = classify(folder, env.config);
-  const res = await opAnotar(github(env), { folder, label: info.label, linea: lineaNota(texto, input.hoy, input.minutos) });
+  // `cliente` solo sirve si el archivo es nuevo: nace con frontmatter cliente/proyecto; uno que ya existe no se reescribe.
+  const res = await opAnotar(github(env), { folder, label: info.label, cliente: input.cliente, linea: lineaNota(texto, input.hoy, input.minutos) });
   await indexQuietly(db, userId, [res.write]);
   return { folder, label: info.label, changed: res.changed };
 }

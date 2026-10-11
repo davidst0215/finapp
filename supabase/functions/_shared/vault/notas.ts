@@ -7,25 +7,46 @@
 import type { RepoFiles } from "./github.ts";
 import { type FileWrite, updateFile, VaultError } from "./ops.ts";
 import { isFolderSlug } from "./taxonomy.ts";
-import { detectEol } from "./tasks.ts";
+import { appendBlock } from "./tasks.ts";
 
-/** Una nota más larga que esto es un dictado desbocado, no una nota. */
+/** Una nota más larga que esto es un dictado desbocado, no una nota: se rechaza (nunca se recorta en silencio). */
 export const MAX_NOTA = 500;
+export const MENSAJE_NOTA_LARGA = "La nota es muy larga; dímela más corta.";
 
 export const notasPath = (folder: string): string => `20-projects/${folder}/notas.md`;
-export const notasHeader = (label: string): string => `# Notas — ${label}`;
+
+/** Valor de una clave del frontmatter: tal cual si es una palabra simple; entre comillas si lleva signos que YAML interpretaría. */
+const yaml = (s: string): string => {
+  const t = s.replace(/[\x00-\x1f"]+/g, " ").replace(/\s+/g, " ").trim();
+  return /^[\p{L}\p{N}][\p{L}\p{N} ._-]*$/u.test(t) ? t : `"${t}"`;
+};
+
+/**
+ * Encabezado de un `notas.md` NUEVO: frontmatter con `cliente` y `proyecto` (como las fichas, para que el filtro por cliente de
+ * vault_search lo encuentre) y el título. Un archivo que ya existe conserva el suyo: nunca se reescribe.
+ */
+export function notasHeader(label: string, meta: { cliente?: string | null; proyecto?: string | null } = {}): string {
+  const fm = ["type: notas"];
+  if (meta.cliente?.trim()) fm.push(`cliente: ${yaml(meta.cliente)}`);
+  if (meta.proyecto?.trim()) fm.push(`proyecto: ${yaml(meta.proyecto)}`);
+  return `---\n${fm.join("\n")}\n---\n# Notas — ${label}`;
+}
 
 /**
  * El texto de la nota es dato de David: una sola línea de texto plano. Sin saltos (una línea nueva podría abrir una casilla
- * `- [ ]` o un encabezado), sin caracteres de control y sin espacios de más.
+ * `- [ ]` o un encabezado), sin caracteres de control y sin espacios de más. Tampoco activa sintaxis de Obsidian: `[[enlace]]`,
+ * `![[incrustado]]` y las imágenes `![](url)` pierden su forma, y `%%comentario%%` deja de ocultar texto.
+ * NO recorta: quien llama rechaza lo que pase de MAX_NOTA.
  */
-export function limpiarNota(s: unknown, max = MAX_NOTA): string {
-  const t = String(s ?? "")
+export function limpiarNota(s: unknown): string {
+  return String(s ?? "")
     .replace(/[\u0000-\u001f\u007f\u0085\u2028\u2029]+/g, " ")
+    .replace(/!+(?=\[)/g, "")
+    .replace(/\[{2,}/g, "[")
+    .replace(/\]{2,}/g, "]")
+    .replace(/%{2,}/g, "%")
     .replace(/\s{2,}/g, " ")
-    .trim()
-    .slice(0, max);
-  return t.replace(/[\uD800-\uDBFF]$/, "").trimEnd(); // el corte no deja medio emoji
+    .trim();
 }
 
 /** `2026-10-11` + 870 minutos desde la medianoche de Lima → «- 2026-10-11 14:30 · texto». */
@@ -41,12 +62,12 @@ export function lineaNota(texto: string, hoy: string, minutos: number): string {
  * (CRLF si lo usa) y deja uno solo al terminar. Archivo inexistente o vacío → se crea con su encabezado.
  */
 export function anexarNota(existing: string | null, linea: string, header: string): string | null {
-  if (existing === null || existing.trim() === "") return `${header}\n\n${linea}\n`;
-  const eol = detectEol(existing);
-  const base = existing.trimEnd();
-  const ultima = base.slice(base.lastIndexOf("\n") + 1).replace(/\r$/, "");
-  if (ultima === linea) return null;
-  return base + eol + linea + eol;
+  const previo = existing !== null && existing.trim() === "" ? null : existing; // un archivo vacío se trata como nuevo
+  if (previo !== null) {
+    const base = previo.trimEnd();
+    if (base.slice(base.lastIndexOf("\n") + 1).replace(/\r$/, "") === linea) return null;
+  }
+  return appendBlock(previo, [linea], header).text; // mismo trato que Norte y las tareas: salto del archivo, un solo salto final
 }
 
 const short = (s: string) => s.slice(0, 60);
@@ -57,14 +78,15 @@ const short = (s: string) => s.slice(0, 60);
  */
 export async function opAnotar(
   repo: RepoFiles,
-  args: { folder: string; label: string; linea: string },
+  args: { folder: string; label: string; linea: string; cliente?: string | null },
 ): Promise<{ write: FileWrite; changed: boolean }> {
   if (!isFolderSlug(args.folder)) throw new VaultError("Carpeta inválida", 400);
   const path = notasPath(args.folder);
+  const header = notasHeader(args.label, { cliente: args.cliente, proyecto: args.folder }); // solo se usa si el archivo es nuevo
   const r = await updateFile(
     repo,
     path,
-    (cur) => anexarNota(cur, args.linea, notasHeader(args.label)),
+    (cur) => anexarNota(cur, args.linea, header),
     `wabid: nota en ${args.folder}: ${short(args.linea.replace(/^- \S+ \S+ · /, ""))}`,
   );
   return { write: { path, text: r.text, sha: r.sha }, changed: r.changed };
