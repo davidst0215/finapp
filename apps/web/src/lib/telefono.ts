@@ -1,6 +1,6 @@
 // Teléfonos del formulario de Contactos: normalizar a E.164 (Perú por defecto) y mostrarlos con espacios.
 // ESPEJO de supabase/functions/_shared/telefono.ts (lo que usa Wabid por voz): las reglas deben dar el mismo resultado, y
-// apps/web/tests/contactos/telefono.test.ts lo comprueba con una tabla de casos. Si cambias una regla, cámbiala en los dos.
+// apps/web/tests/contactos/telefono.test.mjs lo comprueba con una tabla de casos. Si cambias una regla, cámbiala en los dos.
 // Lo único que difiere son las frases de error: aquí están escritas para un formulario, allá para decirse en voz.
 
 export type Telefono = { ok: true; e164: string } | { ok: false; error: string };

@@ -112,4 +112,10 @@ assert.equal((await como("service_role", null, `SELECT count(*)::int AS n FROM c
 // Solo hay una política y es la nuestra (re-aplicar la migración no las acumula).
 assert.deepEqual((await db.query(`SELECT policyname FROM pg_policies WHERE tablename = 'contactos'`)).rows.map((r) => r.policyname), ["contactos_all_own"]);
 
+// Solo la llave y el índice único (usuario, teléfono): ningún índice que la app no use.
+assert.deepEqual(
+  (await db.query(`SELECT indexname FROM pg_indexes WHERE tablename = 'contactos' ORDER BY indexname`)).rows.map((r) => r.indexname),
+  ["contactos_pkey", "idx_contactos_user_telefono"],
+);
+
 console.log("check-018: OK");

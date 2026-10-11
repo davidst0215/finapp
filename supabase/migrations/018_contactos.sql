@@ -23,9 +23,9 @@ CREATE TABLE IF NOT EXISTS contactos (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Un mismo número no se guarda dos veces por usuario: importar dos veces desde el celular no duplica.
+-- Un mismo número no se guarda dos veces por usuario: importar dos veces desde el celular no duplica. Es el único índice además de
+-- la llave: la app lee todos los contactos del usuario (hasta 2000) y el nombre se compara en memoria, así que otro índice no se usaría.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_contactos_user_telefono ON contactos(user_id, telefono);
-CREATE INDEX IF NOT EXISTS idx_contactos_user_nombre ON contactos(user_id, lower(nombre));
 
 ALTER TABLE contactos ENABLE ROW LEVEL SECURITY;
 

@@ -15,6 +15,8 @@ export const MAX_NOMBRE = 100;
 export const MAX_RELACION = 100;
 export const MAX_ALIAS = 10;
 export const MAX_ALIAS_LARGO = 60;
+/** Tope de contactos por usuario. Wabid por voz lee hasta este número en cada pedido (supabase/functions/_shared/contactos.ts). */
+export const MAX_CONTACTOS = 2000;
 
 const sinTildes = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '');
 const limpiar = (s: string): string => s.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -94,16 +96,20 @@ export type Importacion = {
   sinNombre: number;
   /** Contactos con más de un número válido: se guardó el primero. */
   conVarios: number;
+  /** Nuevos que no caben porque se llegó al tope de MAX_CONTACTOS. */
+  sinCupo: number;
 };
 
 /**
  * Convierte lo elegido en el selector a contactos nuevos. Un contacto del celular puede tener varios números, pero aquí cada
  * número es una fila: se guarda el primero válido (dos "Marco" sin relación obligarían a Wabid a preguntar cuál cada vez).
- * No se repiten números: ni los que ya tiene David ni los que vienen dos veces en la selección.
+ * No se repiten números: ni los que ya tiene David ni los que vienen dos veces en la selección. Con el tope de MAX_CONTACTOS
+ * solo entran los que caben (en el orden elegido); el resto se cuenta en `sinCupo` para avisarlo.
  */
 export function desdeSelector(elegidos: readonly ContactoDelSelector[], existentes: readonly Contacto[]): Importacion {
   const vistos = new Set(existentes.map((c) => c.telefono));
-  const r: Importacion = { nuevos: [], yaEstaban: 0, sinNumero: 0, sinNombre: 0, conVarios: 0 };
+  const cupo = Math.max(0, MAX_CONTACTOS - existentes.length);
+  const r: Importacion = { nuevos: [], yaEstaban: 0, sinNumero: 0, sinNombre: 0, conVarios: 0, sinCupo: 0 };
   for (const e of elegidos) {
     const nombre = limpiar(String(e.name?.[0] ?? '')).slice(0, MAX_NOMBRE);
     const validos: string[] = [];
@@ -117,6 +123,7 @@ export function desdeSelector(elegidos: readonly ContactoDelSelector[], existent
     const telefono = validos[0]!;
     if (vistos.has(telefono)) { r.yaEstaban++; continue; }
     vistos.add(telefono);
+    if (r.nuevos.length >= cupo) { r.sinCupo++; continue; }
     r.nuevos.push({ nombre, telefono, relacion: null, alias: [] });
   }
   return r;
@@ -130,6 +137,7 @@ export function resumenImportacion(r: Importacion): string {
   if (r.sinNumero) partes.push(`${r.sinNumero} sin número válido`);
   if (r.sinNombre) partes.push(`${r.sinNombre} sin nombre`);
   if (r.conVarios) partes.push(r.conVarios === 1 ? '1 tenía varios números: guardé el primero' : `${r.conVarios} tenían varios números: guardé el primero de cada uno`);
+  if (r.sinCupo) partes.push(`${r.sinCupo === 1 ? '1 no cupo' : `${r.sinCupo} no cupieron`}: el tope es de ${MAX_CONTACTOS} contactos`);
   const cabeza = n === 0 ? 'No importé ningún contacto nuevo' : n === 1 ? 'Importé 1 contacto' : `Importé ${n} contactos`;
   return partes.length ? `${cabeza}. ${partes.join(', ')}.` : `${cabeza}.`;
 }

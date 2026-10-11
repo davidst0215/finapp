@@ -1,37 +1,47 @@
 // Contactos y WhatsApp por voz: la agenda propia de Wabid (tabla `contactos`, migración 018).
 //   "Guarda a Marco con el 999 888 777, es de Saya" → create_contact
 //   "¿Cuál es el número de Marco?"                    → find_contact   (tarjeta con el número y botones)
-//   "Escríbele a Marco que llego 10 minutos tarde"    → whatsapp_contact (Wabid redacta; David toca «Abrir WhatsApp»)
+//   "Escríbele a Marco que llego 10 minutos tarde"    → whatsapp_contact (Wabid pasa lo dicho a primera persona; David toca «Abrir WhatsApp»)
 //   "Llama a Marco"                                   → call_contact   (David toca «Llamar»)
 // Wabid NUNCA envía ni llama: devuelve una `accion` con el enlace y la app muestra un botón (el navegador exige el toque).
 //
 // PRIVACIDAD. No hay loadContext: el modelo no recibe la agenda ni sus números en ningún pedido. Solo ve lo que David dice y,
 // cuando hay que desempatar, el nombre y la relación que escribe este módulo en `message` ("Marco (de Saya)"). El teléfono se
 // agrega aquí, en el servidor, dentro de `accion`; `message` y `voz` jamás lo llevan porque vuelven al modelo como historial.
+//
+// A QUIÉN SE ESCRIBE. Si el nombre está en la agenda, SIEMPRE gana el número de la agenda. Un número dictado solo se usa cuando
+// el nombre no está, y solo si aparece en el mensaje ACTUAL de David (no en turnos anteriores ni en lo que el modelo "recuerde"):
+// así un teléfono inventado, o el de otra persona dicho antes, nunca recibe el mensaje. La excepción es create_contact, que sí
+// contrasta con los turnos anteriores porque el número pudo venir antes de que David aclarara la relación.
 import {
   buscarContacto, type Contacto, fraseCreado, fraseLlamar, fraseNumero, fraseWhatsapp, frasesNoEsta, type Gestion, limpiarMensaje, MAX_CONTACTOS,
-  preguntaCual, validarContactoNuevo,
+  nombreDecible, preguntaCual, tieneNumero, validarContactoNuevo,
 } from "../../_shared/contactos.ts";
-import { coincideConDictado, formatearTelefono, MAX_MENSAJE, normalizarTelefono, urlLlamar, urlWhatsapp } from "../../_shared/telefono.ts";
+import { coincideConDictado, formatearTelefono, MAX_MENSAJE, normalizarTelefono, telefonosEnTexto, urlLlamar, urlWhatsapp } from "../../_shared/telefono.ts";
+import { limpiarEspacios } from "../../_shared/texto.ts";
 import { type AccionCliente, type AgentContext, type AgentModule, type ToolResult, tool } from "../types.ts";
 
 const rules = `CONTACTOS Y WHATSAPP (agenda propia de Wabid; no conoces a los contactos ni sus números, el sistema los busca):
 - "guarda / anota / agrega a Marco con el 999 888 777, es de Saya" = create_contact. telefono = SOLO el número que David dijo, tal cual; si no lo dijo, déjalo vacío (el sistema lo pregunta). relacion = pocas palabras ("de Saya", "mi primo").
 - "cuál es el número de Marco", "tengo a Marco" = find_contact. "escríbele / mándale un WhatsApp / dile a Marco que llego tarde" = whatsapp_contact. "llama a Marco" = call_contact.
-- mensaje de WhatsApp: lo que David enviaría, en primera persona, corto y natural, sin saludo extra, sin comillas y SIN firma ni "de parte de David": tú no firmas. "Escríbele a Marco" a secas = sin mensaje. Es correo solo si dice correo o email (mail_draft_reply). Una llamada o reunión agendada ("llamada con Marco el jueves") es calendar_create_event.
-- nombre = como David nombró a la persona ("Marco", "mi mamá"); "Marco de Saya" = nombre Marco y relacion "de Saya".
+- mensaje de WhatsApp: SOLO lo que David dijo, pasado a primera persona ("que llego 10 minutos tarde" = "Llego 10 minutos tarde"). Corrige lo mínimo y NO agregues saludos, frases, emojis ni detalles que no dijo. Sin comillas, sin firma ni "de parte de David": tú no firmas. "Escríbele a Marco" a secas = sin mensaje. Es correo solo si dice correo o email (mail_draft_reply). Una llamada o reunión agendada ("llamada con Marco el jueves") es calendar_create_event.
+- nombre = como David nombró a la persona ("Marco", "mi mamá"), nunca un número; "Marco de Saya" = nombre Marco y relacion "de Saya". Si David solo dictó un número ("llama al 999 888 777"), deja nombre vacío y pon el número en telefono.
 - Si el sistema pregunta cuál ("¿Cuál Marco: de Saya o del gimnasio?") o pide el número, y David responde, repite la MISMA tool con el nombre, el mensaje original (mira el historial) y la relacion o el telefono que dijo. Nunca inventes ni completes un número.
 - Voz: una frase.`;
 
 const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
 const err = (message: string): ToolResult => ({ action: "error", message });
 const sinContacto = "No pude leer tus contactos ahora. Inténtalo de nuevo.";
+const NO_SEGURA = "No estoy segura del número que entendí. Dímelo otra vez, dígito por dígito.";
 
 /** Una línea por pedido, sin nombres ni números: sirve para ver cuántas veces no se encuentra o queda ambiguo. */
 const log = (fn: string, resultado: string) => console.log(JSON.stringify({ evt: "contactos", fn, resultado }));
 
-/** Lo que David dijo en este turno y en los anteriores, separado para que dos turnos no se fundan en un solo número. */
-const dictado = (ctx: AgentContext) => [ctx.text, ...(ctx.anteriores ?? [])].join(" | ");
+/** Para dar de alta: lo que David dijo en este turno y en los anteriores, separado para que dos turnos no se fundan en un solo número. */
+const dictadoParaAlta = (ctx: AgentContext) => [ctx.text, ...(ctx.anteriores ?? [])].join(" | ");
+
+/** Un teléfono que se coló dentro de `nombre` ("999 888 777", "Pedro 999888777"): se quita para que no se diga ni se busque como nombre. */
+const quitarNumeros = (s: string) => limpiarEspacios(s.replace(/\+?\(?\d(?:[\s().-]*\d){5,}\)?/g, " "));
 
 /** Solo el handler lee la tabla (RLS con el JWT de David): ningún otro módulo ni contexto la consulta. */
 async function cargar(ctx: AgentContext): Promise<Contacto[] | null> {
@@ -53,42 +63,59 @@ async function cargar(ctx: AgentContext): Promise<Contacto[] | null> {
 type Destino = { ok: true; nombre: string; relacion: string | null; e164: string } | { ok: false; res: ToolResult };
 
 /**
- * A quién va el mensaje o la llamada. Con `telefono` (David acaba de dictar un número que no está en la agenda) se usa ese,
- * siempre que sea el que David dijo. Si no, se busca el nombre en la agenda: ninguno → se pide el número; varios → se pregunta
- * cuál; uno → ese. Nunca se adivina.
+ * A quién va el mensaje o la llamada.
+ * 1. Si el nombre está en la agenda, ese contacto y su número (varios → se pregunta cuál; nunca se mezcla con un número dictado).
+ * 2. Si no está y David dictó un número en ESTE mensaje, ese número, sin guardarlo.
+ * 3. Si no, se pide el número. Nunca se adivina.
  */
 async function resolver(fn: string, para: Gestion, args: Record<string, unknown>, ctx: AgentContext): Promise<Destino> {
-  const nombre = str(args.nombre).replace(/\s+/g, " ");
-  const dicho = args.telefono;
-  if (dicho !== undefined && dicho !== null && dicho !== "") {
-    const t = normalizarTelefono(dicho);
-    if (!t.ok) return { ok: false, res: { action: "clarify", message: t.error } };
-    if (!coincideConDictado(t.e164, dictado(ctx))) {
-      log(fn, "telefono_no_dictado");
-      return { ok: false, res: { action: "clarify", message: "No estoy segura del número que entendí. Dímelo otra vez, dígito por dígito." } };
+  const nombreDicho = str(args.nombre).replace(/\s+/g, " ");
+  // Un número en `nombre` no es un nombre: se busca por lo que quede y, si trae un teléfono, cuenta como el que David dictó.
+  const nombre = tieneNumero(nombreDicho) ? quitarNumeros(nombreDicho) : nombreDicho;
+  const candidato = para === "buscar" ? "" : str(args.telefono) || telefonosEnTexto(nombreDicho)[0] || "";
+
+  if (nombre) {
+    const lista = await cargar(ctx);
+    if (!lista) return { ok: false, res: err(sinContacto) };
+    const r = buscarContacto(nombre, lista, args.relacion);
+    if (r.kind === "one") {
+      log(fn, "uno");
+      return { ok: true, nombre: r.contacto.nombre, relacion: r.contacto.relacion, e164: r.contacto.telefono };
     }
-    log(fn, "telefono_dictado");
-    return { ok: true, nombre: nombre || "ese número", relacion: null, e164: t.e164 };
+    if (r.kind === "many") {
+      log(fn, `varios_${Math.min(r.contactos.length, 9)}`);
+      return { ok: false, res: { action: "clarify", ...preguntaCual(r.contactos) } };
+    }
+  }
+
+  // No está en la agenda. Un número solo vale si David lo dijo en este mensaje.
+  if (candidato) {
+    const dictados = telefonosEnTexto(ctx.text);
+    const t = normalizarTelefono(candidato);
+    if (t.ok && coincideConDictado(t.e164, ctx.text)) {
+      log(fn, "telefono_dictado");
+      return { ok: true, nombre: nombre || "ese número", relacion: null, e164: t.e164 };
+    }
+    // Si el modelo trae un teléfono pero David no dijo ninguno, es inventado o de un turno anterior: se ignora y se pide el número.
+    if (dictados.length > 0) {
+      log(fn, "telefono_distinto");
+      return { ok: false, res: { action: "clarify", message: NO_SEGURA } };
+    }
+    log(fn, "telefono_no_dictado");
   }
   if (!nombre) return { ok: false, res: { action: "clarify", message: para === "buscar" ? "¿De quién?" : "¿A quién?" } };
-
-  const lista = await cargar(ctx);
-  if (!lista) return { ok: false, res: err(sinContacto) };
-  const r = buscarContacto(nombre, lista, args.relacion);
-  log(fn, r.kind === "one" ? "uno" : r.kind === "many" ? `varios_${Math.min(r.contactos.length, 9)}` : "ninguno");
-  if (r.kind === "none") return { ok: false, res: { action: "clarify", ...frasesNoEsta(nombre, para) } };
-  if (r.kind === "many") return { ok: false, res: { action: "clarify", ...preguntaCual(r.contactos) } };
-  return { ok: true, nombre: r.contacto.nombre, relacion: r.contacto.relacion, e164: r.contacto.telefono };
+  log(fn, "ninguno");
+  return { ok: false, res: { action: "clarify", ...frasesNoEsta(nombreDicho, para) } };
 }
 
 const base = (d: Extract<Destino, { ok: true }>): Pick<AccionCliente, "contacto" | "relacion" | "numero"> => ({
-  contacto: d.nombre, ...(d.relacion ? { relacion: d.relacion } : {}), numero: formatearTelefono(d.e164),
+  contacto: nombreDecible(d.nombre), ...(d.relacion ? { relacion: d.relacion } : {}), numero: formatearTelefono(d.e164),
 });
 
 async function createContact(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const existentes = await cargar(ctx);
   if (!existentes) return err(sinContacto);
-  const v = validarContactoNuevo(args, existentes, dictado(ctx));
+  const v = validarContactoNuevo(args, existentes, dictadoParaAlta(ctx));
   if (!v.ok) {
     log("create_contact", v.pregunta ? "pregunta" : v.duplicado ? "duplicado" : "invalido");
     return { action: v.pregunta ? "clarify" : "error", message: v.error };
@@ -143,25 +170,29 @@ const guard = (nombre: string, fn: Handler): Handler => async (args, ctx) => {
   }
 };
 
-const nombre = { type: "string", description: "Como David nombró a la persona, solo el nombre o apodo (ej. 'Marco', 'mi mamá')" };
+const nombre = { type: "string", description: "Como David nombró a la persona, solo el nombre o apodo (ej. 'Marco', 'mi mamá'). Nunca un número." };
 const relacion = { type: "string", description: "Quién es o de dónde, en pocas palabras (ej. 'de Saya', 'mi primo'); vacío si no lo dijo. Para elegir entre dos con el mismo nombre." };
-const telefono = { type: "string", description: "SOLO si David dictó un número en este mensaje: ese número tal cual. Vacío si no; nunca lo inventes ni lo saques de otro lado." };
+const telefono = { type: "string", description: "SOLO si David dictó un número en ESTE mensaje: ese número tal cual. Vacío si no; nunca lo inventes ni lo saques del historial." };
 
 export const contactos: AgentModule = {
   id: "contactos",
   rules,
   definitions: [
     tool("create_contact", "Guarda un contacto en la agenda de Wabid: 'guarda a Marco con el 999 888 777, es de Saya'.", {
-      nombre, telefono, relacion,
+      nombre, telefono: { ...telefono, description: "El número que David dictó, tal cual. Vacío si no lo dijo; nunca lo inventes." }, relacion,
       alias: { type: "array", items: { type: "string" }, description: "Otros nombres con que David lo llama (ej. ['mamá']); vacío si no dijo" },
     }, ["nombre"]),
     tool("find_contact", "Muestra el número de un contacto guardado: '¿cuál es el número de Marco?', '¿tengo a Marco?'.", { nombre, relacion }, ["nombre"]),
+    // `nombre` no es obligatorio en whatsapp ni en call: «escríbele al 999 888 777 que…» trae un número dictado y ningún nombre.
     tool("whatsapp_contact", "Prepara un WhatsApp para un contacto: 'escríbele a Marco que llego 10 minutos tarde', 'mándale un WhatsApp a mi mamá'. No lo envía: David toca el botón.", {
       nombre,
-      mensaje: { type: "string", description: "El mensaje tal como lo enviaría David: primera persona, corto, natural. Sin firma, sin 'de parte de David', sin comillas. Vacío si solo pidió abrir el chat." },
+      mensaje: {
+        type: "string",
+        description: "Lo que David dijo que se escriba, con SUS palabras y en primera persona ('que llego 10 minutos tarde' = 'Llego 10 minutos tarde'). No agregues saludos, frases, emojis ni datos que no dijo; corrige lo mínimo (mayúscula, tildes, puntuación). Sin firma, sin 'de parte de David', sin comillas. Vacío si solo pidió abrir el chat.",
+      },
       relacion, telefono,
-    }, ["nombre"]),
-    tool("call_contact", "Prepara una llamada a un contacto: 'llama a Marco'. No llama: David toca el botón.", { nombre, relacion, telefono }, ["nombre"]),
+    }),
+    tool("call_contact", "Prepara una llamada a un contacto: 'llama a Marco'. No llama: David toca el botón.", { nombre, relacion, telefono }),
   ],
   handlers: {
     create_contact: guard("create_contact", createContact),
@@ -170,4 +201,3 @@ export const contactos: AgentModule = {
     call_contact: guard("call_contact", callContact),
   },
 };
-

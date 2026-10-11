@@ -5,6 +5,9 @@ export const sinTildes = (s: string): string => s.normalize("NFD").replace(/[̀-
 /** Minúsculas, sin tildes y con todo lo que no sea letra o número convertido en un espacio: "Maqui+ CO" → "maqui co". */
 export const norm = (s: string): string => sinTildes(s).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
+/** Un nombre dictado o escrito, sin caracteres de control y con un solo espacio entre palabras (las mayúsculas y tildes se respetan). */
+export const limpiarEspacios = (s: string): string => s.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+
 /**
  * Dos palabras coinciden si son iguales o una es prefijo de la otra con 4 letras o más Y una diferencia de a lo sumo 2 letras:
  * plurales ("costo"/"costos", "cobranza"/"cobranzas"). Un prefijo más largo ya es otra palabra: «veracruz» no es «vera».

@@ -12,11 +12,13 @@ export type AccionContacto = {
   url: string;
   /** Solo en "numero": el segundo botón. */
   urlWhatsapp?: string;
-  /** El mensaje redactado (whatsapp). */
+  /** El mensaje tal como lo dijo David, en primera persona (whatsapp). */
   texto?: string;
 };
 
-const URL_WHATSAPP = /^https:\/\/api\.whatsapp\.com\/send\?phone=[1-9]\d{7,14}(?:&text=[^\s#&]*)?$/;
+// El texto va con encodeURIComponent: solo puede traer los caracteres que esa función deja sin codificar (A-Z a-z 0-9 - _ . ! ~ * ' ( ))
+// y los escapes %XX. Cualquier otro carácter crudo (una letra con tilde, un espacio, "#", "&", "<") hace que la URL se descarte.
+const URL_WHATSAPP = /^https:\/\/api\.whatsapp\.com\/send\?phone=[1-9]\d{7,14}(?:&text=(?:[A-Za-z0-9\-_.!~*'()]|%[0-9A-Fa-f]{2})*)?$/;
 const URL_LLAMAR = /^tel:\+[1-9]\d{7,14}$/;
 
 const texto = (v: unknown, max: number): string | undefined => (typeof v === 'string' && v.trim() && v.length <= max ? v : undefined);

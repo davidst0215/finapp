@@ -1,6 +1,6 @@
 // Teléfonos de la agenda de Wabid: normalizar a E.164 (Perú por defecto), mostrarlos y armar los enlaces que abren WhatsApp o
 // el marcador. Puro: sin globals de Deno; se prueba con Node (telefono.test.ts).
-// ESPEJO: apps/web/src/lib/telefono.ts hace lo mismo para el formulario de Contactos; apps/web/tests/contactos/telefono.test.ts
+// ESPEJO: apps/web/src/lib/telefono.ts hace lo mismo para el formulario de Contactos; apps/web/tests/contactos/telefono.test.mjs
 // comprueba que los dos den el mismo resultado. Si cambias una regla aquí, cámbiala allá.
 
 export type Telefono = { ok: true; e164: string } | { ok: false; error: string };

@@ -4,7 +4,7 @@ import { test } from 'node:test';
 // @ts-ignore
 import assert from 'node:assert/strict';
 import {
-  desdeSelector, filtrar, monograma, ordenar, parsearAlias, resumenImportacion, soportaSelector, validarBorrador, type Contacto,
+  desdeSelector, filtrar, MAX_CONTACTOS, monograma, ordenar, parsearAlias, resumenImportacion, soportaSelector, validarBorrador, type Contacto,
 } from './contactos.ts';
 
 const c = (nombre: string, telefono: string, relacion: string | null = null, alias: string[] = []): Contacto =>
@@ -78,8 +78,21 @@ test('importar del celular: normaliza, descarta lo inválido y no repite número
   assert.equal(resumenImportacion(r), 'Importé 2 contactos. 2 ya estaban, 2 sin número válido, 2 sin nombre, 1 tenía varios números: guardé el primero.');
 });
 
+test('importar con el tope de contactos: solo entran los que caben y se avisa de los demás', () => {
+  const existentes = Array.from({ length: MAX_CONTACTOS - 2 }, (_, i) => c(`Persona ${i}`, `+5190${1000000 + i}`));
+  const r = desdeSelector([
+    { name: ['Uno'], tel: ['911 000 001'] }, { name: ['Dos'], tel: ['911 000 002'] }, { name: ['Tres'], tel: ['911 000 003'] }, { name: ['Cuatro'], tel: ['911 000 004'] },
+  ], existentes);
+  assert.deepEqual(r.nuevos.map((x) => x.nombre), ['Uno', 'Dos']);
+  assert.equal(r.sinCupo, 2);
+  assert.equal(resumenImportacion(r), `Importé 2 contactos. 2 no cupieron: el tope es de ${MAX_CONTACTOS} contactos.`);
+  const lleno = desdeSelector([{ name: ['Uno'], tel: ['911 000 001'] }], [...existentes, c('A', '+51900000001'), c('B', '+51900000002')]);
+  assert.deepEqual([lleno.nuevos.length, lleno.sinCupo], [0, 1]);
+  assert.equal(resumenImportacion(lleno), `No importé ningún contacto nuevo. 1 no cupo: el tope es de ${MAX_CONTACTOS} contactos.`);
+});
+
 test('resumen de importación en singular, plural y vacío', () => {
-  const vacio = { nuevos: [], yaEstaban: 0, sinNumero: 0, sinNombre: 0, conVarios: 0 };
+  const vacio = { nuevos: [], yaEstaban: 0, sinNumero: 0, sinNombre: 0, conVarios: 0, sinCupo: 0 };
   assert.equal(resumenImportacion(vacio), 'No importé ningún contacto nuevo.');
   assert.equal(resumenImportacion({ ...vacio, nuevos: [{ nombre: 'A', telefono: '+51900000001', relacion: null, alias: [] }], yaEstaban: 1 }), 'Importé 1 contacto. 1 ya estaba.');
 });

@@ -179,7 +179,6 @@ export function AddTransactionPage() {
     cortarVoz();
     setOrbState('thinking');
     setSubtitle('');
-    setAccion(null); // la acción de la respuesta anterior ya no corresponde a lo que David acaba de pedir
     navigator.vibrate?.(12); // señal breve: el pedido salió
 
     // Add to memory
@@ -236,8 +235,10 @@ export function AddTransactionPage() {
       // Contactos: el enlace de WhatsApp o del marcador llega en `accion`. Se muestra como botón (el navegador exige un toque de David para
       // abrir otra app) y solo si es un enlace que la app reconoce. NUNCA va al historial de abajo: lleva el teléfono y el historial
       // vuelve al modelo en el siguiente pedido; solo `message`, que el servidor escribe sin números.
+      // La acción anterior sigue a la vista mientras David habla (el micrófono oyendo no la borra): solo se reemplaza o se quita
+      // cuando llega una respuesta nueva, que trae otra acción o ninguna.
       const datosAccion = accionSegura(resultado.accion);
-      if (datosAccion) setAccion({ id: turno, datos: datosAccion });
+      setAccion(datosAccion ? { id: turno, datos: datosAccion } : null);
 
       // Add to memory
       conversationRef.current.push({ role: 'assistant', content: message });

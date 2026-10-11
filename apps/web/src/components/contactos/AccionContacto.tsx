@@ -45,10 +45,13 @@ export function AccionContacto({ accion, onCerrar }: Props) {
         </button>
       </div>
 
+      {/* El número va siempre a la vista: en WhatsApp es la forma de comprobar a quién le llega el mensaje. */}
+      <p className={accion.tipo === 'whatsapp' ? 'text-base font-semibold tabular-nums text-slate-200' : 'text-xl font-bold tabular-nums text-slate-100'}>
+        {accion.numero}
+      </p>
       {accion.tipo === 'whatsapp' && accion.texto && (
         <p className="whitespace-pre-line break-words rounded-xl bg-slate-800 px-4 py-3 text-base leading-snug text-slate-100">{accion.texto}</p>
       )}
-      {accion.tipo !== 'whatsapp' && <p className="text-xl font-bold tabular-nums text-slate-100">{accion.numero}</p>}
 
       <div className="flex gap-3">
         {accion.tipo === 'whatsapp' && (

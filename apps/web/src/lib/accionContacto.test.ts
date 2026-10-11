@@ -12,6 +12,12 @@ test('una acción de WhatsApp bien formada pasa tal cual', () => {
   assert.deepEqual(a, { tipo: 'whatsapp', contacto: 'Rosa', relacion: 'mi madre', numero: '+51 977 333 444', url: WA, texto: 'Llego 10 minutos tarde' });
 });
 
+test('todo lo que encodeURIComponent produce para un mensaje real pasa (emojis, tildes, saltos, & y #)', () => {
+  const mensaje = "Llegué 😅👍🏽 ¡ojo! (Café & té) #3 100% ~'*'\nSegunda línea ñandú / ? = + ";
+  const url = `https://api.whatsapp.com/send?phone=51977333444&text=${encodeURIComponent(mensaje)}`;
+  assert.equal(accionSegura({ tipo: 'whatsapp', contacto: 'Rosa', numero: '+51 977 333 444', url })?.url, url);
+});
+
 test('abrir el chat sin mensaje, llamar y mostrar el número', () => {
   const chat = accionSegura({ tipo: 'whatsapp', contacto: 'José', numero: '+51 966 555 666', url: 'https://api.whatsapp.com/send?phone=51966555666' });
   assert.equal(chat?.texto, undefined);
@@ -32,6 +38,12 @@ test('lo que la app no reconoce se descarta: otros esquemas, otros dominios, tel
     { ...base, tipo: 'whatsapp', url: 'https://api.whatsapp.com/send?phone=51977333444&text=hola mundo' },
     { ...base, tipo: 'whatsapp', url: 'https://api.whatsapp.com/send?phone=51977333444&text=a#b' },
     { ...base, tipo: 'whatsapp', url: 'https://api.whatsapp.com/send?phone=51977333444&text=a&phone=1' },
+    { ...base, tipo: 'whatsapp', url: 'https://api.whatsapp.com/send?phone=51977333444&text=llegué' }, // tilde cruda: no vino de encodeURIComponent
+    { ...base, tipo: 'whatsapp', url: 'https://api.whatsapp.com/send?phone=51977333444&text=hola<script>' },
+    { ...base, tipo: 'whatsapp', url: 'https://api.whatsapp.com/send?phone=51977333444&text=100%zz' }, // % sin dos dígitos hexadecimales
+    { ...base, tipo: 'whatsapp', url: 'https://api.whatsapp.com/send?phone=51977333444&text=a|b' },
+    { ...base, tipo: 'whatsapp', url: 'https://api.whatsapp.com/send?phone=51977333444&text=a"b' },
+    { ...base, tipo: 'whatsapp', url: 'https://api.whatsapp.com/send?phone=51977333444&text=a\nb' },
     { ...base, tipo: 'whatsapp', url: 'https://api.whatsapp.com/send?phone=123' },
     { ...base, tipo: 'llamar', url: 'tel:977333444' },
     { ...base, tipo: 'llamar', url: 'tel:+51977333444;ext=1' },
