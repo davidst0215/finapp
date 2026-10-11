@@ -15,9 +15,9 @@
 // contrasta con los turnos anteriores porque el número pudo venir antes de que David aclarara la relación.
 import {
   buscarContacto, type Contacto, fraseCreado, fraseLlamar, fraseNumero, fraseWhatsapp, frasesNoEsta, type Gestion, limpiarMensaje, MAX_CONTACTOS,
-  nombreDecible, preguntaCual, tieneNumero, validarContactoNuevo,
+  nombreDecible, palabrasContacto, preguntaCual, tieneNumero, validarContactoNuevo,
 } from "../../_shared/contactos.ts";
-import { coincideConDictado, formatearTelefono, MAX_MENSAJE, normalizarTelefono, telefonosEnTexto, urlLlamar, urlWhatsapp } from "../../_shared/telefono.ts";
+import { formatearTelefono, MAX_MENSAJE, normalizarTelefono, numeroDelDictado, telefonosEnTexto, urlLlamar, urlWhatsapp } from "../../_shared/telefono.ts";
 import { limpiarEspacios } from "../../_shared/texto.ts";
 import { type AccionCliente, type AgentContext, type AgentModule, type ToolResult, tool } from "../types.ts";
 
@@ -33,20 +33,25 @@ const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
 const err = (message: string): ToolResult => ({ action: "error", message });
 const sinContacto = "No pude leer tus contactos ahora. Inténtalo de nuevo.";
 const NO_SEGURA = "No estoy segura del número que entendí. Dímelo otra vez, dígito por dígito.";
+const VARIOS_NUMEROS = "Veo más de un número en lo que dijiste. Dime solo el de quien recibe el mensaje.";
 
 /** Una línea por pedido, sin nombres ni números: sirve para ver cuántas veces no se encuentra o queda ambiguo. */
 const log = (fn: string, resultado: string) => console.log(JSON.stringify({ evt: "contactos", fn, resultado }));
 
-/** Para dar de alta: lo que David dijo en este turno y en los anteriores, separado para que dos turnos no se fundan en un solo número. */
-const dictadoParaAlta = (ctx: AgentContext) => [ctx.text, ...(ctx.anteriores ?? [])].join(" | ");
+/**
+ * Un teléfono que se coló dentro de `nombre` («999 888 777», «Pedro 999888777», «999/888/777», «999–888–777»): se quita, con sus
+ * separadores, para que no se diga ni se busque como nombre. Lo que queda ("Pedro") sí es un nombre.
+ */
+const quitarNumeros = (s: string) => limpiarEspacios(s.replace(/[+(]?\d[\d\s().,/_–—-]*/g, " ")).replace(/[\s,;:.–—-]+$/, "");
 
-/** Un teléfono que se coló dentro de `nombre` ("999 888 777", "Pedro 999888777"): se quita para que no se diga ni se busque como nombre. */
-const quitarNumeros = (s: string) => limpiarEspacios(s.replace(/\+?\(?\d(?:[\s().-]*\d){5,}\)?/g, " "));
-
-/** Solo el handler lee la tabla (RLS con el JWT de David): ningún otro módulo ni contexto la consulta. */
+/**
+ * Solo el handler lee la tabla (RLS con el JWT de David): ningún otro módulo ni contexto la consulta. Una sola lectura trae toda la
+ * agenda: el tope (MAX_CONTACTOS = 1000) es el `max_rows` de PostgREST y lo hace cumplir un trigger de la base. El orden lleva
+ * `contacto_id` de desempate para que dos «Marco» salgan siempre en el mismo orden.
+ */
 async function cargar(ctx: AgentContext): Promise<Contacto[] | null> {
   const { data, error } = await ctx.supabase.from("contactos").select("contacto_id, nombre, alias, telefono, relacion")
-    .eq("user_id", ctx.user.id).order("nombre", { ascending: true }).limit(MAX_CONTACTOS);
+    .eq("user_id", ctx.user.id).order("nombre", { ascending: true }).order("contacto_id", { ascending: true }).limit(MAX_CONTACTOS);
   if (error) {
     console.error("contactos:", error.code ?? "", error.message);
     return null;
@@ -65,14 +70,18 @@ type Destino = { ok: true; nombre: string; relacion: string | null; e164: string
 /**
  * A quién va el mensaje o la llamada.
  * 1. Si el nombre está en la agenda, ese contacto y su número (varios → se pregunta cuál; nunca se mezcla con un número dictado).
- * 2. Si no está y David dictó un número en ESTE mensaje, ese número, sin guardarlo.
+ * 2. Si no está y David dictó UN número en ESTE mensaje, ese número, sin guardarlo. Un teléfono que aparece dentro del mensaje
+ *    («dile a Ramiro que me llame al 999 111 222») es contenido, no destinatario; y con dos teléfonos distintos se pide confirmar.
  * 3. Si no, se pide el número. Nunca se adivina.
+ * `mensaje` es el texto ya limpio que irá en el WhatsApp ("" en llamar y buscar).
  */
-async function resolver(fn: string, para: Gestion, args: Record<string, unknown>, ctx: AgentContext): Promise<Destino> {
+async function resolver(fn: string, para: Gestion, args: Record<string, unknown>, ctx: AgentContext, mensaje = ""): Promise<Destino> {
   const nombreDicho = str(args.nombre).replace(/\s+/g, " ");
   // Un número en `nombre` no es un nombre: se busca por lo que quede y, si trae un teléfono, cuenta como el que David dictó.
-  const nombre = tieneNumero(nombreDicho) ? quitarNumeros(nombreDicho) : nombreDicho;
-  const candidato = para === "buscar" ? "" : str(args.telefono) || telefonosEnTexto(nombreDicho)[0] || "";
+  let nombre = tieneNumero(nombreDicho) ? quitarNumeros(nombreDicho) : nombreDicho;
+  // «al», «el número», «mi»: sin ninguna palabra que nombre a alguien no hay nombre ("Llamar a al" no existe).
+  if (palabrasContacto(nombre).length === 0) nombre = "";
+  const candidato = para === "buscar" ? "" : String(args.telefono ?? "").trim() || telefonosEnTexto(nombreDicho)[0] || "";
 
   if (nombre) {
     const lista = await cargar(ctx);
@@ -88,16 +97,22 @@ async function resolver(fn: string, para: Gestion, args: Record<string, unknown>
     }
   }
 
-  // No está en la agenda. Un número solo vale si David lo dijo en este mensaje.
+  // No está en la agenda. Un número solo vale si es EL que David dictó en este mensaje (y no parte de lo que se va a escribir).
   if (candidato) {
-    const dictados = telefonosEnTexto(ctx.text);
     const t = normalizarTelefono(candidato);
-    if (t.ok && coincideConDictado(t.e164, ctx.text)) {
+    const v = t.ok ? numeroDelDictado(t.e164, ctx.text, [], telefonosEnTexto(mensaje)) : null;
+    if (t.ok && v?.ok) {
       log(fn, "telefono_dictado");
       return { ok: true, nombre: nombre || "ese número", relacion: null, e164: t.e164 };
     }
-    // Si el modelo trae un teléfono pero David no dijo ninguno, es inventado o de un turno anterior: se ignora y se pide el número.
-    if (dictados.length > 0) {
+    // Si el modelo trae un teléfono pero David no dijo ninguno (o era el contenido del mensaje), es inventado o de un turno anterior:
+    // se ignora y se pide el número. Si dijo otro, o dos, se avisa.
+    const motivo = v && !v.ok ? v.motivo : telefonosEnTexto(ctx.text).length > 0 ? "distinto" : "ninguno";
+    if (motivo === "varios") {
+      log(fn, "telefono_varios");
+      return { ok: false, res: { action: "clarify", message: VARIOS_NUMEROS } };
+    }
+    if (motivo === "distinto") {
       log(fn, "telefono_distinto");
       return { ok: false, res: { action: "clarify", message: NO_SEGURA } };
     }
@@ -115,7 +130,7 @@ const base = (d: Extract<Destino, { ok: true }>): Pick<AccionCliente, "contacto"
 async function createContact(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const existentes = await cargar(ctx);
   if (!existentes) return err(sinContacto);
-  const v = validarContactoNuevo(args, existentes, dictadoParaAlta(ctx));
+  const v = validarContactoNuevo(args, existentes, ctx.text, ctx.anteriores ?? []);
   if (!v.ok) {
     log("create_contact", v.pregunta ? "pregunta" : v.duplicado ? "duplicado" : "invalido");
     return { action: v.pregunta ? "clarify" : "error", message: v.error };
@@ -123,8 +138,12 @@ async function createContact(args: Record<string, unknown>, ctx: AgentContext): 
   const { error } = await ctx.supabase.from("contactos").insert({ user_id: ctx.user.id, ...v.contacto });
   if (error) {
     console.error("create_contact:", error.code ?? "", error.message);
-    // 23505 = el índice único (usuario, teléfono): otro alta llegó primero.
-    return err(error.code === "23505" ? "Ya tienes ese número guardado." : "No pude guardar el contacto ahora. Inténtalo de nuevo.");
+    // 23505 = el índice único (usuario, teléfono): otro alta llegó primero. 23514 = el trigger del tope de contactos (018).
+    return err(
+      error.code === "23505" ? "Ya tienes ese número guardado."
+        : error.code === "23514" ? `Llegaste al límite de ${MAX_CONTACTOS} contactos. Borra alguno desde Contactos.`
+        : "No pude guardar el contacto ahora. Inténtalo de nuevo.",
+    );
   }
   log("create_contact", "creado");
   return { action: "create_contact", ...fraseCreado(v.contacto) };
@@ -144,7 +163,7 @@ async function whatsappContact(args: Record<string, unknown>, ctx: AgentContext)
   // El mensaje se revisa antes de buscar: uno desbocado no merece una consulta a la base.
   const texto = limpiarMensaje(args.mensaje);
   if ([...texto].length > MAX_MENSAJE) return err("El mensaje quedó muy largo. Dímelo más corto.");
-  const d = await resolver("whatsapp_contact", "escribir", args, ctx);
+  const d = await resolver("whatsapp_contact", "escribir", args, ctx, texto);
   if (!d.ok) return d.res;
   return {
     action: "whatsapp_contact",

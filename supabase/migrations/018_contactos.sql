@@ -37,3 +37,21 @@ CREATE POLICY contactos_all_own ON contactos
 
 -- Sin sesión no hay acceso, ni siquiera a la estructura.
 REVOKE ALL ON contactos FROM anon;
+
+-- Tope de 1000 contactos por usuario. Es el `max_rows` de PostgREST en producción: una lectura (la de la web y la de Wabid por
+-- voz) trae la agenda completa; con más de 1000 filas el resultado se recortaría en silencio y Wabid "olvidaría" contactos.
+-- El trigger corre como quien inserta (RLS: solo cuenta los suyos) y ve las filas que el mismo INSERT ya agregó, así que un lote
+-- que se pasa falla completo. 23514 = check_violation: la app lo reconoce y avisa en vez de mostrar un error técnico.
+CREATE OR REPLACE FUNCTION contactos_tope() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF (SELECT count(*) FROM contactos WHERE user_id = NEW.user_id) >= 1000 THEN
+        RAISE EXCEPTION 'contactos: tope de 1000 por usuario' USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS contactos_tope ON contactos;
+CREATE TRIGGER contactos_tope BEFORE INSERT ON contactos
+    FOR EACH ROW EXECUTE FUNCTION contactos_tope();

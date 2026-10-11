@@ -287,9 +287,11 @@ test("nombres parecidos NO se confunden en la tool: «Escríbele a Juana» nunca
 });
 
 // --- Un número dentro de `nombre` nunca se dice --------------------------------------------------------------------------------
-const SIN_DIGITOS = /\d(?:[\s().+-]*\d){5,}/;
+/** Cuenta DÍGITOS, no separadores: «999/888/777» o «999_888_777» no esconden un teléfono. Menos de 6 dígitos es una hora o una cantidad. */
+const digitosDe = (s: string) => (s.match(/\d/g) ?? []).length;
 function sinDigitos(r: ToolResult, etiqueta: string) {
-  assert.doesNotMatch(`${r.message}\n${r.voz ?? ""}\n${loQueSeDice(r)}`, SIN_DIGITOS, `${etiqueta}: ${r.message}`);
+  const texto = `${r.message}\n${r.voz ?? ""}\n${loQueSeDice(r)}`;
+  for (const parte of [r.message, r.voz ?? "", loQueSeDice(r)]) assert.ok(digitosDe(parte) < 6, `${etiqueta}: ${texto}`);
   assert.ok(prepararVoz(loQueSeDice(r)).length <= VOZ_MAX, etiqueta);
 }
 
@@ -393,6 +395,169 @@ test("call_contact: ambiguo y sin coincidencia preguntan; sin nombre pide a qui�
 });
 
 // --- Fallos ----------------------------------------------------------------------------------------------------------
+test("un número con CUALQUIER separador en `nombre` («999/888/777», «999,888,777», «999–888–777», «999_888_777») no llega a message ni a voz", async () => {
+  const nombres = ["999/888/777", "999,888,777", "999–888–777", "999_888_777", "999.888.777", "Pedro 999/888/777", "Pedro, 999_888_777", "999 / 888 / 777"];
+  for (const nombre of nombres) {
+    for (const fn of ["whatsapp_contact", "call_contact", "find_contact"]) {
+      for (const texto of ["Hazlo", `Hazlo con el ${nombre}`]) {
+        const { r } = await ejecutar(fn, { nombre, mensaje: "Hola", telefono: nombre.replace(/[^\d]/g, "") }, texto);
+        sinDigitos(r, `${fn} «${nombre}» / «${texto}»`);
+        assert.doesNotMatch(r.message + (r.voz ?? ""), /999|888|777/);
+      }
+    }
+  }
+  // Como contacto guardado (nombre y relación con separadores raros), encontrado por su apodo.
+  const raro = [fila("r", "999/888/777", "+51944000030", "999_888_777", ["Taller"]), fila("s", "999,888,777", "+51944000031", "999–888–777", ["Taller"])];
+  for (const fn of ["find_contact", "whatsapp_contact", "call_contact"]) {
+    const { r } = await ejecutar(fn, { nombre: "Taller", mensaje: "Hola" }, "Hazlo con el taller", raro);
+    sinDigitos(r, `${fn} guardados con separadores raros`);
+    assert.equal(r.action, "clarify", "dos con el mismo apodo: se pregunta");
+  }
+  // Dar de alta con un número como nombre se rechaza sin repetirlo.
+  for (const nombre of ["999/888/777", "999_888_777"]) {
+    const { r, inserts } = await ejecutar("create_contact", { nombre, telefono: "999 888 777" }, "guarda a alguien con el 999 888 777", []);
+    assert.equal(inserts.length, 0);
+    sinDigitos(r, `create ${nombre}`);
+  }
+});
+
+// --- A quién va: la relación dicha, el número dentro del mensaje y varios números -------------------------------------------------
+test("«Escríbele a Marco del gimnasio» con SOLO «Marco de Saya» NO va a ese Marco: se pide el número", async () => {
+  const solo = [fila("1", "Marco", "+51999888777", "de Saya"), fila("3", "Rosa Tarazona", "+51977333444", "mi madre")];
+  for (const fn of ["whatsapp_contact", "call_contact", "find_contact"]) {
+    const { r } = await ejecutar(fn, { nombre: "Marco", relacion: "del gimnasio", mensaje: "Hola" }, "Hazlo con Marco del gimnasio", solo);
+    assert.equal(r.action, "clarify", fn);
+    sinAccion(r);
+    assert.match(r.message, /No tengo a Marco guardado/);
+    assert.doesNotMatch(JSON.stringify(r), /999888777|999 888 777/);
+  }
+  // Con la relación que sí tiene, o sin decir ninguna, sí es él.
+  const ok = await ejecutar("call_contact", { nombre: "Marco", relacion: "de Saya" }, "Llama a Marco de Saya", solo);
+  assert.equal(ok.r.accion?.url, "tel:+51999888777");
+  const sinRel = await ejecutar("call_contact", { nombre: "Marco" }, "Llama a Marco", solo);
+  assert.equal(sinRel.r.accion?.url, "tel:+51999888777");
+});
+
+test("un número DENTRO del mensaje no es el destinatario: «dile a Ramiro que me llame al 999 111 222» no le escribe a ese número", async () => {
+  const casos: { texto: string; args: Record<string, unknown> }[] = [
+    { texto: "Escríbele a Pedro, el de Juan es 999 111 222", args: { nombre: "Pedro", telefono: "999 111 222", mensaje: "El de Juan es 999 111 222" } },
+    { texto: "Dile a Ramiro que me llame al 999 111 222", args: { nombre: "Ramiro", telefono: "999 111 222", mensaje: "Llámame al 999 111 222" } },
+    { texto: "Dile a Ramiro que me llame al 999 111 222", args: { nombre: "Ramiro", mensaje: "Llámame al 999-111-222" } }, // sin telefono: lo saca del nombre/ni existe
+    { texto: "Dile a Ramiro que me llame al 999 111 222", args: { nombre: "Ramiro 999 111 222", mensaje: "Llámame al 999 111 222" } },
+  ];
+  for (const { texto, args } of casos) {
+    const { r } = await ejecutar("whatsapp_contact", args, texto); // Pedro y Ramiro no están en la agenda
+    assert.equal(r.action, "clarify", JSON.stringify(args));
+    sinAccion(r);
+    assert.doesNotMatch(JSON.stringify(r), /999111222|999 111 222/, "ni la acción ni la frase llevan ese número");
+    assert.match(r.message, /No tengo a (Pedro|Ramiro) guardado|No encontré ese número/);
+  }
+  // Si David dicta aparte el número de quien recibe, ese sí vale (y el del contenido va en el texto).
+  const dos = await ejecutar("whatsapp_contact", { nombre: "Ramiro", telefono: "955 000 111", mensaje: "Llámame al 999 111 222" }, "Escríbele a Ramiro al 955 000 111 que me llame al 999 111 222");
+  assert.equal(dos.r.action, "whatsapp_contact");
+  assert.match(dos.r.accion?.url ?? "", /^https:\/\/api\.whatsapp\.com\/send\?phone=51955000111&text=/);
+  assert.equal(dos.r.accion?.texto, "Llámame al 999 111 222", "el contenido completo va a la tarjeta");
+  assert.equal(dos.r.message, "WhatsApp para Ramiro: «Llámame al [número]»", "pero lo que vuelve al modelo lleva el número enmascarado");
+  sinDigitos(dos.r, "dos números");
+});
+
+test("con José en la agenda, el número del contenido va en el texto y message lo enmascara", async () => {
+  const { r } = await ejecutar("whatsapp_contact", { nombre: "José", mensaje: "Llámame al 999 111 222" }, "Dile a José que me llame al 999 111 222");
+  assert.equal(r.action, "whatsapp_contact");
+  assert.match(r.accion?.url ?? "", /phone=51966555666&text=Ll%C3%A1mame%20al%20999%20111%20222$/);
+  assert.equal(r.message, "WhatsApp para José Luis Pérez: «Llámame al [número]»");
+  sinDigitos(r, "contenido con número");
+});
+
+test("dos números distintos en lo dicho → se pide confirmación (whatsapp, call y create)", async () => {
+  const texto = "Escríbele a Pedro al 999 111 222 y a Juan al 955 000 111";
+  for (const fn of ["whatsapp_contact", "call_contact"]) {
+    const { r } = await ejecutar(fn, { nombre: "Pedro", telefono: "999 111 222", mensaje: "Hola" }, texto);
+    assert.equal(r.action, "clarify", fn);
+    assert.match(r.message, /más de un número/);
+    sinAccion(r);
+    sinDigitos(r, fn);
+  }
+  const alta = await ejecutar("create_contact", { nombre: "Pedro", telefono: "999 111 222" }, "guarda a Pedro con el 999 111 222 y a Juan con el 955 000 111", []);
+  assert.equal(alta.r.action, "clarify");
+  assert.match(alta.r.message, /más de un número/);
+  assert.equal(alta.inserts.length, 0);
+});
+
+test("create_contact: un número que aparece dentro del texto pero del turno equivocado no se guarda a nombre de otro", async () => {
+  // El turno anterior más reciente con teléfono es el de Juan; el modelo trae el de otra persona.
+  const { r, inserts } = await ejecutar("create_contact", { nombre: "Pedro", telefono: "999 111 222", relacion: "del club" }, "es del club", [], ["guarda a Pedro con el 999 111 222", "guarda a Juan con el 955 000 111"]);
+  assert.equal(r.action, "error");
+  assert.equal(inserts.length, 0);
+});
+
+// --- `nombre` sin nombre, teléfono numérico -----------------------------------------------------------------------------------------
+test("si al quitar el número no queda ningún nombre («al», «el número») se trata como sin nombre: «Llamar a ese número», no «Llamar a al»", async () => {
+  for (const nombre of ["al 999 888 777", "el número 999 888 777", "mi 999 888 777", "al"]) {
+    const llamar = await ejecutar("call_contact", { nombre, telefono: "999 888 777" }, "Llama al 999 888 777");
+    assert.equal(llamar.r.action, "call_contact", nombre);
+    assert.equal(llamar.r.message, "Llamar a ese número.", nombre);
+    assert.equal(llamar.r.accion?.contacto, "ese número", nombre);
+    assert.equal(llamar.r.accion?.url, "tel:+51999888777");
+    sinDigitos(llamar.r, nombre);
+    const w = await ejecutar("whatsapp_contact", { nombre, telefono: "999 888 777", mensaje: "Hola" }, "Escríbele al 999 888 777 que hola");
+    assert.equal(w.r.message, "WhatsApp para ese número: «Hola»", nombre);
+  }
+  // Sin número dictado, solo se pregunta a quién.
+  const sin = await ejecutar("call_contact", { nombre: "al" }, "Llama");
+  assert.equal(sin.r.message, "¿A quién?");
+});
+
+test("`telefono` numérico (999888777 sin comillas) también se entiende", async () => {
+  const { r } = await ejecutar("call_contact", { nombre: "Pedro", telefono: 999888777 }, "Llama a Pedro al 999 888 777");
+  assert.equal(r.action, "call_contact");
+  assert.equal(r.accion?.url, "tel:+51999888777");
+  const alta = await ejecutar("create_contact", { nombre: "Pedro", telefono: 999888777 }, "guarda a Pedro con el 999 888 777", []);
+  assert.equal(alta.r.action, "create_contact");
+});
+
+test("las lecturas piden el orden con contacto_id de desempate y el tope de MAX_CONTACTOS", async () => {
+  const lecturas: { orden: string[]; limite?: number }[] = [];
+  const db = {
+    from: () => {
+      const rec = { orden: [] as string[], limite: undefined as number | undefined };
+      // deno-lint-ignore no-explicit-any
+      const b: any = {
+        select: () => b, eq: () => b,
+        order: (col: string) => ((rec.orden.push(col), b)),
+        limit: (n: number) => ((rec.limite = n), b),
+        then: (ok: (v: unknown) => unknown) => ((lecturas.push(rec)), Promise.resolve({ data: AGENDA, error: null }).then(ok)),
+      };
+      return b;
+    },
+  };
+  await h.find_contact!({ nombre: "José" }, ctx(db, "x"), undefined);
+  assert.deepEqual(lecturas[0]?.orden, ["nombre", "contacto_id"]);
+  assert.equal(lecturas[0]?.limite, 1000, "el max_rows de PostgREST: una lectura trae todo");
+});
+
+test("la tarjeta muestra el nombre COMPLETO guardado, no lo que David dijo: «María» → «María José»", async () => {
+  const agenda = [fila("m", "María José Quispe", "+51944000040", "prima"), fila("r", "Marco Roca", "+51944000041", "de Saya")];
+  for (const [dicho, completo] of [["María", "María José Quispe"], ["Marco", "Marco Roca"]]) {
+    for (const fn of ["whatsapp_contact", "call_contact", "find_contact"]) {
+      const { r } = await ejecutar(fn, { nombre: dicho, mensaje: "Hola" }, `Hazlo con ${dicho}`, agenda);
+      assert.equal(r.accion?.contacto, completo, `${fn}: ${dicho}`);
+    }
+  }
+});
+
+test("si la base rechaza el alta por el tope (23514), se dice el límite y no un error técnico", async () => {
+  const f = fakeDb([], { errorInsert: { code: "23514", message: "contactos: tope de 1000 por usuario" } });
+  const origen = console.error;
+  console.error = () => {};
+  try {
+    const r = await h.create_contact!({ nombre: "Marco", telefono: "999 888 777" }, ctx(f.db, "guarda a Marco con el 999 888 777"), undefined);
+    assert.equal(r.message, "Llegaste al límite de 1000 contactos. Borra alguno desde Contactos.");
+  } finally {
+    console.error = origen;
+  }
+});
+
 test("si la base falla, se dice una frase útil y nunca se lanza", async () => {
   const f = fakeDb(AGENDA, { errorLectura: true });
   const origen = console.error;

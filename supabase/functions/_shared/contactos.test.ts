@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buscarContacto, type Contacto, frasesNoEsta, fraseCreado, fraseLlamar, fraseNumero, fraseWhatsapp, limpiarAlias, limpiarMensaje,
-  limpiarRelacion, MAX_CONTACTOS, mismoNombre, nombreDecible, preguntaCual, tieneNumero, validarContactoNuevo,
+  enmascararNumeros, limpiarRelacion, MAX_CONTACTOS, mismoNombre, nombreDecible, preguntaCual, tieneNumero, validarContactoNuevo,
 } from "./contactos.ts";
 import { prepararVoz, VOZ_MAX } from "./voz.ts";
 
@@ -131,8 +131,21 @@ test("alta: el número del modelo debe ser el que David dictó (un dígito cambi
   // Un número que David no dijo en ningún momento se rechaza, aunque el modelo lo traiga bien formado.
   const inventado = validarContactoNuevo({ nombre: "Marco", telefono: "999 888 777", relacion: "de Saya" }, [], "es de Saya");
   assert.ok(!inventado.ok && /No estoy segura del número/.test(inventado.error));
-  // Si lo dijo en un turno anterior, el dictado junta los turnos.
-  assert.equal(validarContactoNuevo({ nombre: "Marco", telefono: "999 888 777", relacion: "de Saya" }, [], "es de Saya | Guarda a Marco con el 999 888 777").ok, true);
+  // Si lo dijo en un turno anterior (y este no trae ninguno), vale el del turno anterior más reciente que traiga uno.
+  assert.equal(validarContactoNuevo({ nombre: "Marco", telefono: "999 888 777", relacion: "de Saya" }, [], "es de Saya", ["Guarda a Marco con el 999 888 777"]).ok, true);
+  const viejo = validarContactoNuevo({ nombre: "Marco", telefono: "955 000 111", relacion: "de Saya" }, [], "es de Saya", ["guarda a Juan con el 955 000 111", "Guarda a Marco con el 999 888 777"]);
+  assert.ok(!viejo.ok && /No estoy segura del número/.test(viejo.error), "el número de Juan es de un turno más viejo que el de Marco");
+  assert.equal(validarContactoNuevo({ nombre: "Marco", telefono: "999 888 777" }, [], "es de Saya").ok, false, "sin `anteriores` no se mira atrás");
+});
+
+test("alta: más de un número distinto en lo dicho → se pide confirmación, no se elige uno", () => {
+  const v = validarContactoNuevo({ nombre: "Pedro", telefono: "999 111 222" }, [], "guarda a Pedro con el 999 111 222 y a Juan con el 955 000 111");
+  assert.ok(!v.ok && v.pregunta === true && /más de un número/.test(v.error), JSON.stringify(v));
+  // Dos turnos anteriores con números distintos no son «varios»: manda el más reciente.
+  const ok = validarContactoNuevo({ nombre: "Pedro", telefono: "999 111 222", relacion: "club" }, [], "es del club", ["guarda a Juan con el 955 000 111", "guarda a Pedro con el 999 111 222"]);
+  assert.equal(ok.ok, true);
+  // El mismo número repetido no es «varios».
+  assert.equal(validarContactoNuevo({ nombre: "Pedro", telefono: "999 111 222" }, [], "Pedro, 999 111 222, sí, el 999 111 222").ok, true);
 });
 
 test("alta: número repetido → dice de quién es; mismo nombre pide relación; misma relación se rechaza", () => {
@@ -229,6 +242,64 @@ test("alta: el tope de contactos avisa", () => {
   const lleno = Array.from({ length: MAX_CONTACTOS }, (_, i) => c(`Persona ${i}`, `+5190${String(1000000 + i)}`));
   const v = validarContactoNuevo({ nombre: "Otro", telefono: "999 888 777" }, lleno, DICTADO);
   assert.ok(!v.ok && v.error.includes(String(MAX_CONTACTOS)), JSON.stringify(v));
+  assert.equal(MAX_CONTACTOS, 1000, "el tope es el max_rows de PostgREST: una lectura trae toda la agenda");
+});
+
+// --- Contar dígitos, no separadores -------------------------------------------------------------------------------------------
+test("tieneNumero cuenta DÍGITOS: ningún separador esconde un teléfono", () => {
+  for (const s of ["999/888/777", "999,888,777", "999–888–777", "999—888—777", "999_888_777", "999.888.777", "999 888 777", "+51 999 888 777", "9a9b9c8d8e8", "(999)888-777", "999|888|777", "999:888:777", "Pedro 999*888*777"]) {
+    assert.equal(tieneNumero(s), true, s);
+    assert.equal(nombreDecible(s), "ese número", s);
+  }
+  for (const s of ["Marco", "Oficina 2024", "Piso 12 B", "12345", "Marco 12 34 5", ""]) assert.equal(tieneNumero(s), false, s);
+  // Y las frases que repiten un nombre así lo dicen «ese número», con cualquier separador.
+  for (const nombre of ["999/888/777", "999,888,777", "999–888–777", "999_888_777"]) {
+    for (const f of [frasesNoEsta(nombre, "escribir"), fraseWhatsapp(nombre, "hola"), fraseLlamar(nombre), fraseCreado({ nombre, relacion: null }), preguntaCual([c(nombre, "+51944000001"), c(nombre, "+51944000002")])]) {
+      assert.ok(((`${f.message}\n${f.voz}`).match(/\d/g) ?? []).length < 6, `${nombre}: ${f.message}`);
+    }
+  }
+});
+
+test("enmascararNumeros: el contenido se conserva, los teléfonos no", () => {
+  assert.equal(enmascararNumeros("Llámame al 999 111 222"), "Llámame al [número]");
+  assert.equal(enmascararNumeros("Llámame al 999-111-222."), "Llámame al [número].");
+  assert.equal(enmascararNumeros("Mi número es +51 999 111 222, gracias"), "Mi número es [número], gracias");
+  assert.equal(enmascararNumeros("llama al 999/111/222 o al (01) 234 5678"), "llama al [número] o al [número]");
+  assert.equal(enmascararNumeros("Llego 10 minutos tarde, a las 5 y 30"), "Llego 10 minutos tarde, a las 5 y 30", "fechas y horas cortas no se tocan");
+  assert.equal(enmascararNumeros("Son S/ 1,500 en total"), "Son S/ 1,500 en total");
+  assert.match(fraseWhatsapp("Ramiro", "Llámame al 999 111 222").message, /«Llámame al \[número\]»/);
+  assert.ok(((fraseWhatsapp("Ramiro", "Llámame al 999 111 222").message).match(/\d/g) ?? []).length < 6);
+});
+
+// --- La relación que dijo David -----------------------------------------------------------------------------------------------
+test("«Marco del gimnasio» con SOLO «Marco de Saya» no va a ese Marco", () => {
+  assert.equal(buscarContacto("Marco", [marcoSaya], "del gimnasio").kind, "none");
+  assert.equal(buscarContacto("Marco", [marcoSaya], "gimnasio").kind, "none");
+  assert.equal(buscarContacto("Marco", [marcoSaya], "de Saya").kind, "one", "la relación coincide");
+  assert.equal(buscarContacto("Marco", [marcoSaya], "saya").kind, "one");
+  assert.equal(buscarContacto("Marco", [marcoSaya]).kind, "one", "sin relación dicha, el único Marco");
+  assert.equal(buscarContacto("Marco", [marcoSaya], "").kind, "one");
+  assert.equal(buscarContacto("Marco", [c("Marco", "+51944000009")], "de Saya").kind, "none", "un Marco sin relación no cubre «de Saya»");
+  // con la relación correcta entre varios sigue eligiendo; con una que no coincide con ninguno, sigue preguntando
+  assert.equal(buscarContacto("Marco", [marcoSaya, marcoGym], "del gimnasio").kind, "one");
+  assert.equal(buscarContacto("Marco", [marcoSaya, marcoGym], "del club").kind, "many");
+});
+
+// --- Firmas de Wabid -----------------------------------------------------------------------------------------------------------
+test("limpiarMensaje: más firmas ([Wabid], | Wabid, ~ Wabid, — Wabid ✅, «, enviado por Wabid») y con comillas alrededor", () => {
+  for (const firma of ["[Wabid]", "| Wabid", "~ Wabid", "— Wabid ✅", "— Wabid ✅.", ", enviado por Wabid", ", escrito por Wabid", "[enviado por Wabid]", "- Wabid 😊"]) {
+    assert.equal(limpiarMensaje(`Llego 10 minutos tarde ${firma}`), "Llego 10 minutos tarde", firma);
+    assert.equal(limpiarMensaje(`Llego 10 minutos tarde${firma}`), "Llego 10 minutos tarde", `sin espacio: ${firma}`);
+    assert.equal(limpiarMensaje(`Llego 10 minutos tarde\n${firma.replace(/^, /, "")}`), "Llego 10 minutos tarde", `en su línea: ${firma}`);
+  }
+  // La firma dentro o fuera de las comillas: se quitan las comillas y se vuelve a limpiar.
+  assert.equal(limpiarMensaje('"Llego tarde — Wabid"'), "Llego tarde");
+  assert.equal(limpiarMensaje("«Llego tarde» — Wabid"), "Llego tarde");
+  assert.equal(limpiarMensaje("«Llego tarde (Wabid)»"), "Llego tarde");
+  assert.equal(limpiarMensaje('"Llego tarde" | Wabid ✅'), "Llego tarde");
+  assert.equal(limpiarMensaje("«Llego tarde — Wabid»\n— Wabid"), "Llego tarde");
+  // Y lo que no es firma sigue intacto.
+  for (const texto of ["Prueba Wabid, la app que armé", "Dile a Wabid que sí", "Quedamos | mañana", "Te veo ~ mañana", "Mira [esto]", "Wabid ✅ me avisó"]) assert.equal(limpiarMensaje(texto), texto, texto);
 });
 
 // --- Frases -----------------------------------------------------------------------------------------------------------

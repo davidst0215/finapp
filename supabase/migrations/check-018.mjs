@@ -112,6 +112,30 @@ assert.equal((await como("service_role", null, `SELECT count(*)::int AS n FROM c
 // Solo hay una política y es la nuestra (re-aplicar la migración no las acumula).
 assert.deepEqual((await db.query(`SELECT policyname FROM pg_policies WHERE tablename = 'contactos'`)).rows.map((r) => r.policyname), ["contactos_all_own"]);
 
+// --- (g) tope de 1000 por usuario (el max_rows de PostgREST): el trigger lo hace cumplir, también en lotes ---
+const falloTope = (e) => e.code === "23514" && /tope de 1000/.test(e.message);
+await como("service_role", null, `INSERT INTO contactos (user_id, nombre, telefono) SELECT $1, 'Relleno ' || i, '+5190' || lpad(i::text, 7, '0') FROM generate_series(1, 997) AS i`, [U]);
+assert.equal((await como("authenticated", U, `SELECT count(*)::int AS n FROM contactos`))[0].n, 999);
+// el 1000 entra; el 1001 no (ni por la app ni por el rol de servicio)
+await alta(U, "Número 1000", "+51988000001");
+await assert.rejects(alta(U, "Número 1001", "+51988000002"), falloTope);
+await assert.rejects(como("service_role", null, `INSERT INTO contactos (user_id, nombre, telefono) VALUES ($1, 'Servicio 1001', '+51988000003')`, [U]), falloTope);
+assert.equal((await como("authenticated", U, `SELECT count(*)::int AS n FROM contactos`))[0].n, 1000, "nada se coló");
+// un lote que cruza el tope falla COMPLETO: ya no hay lugar ni para uno
+await como("authenticated", U, `DELETE FROM contactos WHERE nombre = 'Número 1000'`);
+await assert.rejects(
+  como("authenticated", U, `INSERT INTO contactos (nombre, telefono) VALUES ('Lote A', '+51988000010'), ('Lote B', '+51988000011')`),
+  falloTope,
+);
+assert.equal((await como("authenticated", U, `SELECT count(*)::int AS n FROM contactos`))[0].n, 999, "el lote se revirtió entero");
+// el tope es por usuario: otro usuario no lo siente, y al borrar uno vuelve a haber lugar
+const V = "cccccccc-0000-4000-8000-000000000003";
+await db.exec(`INSERT INTO auth.users VALUES ('${V}'); INSERT INTO users VALUES ('${V}');`);
+await alta(V, "Otro usuario", "+51988000020");
+await alta(U, "Entra otra vez", "+51988000021");
+// y el trigger sigue siendo uno solo tras aplicar la migración tres veces
+assert.deepEqual((await db.query(`SELECT tgname FROM pg_trigger WHERE tgrelid = 'contactos'::regclass AND NOT tgisinternal`)).rows.map((r) => r.tgname), ["contactos_tope"]);
+
 // Solo la llave y el índice único (usuario, teléfono): ningún índice que la app no use.
 assert.deepEqual(
   (await db.query(`SELECT indexname FROM pg_indexes WHERE tablename = 'contactos' ORDER BY indexname`)).rows.map((r) => r.indexname),

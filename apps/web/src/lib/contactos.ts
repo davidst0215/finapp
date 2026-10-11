@@ -15,8 +15,12 @@ export const MAX_NOMBRE = 100;
 export const MAX_RELACION = 100;
 export const MAX_ALIAS = 10;
 export const MAX_ALIAS_LARGO = 60;
-/** Tope de contactos por usuario. Wabid por voz lee hasta este número en cada pedido (supabase/functions/_shared/contactos.ts). */
-export const MAX_CONTACTOS = 2000;
+/**
+ * Tope de contactos por usuario: 1000, el `max_rows` de PostgREST en producción (un `.limit(2000)` se recortaba en silencio).
+ * Una sola lectura trae toda la agenda; el trigger de 018_contactos.sql lo hace cumplir y esta constante espeja
+ * supabase/functions/_shared/contactos.ts.
+ */
+export const MAX_CONTACTOS = 1000;
 
 const sinTildes = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '');
 const limpiar = (s: string): string => s.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();

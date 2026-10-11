@@ -2,12 +2,13 @@
 // El enlace lo arma el servidor, pero la app solo abre lo que reconoce: WhatsApp (api.whatsapp.com/send) y el marcador (tel:).
 // Cualquier otra cosa (un esquema javascript:, otro dominio, un teléfono mal formado) se descarta y no se muestra ningún botón.
 // Puro: se prueba con Node (accionContacto.test.ts).
+import { formatearTelefono } from './telefono.ts'; // con extensión: las pruebas corren en Node
 
 export type AccionContacto = {
   tipo: 'whatsapp' | 'llamar' | 'numero';
   contacto: string;
   relacion?: string;
-  /** Para leerlo en la tarjeta: "+51 999 888 777". */
+  /** Para leerlo en la tarjeta ("+51 999 888 777"); sale de la URL, no del servidor. */
   numero: string;
   url: string;
   /** Solo en "numero": el segundo botón. */
@@ -26,27 +27,33 @@ const texto = (v: unknown, max: number): string | undefined => (typeof v === 'st
 export const esUrlWhatsapp = (u: unknown): u is string => typeof u === 'string' && u.length <= 8000 && URL_WHATSAPP.test(u);
 export const esUrlLlamar = (u: unknown): u is string => typeof u === 'string' && URL_LLAMAR.test(u);
 
-/** `null` si lo recibido no es una acción que la app sepa abrir. */
+// El teléfono sale de la URL que se va a abrir (ya validada), no del campo `numero` que manda el servidor: lo que la tarjeta muestra
+// y lo que el botón marca o escribe no pueden diferir.
+const telefonoDeWhatsapp = (u: string): string => `+${/phone=(\d+)/.exec(u)![1]}`;
+const telefonoDeTel = (u: string): string => u.slice('tel:'.length);
+
+/** `null` si lo recibido no es una acción que la app sepa abrir. El `numero` de la acción es el de la URL, formateado. */
 export function accionSegura(crudo: unknown): AccionContacto | null {
   if (!crudo || typeof crudo !== 'object') return null;
   const a = crudo as Record<string, unknown>;
   const contacto = texto(a.contacto, 200);
-  const numero = texto(a.numero, 40);
-  if (!contacto || !numero) return null;
+  if (!contacto) return null;
   const relacion = texto(a.relacion, 200);
-  const base = { contacto, numero, ...(relacion ? { relacion } : {}) };
+  const datos = (e164: string) => ({ contacto, numero: formatearTelefono(e164), ...(relacion ? { relacion } : {}) });
 
   if (a.tipo === 'whatsapp') {
     if (!esUrlWhatsapp(a.url)) return null;
     const t = texto(a.texto, 2000);
-    return { tipo: 'whatsapp', ...base, url: a.url, ...(t ? { texto: t } : {}) };
+    return { tipo: 'whatsapp', ...datos(telefonoDeWhatsapp(a.url)), url: a.url, ...(t ? { texto: t } : {}) };
   }
   if (a.tipo === 'llamar') {
-    return esUrlLlamar(a.url) ? { tipo: 'llamar', ...base, url: a.url } : null;
+    return esUrlLlamar(a.url) ? { tipo: 'llamar', ...datos(telefonoDeTel(a.url)), url: a.url } : null;
   }
   if (a.tipo === 'numero') {
     if (!esUrlLlamar(a.url) || !esUrlWhatsapp(a.urlWhatsapp)) return null;
-    return { tipo: 'numero', ...base, url: a.url, urlWhatsapp: a.urlWhatsapp };
+    // Los dos botones deben ir al mismo teléfono.
+    if (telefonoDeTel(a.url) !== telefonoDeWhatsapp(a.urlWhatsapp)) return null;
+    return { tipo: 'numero', ...datos(telefonoDeTel(a.url)), url: a.url, urlWhatsapp: a.urlWhatsapp };
   }
   return null;
 }

@@ -57,6 +57,20 @@ test('lo que la app no reconoce se descarta: otros esquemas, otros dominios, tel
   for (const m of malos) assert.equal(accionSegura(m), null, JSON.stringify(m));
 });
 
+test('el número de la tarjeta sale de la URL, no del campo `numero` del servidor', () => {
+  // Un servidor (o un intermediario) que mande otro `numero` no puede hacer que la tarjeta muestre un teléfono y el botón abra otro.
+  const wa = accionSegura({ tipo: 'whatsapp', contacto: 'Rosa', numero: '+51 900 000 000', url: WA });
+  assert.equal(wa?.numero, '+51 977 333 444');
+  const ll = accionSegura({ tipo: 'llamar', contacto: 'Rosa', numero: 'llama al 105', url: 'tel:+51977333444' });
+  assert.equal(ll?.numero, '+51 977 333 444');
+  const sin = accionSegura({ tipo: 'llamar', contacto: 'Rosa', url: 'tel:+573001234567' }); // sin `numero`: igual se muestra
+  assert.equal(sin?.numero, '+57 300 123 4567');
+  const nu = accionSegura({ tipo: 'numero', contacto: 'Rosa', numero: 'x', url: 'tel:+5112345678', urlWhatsapp: 'https://api.whatsapp.com/send?phone=5112345678' });
+  assert.equal(nu?.numero, '+51 1 234 5678');
+  // Los dos botones deben ir al mismo teléfono.
+  assert.equal(accionSegura({ tipo: 'numero', contacto: 'Rosa', url: 'tel:+51977333444', urlWhatsapp: 'https://api.whatsapp.com/send?phone=51966555666' }), null);
+});
+
 test('los campos de más no se cuelan en lo que se pinta', () => {
   const a = accionSegura({ tipo: 'llamar', contacto: 'Rosa', numero: '+51 977 333 444', url: 'tel:+51977333444', onclick: 'x', extra: 1 });
   assert.deepEqual(Object.keys(a ?? {}).sort(), ['contacto', 'numero', 'tipo', 'url']);

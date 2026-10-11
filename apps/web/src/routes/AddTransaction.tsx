@@ -17,6 +17,8 @@ type OrbState = 'idle' | 'listening' | 'thinking' | 'speaking';
 
 /** Menos que esto entre bajar y levantar el dedo es un toque (conversar); más, es mantener (un solo pedido). */
 const TOQUE_MS = 350;
+/** Cuánto queda a la vista la tarjeta de WhatsApp o de llamada si David no la cierra ni llega otra acción. */
+const TIEMPO_ACCION_MS = 120_000;
 // «Escuchar al abrir» arranca solo una vez por carga de la app; volver a la pestaña Wabid dentro de la app no.
 let arrancoEnEstaCarga = false;
 
@@ -61,6 +63,14 @@ export function AddTransactionPage() {
     fetchAccounts();
     fetchCategories();
   }, [fetchAccounts, fetchCategories]);
+
+  // Una tarjeta de WhatsApp o de llamada que nadie toca no se queda para siempre: a los 2 minutos se retira sola.
+  const idAccion = accion?.id;
+  useEffect(() => {
+    if (idAccion === undefined) return;
+    const t = setTimeout(() => setAccion(null), TIEMPO_ACCION_MS);
+    return () => clearTimeout(t);
+  }, [idAccion]);
 
   // Al abrir la pantalla o el teclado, despierta agente y voz para que el primer pedido no pague el arranque.
   useEffect(() => { calentarFunciones('agent', 'tts'); }, [showInput]);
@@ -235,10 +245,11 @@ export function AddTransactionPage() {
       // Contactos: el enlace de WhatsApp o del marcador llega en `accion`. Se muestra como botón (el navegador exige un toque de David para
       // abrir otra app) y solo si es un enlace que la app reconoce. NUNCA va al historial de abajo: lleva el teléfono y el historial
       // vuelve al modelo en el siguiente pedido; solo `message`, que el servidor escribe sin números.
-      // La acción anterior sigue a la vista mientras David habla (el micrófono oyendo no la borra): solo se reemplaza o se quita
-      // cuando llega una respuesta nueva, que trae otra acción o ninguna.
+      // La tarjeta sigue a la vista mientras David habla, y también tras una pregunta de Wabid («¿cuál Marco?», «no entendí»): ni el
+      // micrófono ni una respuesta sin acción la borran. Se va por cierre manual, por una acción nueva (que la reemplaza) o por
+      // tiempo (efecto de más abajo).
       const datosAccion = accionSegura(resultado.accion);
-      setAccion(datosAccion ? { id: turno, datos: datosAccion } : null);
+      if (datosAccion) setAccion({ id: turno, datos: datosAccion });
 
       // Add to memory
       conversationRef.current.push({ role: 'assistant', content: message });

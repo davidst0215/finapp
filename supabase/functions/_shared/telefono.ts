@@ -106,12 +106,22 @@ export function telefonosEnTexto(texto: string): string[] {
   return salida;
 }
 
+export type VeredictoNumero = { ok: true } | { ok: false; motivo: "ninguno" | "distinto" | "varios" };
+
 /**
- * ¿Es el número que David dijo? El teléfono que mandó el modelo debe aparecer (con cualquier formato) entre lo que David dictó:
- * un dígito cambiado, o un número inventado, mandaría los mensajes a un desconocido. `dictado` junta lo de este turno y lo
- * que David dijo antes en la conversación (el número puede haber venido en un turno anterior). Sin ningún teléfono dictado no
- * hay nada que contrastar y la respuesta es NO: nunca se acepta un número que David no dijo.
+ * ¿Es el número que David dictó? El teléfono que mandó el modelo debe ser EL teléfono que David dijo: un dígito cambiado, uno
+ * inventado o el de otra persona mandaría el mensaje a un desconocido. Solo se mira un lugar:
+ * - el mensaje `actual` de David; y, solo si ese no trae ningún teléfono y se pasan `anteriores` (create_contact, donde el número
+ *   pudo venir antes de que David aclarara la relación), el turno anterior MÁS RECIENTE que sí traiga alguno;
+ * - sin los teléfonos de `excluir`: los que David dijo como contenido del mensaje («dile a Ramiro que me llame al 999 111 222»)
+ *   y no son el de quien lo recibe.
+ * Sin ningún teléfono dictado no hay nada que contrastar: «ninguno». Dos o más distintos: «varios», se pide confirmación.
  */
-export function coincideConDictado(e164: string, dictado: string): boolean {
-  return telefonosEnTexto(dictado).includes(e164);
+export function numeroDelDictado(e164: string, actual: string, anteriores: readonly string[] = [], excluir: readonly string[] = []): VeredictoNumero {
+  const dichos = (t: string) => telefonosEnTexto(t).filter((n) => !excluir.includes(n));
+  let hallados = dichos(actual);
+  for (let i = anteriores.length - 1; i >= 0 && hallados.length === 0; i--) hallados = dichos(anteriores[i]!);
+  if (hallados.length === 0) return { ok: false, motivo: "ninguno" };
+  if (hallados.length > 1) return { ok: false, motivo: "varios" };
+  return hallados[0] === e164 ? { ok: true } : { ok: false, motivo: "distinto" };
 }

@@ -1,7 +1,7 @@
 // node --experimental-strip-types --test supabase/functions/_shared/telefono.test.ts
 import test from "node:test";
 import assert from "node:assert/strict";
-import { coincideConDictado, formatearTelefono, normalizarTelefono, telefonosEnTexto, urlLlamar, urlWhatsapp } from "./telefono.ts";
+import { formatearTelefono, normalizarTelefono, numeroDelDictado, telefonosEnTexto, urlLlamar, urlWhatsapp } from "./telefono.ts";
 
 const e164 = (v: unknown) => {
   const t = normalizarTelefono(v);
@@ -113,16 +113,33 @@ test("urlWhatsapp y urlLlamar rechazan un teléfono que no es E.164", () => {
   assert.equal(urlLlamar("+51999888777"), "tel:+51999888777");
 });
 
-test("telefonosEnTexto y coincideConDictado: el número del modelo debe ser el que David dijo", () => {
-  const dictado = "Guarda a Marco con el 999 888 777, es de Saya";
-  assert.deepEqual(telefonosEnTexto(dictado), ["+51999888777"]);
-  assert.equal(coincideConDictado("+51999888777", dictado), true);
-  assert.equal(coincideConDictado("+51999888778", dictado), false, "un dígito cambiado");
-  assert.equal(coincideConDictado("+51999888777", "es el +51 999-888-777 de Marco"), true);
-  assert.equal(coincideConDictado("+51999888777", "el de Saya"), false, "sin ningún teléfono dictado no hay con qué contrastar: no se acepta");
-  assert.equal(coincideConDictado("+51999888777", "es de Saya | guarda a Marco con el 999 888 777"), true, "el número vino en un turno anterior");
-  assert.equal(coincideConDictado("+51999888777", "reunión el 11-10-2026 a las 10"), false, "una fecha no es un teléfono");
+test("telefonosEnTexto: encuentra los teléfonos dictados, en cualquier formato, y nada más", () => {
+  assert.deepEqual(telefonosEnTexto("Guarda a Marco con el 999 888 777, es de Saya"), ["+51999888777"]);
+  assert.deepEqual(telefonosEnTexto("es el +51 999-888-777 de Marco"), ["+51999888777"]);
   assert.deepEqual(telefonosEnTexto("llego 10 minutos tarde"), []);
+  assert.deepEqual(telefonosEnTexto("reunión el 11-10-2026 a las 10"), [], "una fecha no es un teléfono");
   assert.deepEqual(telefonosEnTexto("es el 9 9 9 8 8 8 7 7 7"), ["+51999888777"], "dígito por dígito");
   assert.deepEqual(telefonosEnTexto("999 888 | 777 000"), [], "dos turnos no se funden en un número");
+  assert.deepEqual(telefonosEnTexto("el 999 111 222 y el 955 000 111, otra vez el 999 111 222"), ["+51999111222", "+51955000111"], "sin repetidos");
+});
+
+test("numeroDelDictado: el número del modelo debe ser EL que David dijo (este mensaje; antes solo si se permite)", () => {
+  const dictado = "Guarda a Marco con el 999 888 777, es de Saya";
+  assert.deepEqual(numeroDelDictado("+51999888777", dictado), { ok: true });
+  assert.deepEqual(numeroDelDictado("+51999888778", dictado), { ok: false, motivo: "distinto" }, "un dígito cambiado");
+  assert.deepEqual(numeroDelDictado("+51999888777", "es el +51 999-888-777 de Marco"), { ok: true });
+  assert.deepEqual(numeroDelDictado("+51999888777", "el de Saya"), { ok: false, motivo: "ninguno" }, "sin ningún teléfono dictado no hay con qué contrastar");
+  assert.deepEqual(numeroDelDictado("+51999888777", "reunión el 11-10-2026 a las 10"), { ok: false, motivo: "ninguno" });
+  // Los turnos anteriores solo cuentan si se pasan, y entonces vale el MÁS RECIENTE que traiga un teléfono.
+  assert.deepEqual(numeroDelDictado("+51999888777", "es de Saya", [dictado]), { ok: true }, "el número vino en un turno anterior");
+  assert.deepEqual(numeroDelDictado("+51999888777", "es de Saya"), { ok: false, motivo: "ninguno" }, "sin `anteriores` no se mira atrás");
+  assert.deepEqual(numeroDelDictado("+51999888777", "ok", ["guarda a Juan con el 955 000 111", dictado, "bien"]), { ok: true });
+  assert.deepEqual(numeroDelDictado("+51955000111", "ok", ["guarda a Juan con el 955 000 111", dictado, "bien"]), { ok: false, motivo: "distinto" }, "el de Juan es de un turno más viejo");
+  // El mensaje actual manda: si trae un teléfono, los anteriores no cuentan.
+  assert.deepEqual(numeroDelDictado("+51955000111", "al 999 888 777", [dictado, "el 955 000 111"]), { ok: false, motivo: "distinto" });
+  // Dos teléfonos distintos en lo dicho: se pide confirmación, aunque uno sea el del modelo.
+  assert.deepEqual(numeroDelDictado("+51999111222", "a Pedro al 999 111 222 y a Juan al 955 000 111"), { ok: false, motivo: "varios" });
+  // Un teléfono que es contenido del mensaje no es el destinatario.
+  assert.deepEqual(numeroDelDictado("+51999111222", "dile a Ramiro que me llame al 999 111 222", [], ["+51999111222"]), { ok: false, motivo: "ninguno" });
+  assert.deepEqual(numeroDelDictado("+51955000111", "a Pedro al 955 000 111 que me llame al 999 111 222", [], ["+51999111222"]), { ok: true });
 });

@@ -8,7 +8,7 @@
 // siguiente. Por eso ninguna frase lleva un teléfono, ni siquiera el que alguien guardó (o dictó) COMO nombre: eso se dice «ese
 // número». El número solo viaja en la acción que recibe la app (tools/contactos.ts).
 import { limpiarEspacios, norm } from "./texto.ts";
-import { coincideConDictado, normalizarTelefono } from "./telefono.ts";
+import { normalizarTelefono, numeroDelDictado } from "./telefono.ts";
 import { cortoVoz, queCabe } from "./voz.ts";
 
 export type Contacto = { contacto_id: string; nombre: string; alias: string[]; telefono: string; relacion: string | null };
@@ -19,7 +19,11 @@ export const MAX_NOMBRE = 100;
 export const MAX_ALIAS = 10;
 export const MAX_ALIAS_LARGO = 60;
 export const MAX_RELACION = 100;
-export const MAX_CONTACTOS = 2000;
+/**
+ * Tope de contactos por usuario: 1000, el `max_rows` de PostgREST en producción. Así UNA lectura trae la agenda completa (un
+ * `.limit(2000)` se recortaba en silencio a 1000). Lo hace cumplir un trigger de la base (018) y lo avisan la web y Wabid.
+ */
+export const MAX_CONTACTOS = 1000;
 
 // Palabras que no distinguen a una persona de otra: "el contacto de Marco" = "Marco", "escríbele a mi mamá" = "mamá".
 const RELLENO = new Set([
@@ -39,8 +43,14 @@ export const mismoNombre = (a: string, b: string): boolean => {
 };
 
 // --- Números que se cuelan como nombre ---------------------------------------------------------------------------------
-/** ¿Trae 6 o más dígitos (con o sin separadores)? Un nombre así es un teléfono mal puesto, y no se dice en voz alta. */
-export const tieneNumero = (s: string): boolean => /\d(?:[\s().-]*\d){5,}/.test(s);
+/** ¿Trae 6 o más dígitos, con el separador que sea («999/888/777», «999_888_777»)? Un nombre así es un teléfono mal puesto: no se dice. */
+export const tieneNumero = (s: string): boolean => (s.match(/\d/g) ?? []).length >= 6;
+/**
+ * El texto con cada tramo de 6 o más dígitos reemplazado por «[número]». Para frases que vuelven al modelo y repiten lo que David
+ * escribió («llámame al 999 111 222»): el contenido se conserva, el teléfono no.
+ */
+export const enmascararNumeros = (s: string): string =>
+  s.replace(/[+(]?\d[\d\s().,/_–—-]*/g, (tramo) => ((tramo.match(/\d/g) ?? []).length >= 6 ? `[número]${/[\s().,/_–—-]*$/.exec(tramo)![0]}` : tramo));
 /** Lo que se puede decir o mostrar de un nombre: si trae un número, «ese número». */
 export const nombreDecible = (s: string): string => (tieneNumero(s) ? "ese número" : s);
 const relacionDecible = (r: string | null): string | null => (r && !tieneNumero(r) ? r : null);
@@ -63,6 +73,7 @@ export type Busqueda =
  * 3. si sigue habiendo más de uno, se devuelven para preguntar.
  * Sin coincidencia por nombre, las palabras que sobran pueden ser la relación ("Marco Saya"), pero solo si al menos una
  * palabra es del nombre: "Saya" a secas no elige a nadie, y "Marco Gómez" no se carga al único Marco.
+ * Si David dio una relación (`pista`: «Marco del gimnasio») y el ÚNICO candidato tiene otra, no es él: «none» y se pide el número.
  */
 export function buscarContacto(consulta: unknown, contactos: Contacto[], pista?: unknown): Busqueda {
   const q = palabrasContacto(typeof consulta === "string" ? consulta : "");
@@ -76,9 +87,14 @@ export function buscarContacto(consulta: unknown, contactos: Contacto[], pista?:
       return q.some((t) => nombres.includes(t)) && cubreExacto(q, [...nombres, ...palabrasContacto(x.relacion ?? "")]);
     });
   }
-  if (c.length <= 1) return c.length ? { kind: "one", contacto: c[0]! } : { kind: "none" };
-
   const clave = palabrasContacto(typeof pista === "string" ? pista : "");
+  if (c.length <= 1) {
+    if (!c.length) return { kind: "none" };
+    // La relación que David dijo debe estar en la del contacto; si no, es otra persona con el mismo nombre que no tengo.
+    if (clave.length && !cubreExacto(clave, palabrasContacto(c[0]!.relacion ?? ""))) return { kind: "none" };
+    return { kind: "one", contacto: c[0]! };
+  }
+
   if (clave.length) {
     const porRelacion = c.filter((x) => cubreExacto(clave, palabrasContacto(x.relacion ?? "")));
     if (porRelacion.length) c = porRelacion;
@@ -116,12 +132,13 @@ export type ValidacionContacto =
   | { ok: false; error: string; pregunta?: boolean; duplicado?: Contacto };
 
 /**
- * Valida lo que dictó David antes de tocar la base. Lo que se puede preguntar es `pregunta` (falta el nombre o el número); lo
- * demás es un error con una frase para decir. El teléfono que mandó el modelo tiene que ser uno que David dictó (un dígito de
- * más o de menos, o uno inventado, mandaría los mensajes a un desconocido): `dictado` junta lo de este turno y lo que David dijo
- * antes, porque aquí el número pudo venir en un turno anterior («¿quién es este Marco?» → «es del gimnasio»).
+ * Valida lo que dictó David antes de tocar la base. Lo que se puede preguntar es `pregunta` (falta el nombre o el número, o
+ * hay más de un número en lo dicho); lo demás es un error con una frase para decir. El teléfono que mandó el modelo tiene que
+ * ser EL que David dictó (numeroDelDictado): en su mensaje `actual` o, si ese no trae ninguno, en el turno anterior más reciente
+ * que sí lo traiga (`anteriores`), porque aquí el número pudo venir antes de aclarar la relación («¿quién es este Marco?» →
+ * «es del gimnasio»). Con dos teléfonos distintos en lo dicho se pide confirmación en vez de elegir uno.
  */
-export function validarContactoNuevo(args: Record<string, unknown>, existentes: Contacto[], dictado: string): ValidacionContacto {
+export function validarContactoNuevo(args: Record<string, unknown>, existentes: Contacto[], actual: string, anteriores: readonly string[] = []): ValidacionContacto {
   const nombre = str(args.nombre);
   if (!nombre) return { ok: false, error: "¿Cómo se llama?", pregunta: true };
   if (nombre.length > MAX_NOMBRE) return { ok: false, error: `El nombre es muy largo: máximo ${MAX_NOMBRE} letras.` };
@@ -130,7 +147,12 @@ export function validarContactoNuevo(args: Record<string, unknown>, existentes: 
 
   const tel = normalizarTelefono(args.telefono);
   if (!tel.ok) return { ok: false, error: tel.error, pregunta: tel.error === "¿Cuál es su número?" };
-  if (!coincideConDictado(tel.e164, dictado)) return { ok: false, error: "No estoy segura del número que entendí. Dímelo otra vez, dígito por dígito." };
+  const dictado = numeroDelDictado(tel.e164, actual, anteriores);
+  if (!dictado.ok) {
+    return dictado.motivo === "varios"
+      ? { ok: false, pregunta: true, error: "Veo más de un número en lo que dijiste. Dime el nombre y el número de uno en uno." }
+      : { ok: false, error: "No estoy segura del número que entendí. Dímelo otra vez, dígito por dígito." };
+  }
 
   const relacion = limpiarRelacion(args.relacion);
   if (relacion.length > MAX_RELACION) return { ok: false, error: `La relación es muy larga: máximo ${MAX_RELACION} letras.` };
@@ -158,32 +180,45 @@ export function validarContactoNuevo(args: Record<string, unknown>, existentes: 
   return { ok: true, contacto: { nombre, alias, telefono: tel.e164, relacion: relacion || null } };
 }
 
-// Firma de Wabid en la MISMA línea del mensaje: «… — Wabid», «… (Wabid)», «… - Wabid», «… enviado por Wabid». Pide el guion, el
-// paréntesis o el «enviado por» delante: una mención normal («prueba Wabid, la app») se respeta.
-const FIRMA_AL_FINAL = /\s*(?:[-–—]+\s*|\(\s*(?:(?:enviado|escrito)\s+por\s+|de parte de\s+)?|(?:enviado|escrito)\s+por\s+|de parte de\s+)(?:wabid|tu asistente|la asistente|asistente de david)\s*\)?[\s.!]*$/i;
-// Una línea que es solo la firma: «— Wabid», «Wabid», «Atentamente, Wabid».
-const FIRMA_EN_SU_LINEA = /^[\s\-–—_~*(\[]*(?:(?:enviado|escrito|mensaje)\s+(?:por|de)|de parte de|atte\.?|atentamente|saludos)?[\s,:]*(?:wabid|tu asistente|la asistente|asistente de david)[\s.!)\]*]*$/i;
+// Firma de Wabid en la MISMA línea del mensaje: «… — Wabid», «… (Wabid)», «… [Wabid]», «… | Wabid», «… ~ Wabid», «… - Wabid ✅»,
+// «…, enviado por Wabid». Pide delante un guion, «|», «~», un paréntesis o corchete, o «enviado por»: una mención normal («prueba
+// Wabid, la app») se respeta. Detrás admite el cierre, puntuación y emojis.
+const FIRMA_AL_FINAL = /\s*(?:[-–—]+\s*|[|~]\s*|[(\[]\s*(?:(?:enviado|escrito)\s+por\s+|de parte de\s+)?|,?\s*(?:enviado|escrito)\s+por\s+|de parte de\s+)(?:wabid|tu asistente|la asistente|asistente de david)\s*[)\]]?[\s.!\p{Extended_Pictographic}️‍]*$/iu;
+// Una línea que es solo la firma: «— Wabid», «Wabid», «[Wabid]», «Atentamente, Wabid ✅».
+const FIRMA_EN_SU_LINEA = /^[\s\-–—_~*|(\[]*(?:(?:enviado|escrito|mensaje)\s+(?:por|de)|de parte de|atte\.?|atentamente|saludos)?[\s,:]*(?:wabid|tu asistente|la asistente|asistente de david)[\s.!)\]*\p{Extended_Pictographic}️‍]*$/iu;
+const ENTRE_COMILLAS = /^[«“"]([^«»“”"]*)[»”"]$/;
+
+/** Quita las líneas finales que son solo la firma y la firma que cierra la última línea. */
+function sinFirma(texto: string): string {
+  const lineas = texto.split("\n").map((l) => l.replace(/[ \t]+$/, ""));
+  for (;;) {
+    const ultima = lineas.at(-1);
+    if (ultima === undefined) break;
+    if (!ultima.trim() || FIRMA_EN_SU_LINEA.test(ultima)) { lineas.pop(); continue; }
+    const limpia = ultima.replace(FIRMA_AL_FINAL, "");
+    if (limpia === ultima) break;
+    lineas[lineas.length - 1] = limpia.replace(/[ \t]+$/, "");
+  }
+  return lineas.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
 
 /**
  * El mensaje tal como lo enviaría David. Quita los saltos y caracteres de control, las comillas con que el modelo suele
- * envolverlo y la firma de Wabid, en su propia línea o al final de la última ("— Wabid", "(Wabid)", "- Wabid"): Wabid no firma.
+ * envolverlo y la firma de Wabid, en su propia línea o al final de la última: Wabid no firma. La firma puede ir dentro o fuera de
+ * las comillas («"Llego tarde — Wabid"», «"Llego tarde" — Wabid»), así que se repite hasta que no quede nada por quitar.
  * No agrega ni cambia palabras: que el texto sea fiel a lo que David dijo es trabajo de la tool (su descripción y sus reglas).
  */
 export function limpiarMensaje(v: unknown): string {
   if (typeof v !== "string") return "";
   let t = v.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
-  const lineas = t.split("\n").map((l) => l.replace(/[ \t]+$/, ""));
-  for (;;) {
-    const ultima = lineas.at(-1);
-    if (ultima === undefined) break;
-    if (!ultima.trim() || FIRMA_EN_SU_LINEA.test(ultima)) { lineas.pop(); continue; }
-    const sinFirma = ultima.replace(FIRMA_AL_FINAL, "");
-    if (sinFirma === ultima) break;
-    lineas[lineas.length - 1] = sinFirma.replace(/[ \t]+$/, "");
+  for (let vuelta = 0; vuelta < 4; vuelta++) {
+    const antes = t;
+    t = sinFirma(t);
+    const envuelto = ENTRE_COMILLAS.exec(t);
+    if (envuelto) t = envuelto[1]!.trim();
+    if (t === antes) break;
   }
-  t = lineas.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-  const envuelto = /^[«“"]([^«»“”"]*)[»”"]$/.exec(t);
-  return envuelto ? envuelto[1]!.trim() : t;
+  return t;
 }
 
 // --- Frases (pantalla y voz) -------------------------------------------------------------------------------------------
@@ -243,10 +278,15 @@ export const fraseCreado = (c: Pick<ContactoNuevo, "nombre" | "relacion">): Fras
   voz: queCabe([`Listo, guardé a ${corto(nombreDecible(c.nombre))}.`, "Listo, lo guardé."]),
 });
 
+/**
+ * El mensaje se muestra entre comillas para que el modelo sepa qué escribió (por si David pide cambiarlo), pero sin teléfonos:
+ * lo que David dijo como contenido («llámame al 999 111 222») vuelve al historial como «llámame al [número]». La tarjeta de la
+ * app lleva el texto completo en `accion.texto`.
+ */
 export const fraseWhatsapp = (nombre: string, texto: string): Frase => {
   const n = nombreDecible(nombre);
   return {
-    message: texto ? `WhatsApp para ${n}: «${texto}»` : `Chat de WhatsApp con ${n}.`,
+    message: texto ? `WhatsApp para ${n}: «${enmascararNumeros(texto)}»` : `Chat de WhatsApp con ${n}.`,
     voz: queCabe([`Listo, te dejo el WhatsApp de ${corto(n)}.`, "Listo, te dejo el WhatsApp."]),
   };
 };
