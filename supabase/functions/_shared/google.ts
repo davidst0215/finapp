@@ -16,7 +16,7 @@ export * from "./google/errors.ts";
 export type { GoogleAccount, GoogleStatus } from "./google/core.ts";
 export type { CalEvent } from "./google/events.ts";
 export type { DraftItem, MailItem } from "./google/mail.ts";
-export { remitenteCorto, resumenAgenda, resumenCorreo } from "./google/speech.ts";
+export { remitenteCorto, resumenAgenda, resumenCorreo, vozAgenda } from "./google/speech.ts";
 
 // ---------------------------------------------------------------- configuración
 

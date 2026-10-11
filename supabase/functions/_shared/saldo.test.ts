@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { conCache, consultarSaldo, duracion, mapearElevenLabs, mapearOpenRouter, mensajeVoz, MSG_SIN_PERMISO, proyectar, ritmoDiario, saldoVigente, textoAlcance, type Saldo } from "./saldo.ts";
+import { conCache, consultarSaldo, duracion, mapearElevenLabs, mapearOpenRouter, mensajeVoz, mensajeVozCorto, MSG_SIN_PERMISO, proyectar, ritmoDiario, saldoVigente, textoAlcance, type Proyeccion, type Saldo } from "./saldo.ts";
 import { paraVoz } from "./voz.ts";
 
 const KEY = { status: 200, cuerpo: { data: { limit: 10, limit_remaining: 9.73, usage: 0.27, usage_daily: 0.1, usage_weekly: 0.26, usage_monthly: 0.27 } } };
@@ -289,4 +289,23 @@ test("voz: con datos de ElevenLabs solo el porcentaje usado; sin datos, nada", (
 test("voz: si OpenRouter falla, mensaje corto sin detalles", () => {
   const s: Saldo = { ...saldoOk(), openrouter: { estado: "error", mensaje: "OpenRouter rechazó la llave" } };
   assert.equal(mensajeVoz(s), "No pude consultar tu saldo de OpenRouter ahora. Inténtalo en un momento.");
+});
+
+test("mensajeVozCorto: el saldo redondo y cuánto dura; el detalle queda en la pantalla (mensajeVoz)", () => {
+  const ok = (restante: number, proyeccion: Proyeccion, bajo = false): Saldo => ({
+    openrouter: { estado: "ok", restante, credito: 20, hoy: 0, semana: 0.1, mes: 0.27, proyeccion, alcance: textoAlcance(proyeccion), bajo },
+    elevenlabs: { estado: "ok", usados: 1200, limite: 10000, renueva: null, plan: "free" },
+    actualizado: "2026-10-11T00:00:00Z",
+  });
+  const largo = mensajeVoz(ok(9.73, { tipo: "dias", dias: 270 }));
+  const corto = mensajeVozCorto(ok(9.73, { tipo: "dias", dias: 270 }));
+  assert.equal(corto, "Te quedan unos US$ 10; alcanza para unos nueve meses.");
+  assert.ok(corto.length < largo.length / 2, `${corto.length} vs ${largo.length}`);
+  assert.equal(mensajeVozCorto(ok(0.45, { tipo: "dias", dias: 20 }, true)), "Te quedan US$ 0.45, conviene recargar; alcanza para unos veinte días.");
+  assert.equal(mensajeVozCorto(ok(30, { tipo: "mas_de_12_meses" })), "Te quedan US$ 30; dura más de doce meses."); // exacto: sin «unos»
+  assert.equal(mensajeVozCorto(ok(5.4, { tipo: "desconocida" })), "Te quedan unos US$ 5.");
+  assert.equal(mensajeVozCorto(ok(0, { tipo: "agotado" })), "Se te acabó el saldo, conviene recargar.");
+  assert.equal(mensajeVozCorto({ openrouter: { estado: "error", mensaje: "x" }, elevenlabs: { estado: "sin_configurar", mensaje: "y" }, actualizado: "" }), "No pude consultar tu saldo ahora.");
+  // Lo que de verdad se envía (con la cifra en palabras) cabe en el tope.
+  assert.ok(paraVoz(corto).length <= 100);
 });

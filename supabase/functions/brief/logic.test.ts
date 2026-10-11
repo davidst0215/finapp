@@ -17,6 +17,8 @@ import {
   limpiar,
   secretoIgual,
   textoRespaldo,
+  vozBrief,
+  MAX_TEXTO,
   tituloBrief,
   ventanaMes,
 } from "./logic.ts";
@@ -148,7 +150,8 @@ test("una fuente caída se reporta en su sección y el resto sigue", () => {
   assert.deepEqual(s.dinero.pagos, []);
   const txt = textoRespaldo(s);
   assert.match(txt, /Google no está conectado/);
-  assert.ok(txt.length <= 400);
+  assert.match(vozBrief(s), /^No pude leer tu agenda ni tus tareas ni tus finanzas\.$/);
+  assert.ok(txt.length <= MAX_TEXTO);
 });
 
 test("textoRespaldo: contenido y límite", () => {
@@ -158,15 +161,17 @@ test("textoRespaldo: contenido y límite", () => {
   f.gasto = { ok: true, data: 486.4 };
   f.pagos = { ok: true, data: { pagados: [], recurrentes: [{ recurring_id: "a", description: "Netflix", amount: 52, next_due_date: "2026-10-06" }] } };
   const txt = textoRespaldo(buildSections(AHORA, f));
-  assert.match(txt, /Hoy tienes 1 evento; el primero es a las 9:00: Maqui CO — mensual\./);
-  assert.match(txt, /1 tarea vencida y 1 para hoy/);
+  // Primero el titular (lo que se dice), después el detalle (lo que se ve). Sin saludo.
+  assert.match(txt, /^Hoy tienes 1 evento, 1 tarea vencida, 1 para hoy y 1 pago próximo\. El primero es a las 9:00: Maqui CO — mensual\./);
   assert.match(txt, /S\/ 486\.40 en octubre/);
   assert.match(txt, /Netflix S\/ 52\.00 mañana/);
-  assert.ok(txt.length <= 400);
+  assert.doesNotMatch(txt, /Buenos días/);
+  assert.ok(txt.length <= MAX_TEXTO, `${txt.length}`);
+  assert.ok(vozBrief(buildSections(AHORA, f)).length <= 90);
 });
 
 test("textoRespaldo con todo vacío", () => {
-  assert.match(textoRespaldo(buildSections(AHORA, base())), /agenda de hoy está libre\. No tienes tareas vencidas ni para hoy\./);
+  assert.equal(textoRespaldo(buildSections(AHORA, base())), "Hoy no tienes nada urgente.");
 });
 
 test("acotar corta en fin de oración", () => {
@@ -288,4 +293,24 @@ test("corridaReciente: ventana de 10 minutos", () => {
   assert.equal(corridaReciente(undefined, 1_000_000), false);
   assert.equal(corridaReciente(1_000_000, 1_000_000 + 9 * 60_000), true);
   assert.equal(corridaReciente(1_000_000, 1_000_000 + 10 * 60_000), false);
+});
+
+test("vozBrief: titular con conteos, singular/plural y sin cifras inventadas", () => {
+  const f = base();
+  f.agenda = { ok: true, data: [{ title: "A", all_day: false, start_hm: "09:00" }, { title: "B", all_day: false, start_hm: "10:00" }, { title: "C", all_day: false, start_hm: "11:00" }] };
+  f.tareas = { ok: true, data: [tarea({ due: "2026-10-04" }), tarea({ due: "2026-10-03" })] };
+  assert.equal(vozBrief(buildSections(AHORA, f)), "Hoy tienes 3 eventos y 2 tareas vencidas.");
+  f.agenda = { ok: true, data: [] };
+  f.tareas = { ok: true, data: [] };
+  assert.equal(vozBrief(buildSections(AHORA, f)), "Hoy no tienes nada urgente.");
+  // Una fuente caída no se cuenta como cero: se nombra, y lo que sí se leyó se conserva.
+  f.agenda = { ok: false, estado: "no_conectado", mensaje: "Aún no conectas tu Google." };
+  f.tareas = { ok: true, data: [tarea({ due: "2026-10-04" })] };
+  assert.equal(vozBrief(buildSections(AHORA, f)), "Hoy tienes 1 tarea vencida. No pude leer tu agenda.");
+});
+
+test("acotar: abreviaturas y montos no parten la oración; una sola oración larga se corta en pausa", () => {
+  assert.equal(acotar("Habla con el Dr. Pérez por S/ 45.90. Luego revisa lo demás con calma, sin apuro, como siempre.", 60), "Habla con el Dr. Pérez por S/ 45.90.");
+  const una = "Tienes dos tareas vencidas, un pago mañana y tres esperas sin respuesta desde hace más de una semana";
+  assert.equal(acotar(una, 50), "Tienes dos tareas vencidas.");
 });

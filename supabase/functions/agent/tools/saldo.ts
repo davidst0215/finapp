@@ -1,12 +1,13 @@
 // Saldo de IA por voz: "¿cuánto saldo me queda?", "¿cuánto he gastado en IA?". Solo lectura de dos APIs de consulta
 // (no gastan crédito). Sin loadContext: llama a terceros y loadContext corre antes de confirmar la sesión.
 import { esDueno } from "../../_shared/dueno.ts";
-import { mensajeVoz } from "../../_shared/saldo.ts";
+import { mensajeVoz, mensajeVozCorto } from "../../_shared/saldo.ts";
 import { obtenerSaldo } from "../../_shared/saldoServicio.ts";
 import { type AgentModule, tool } from "../types.ts";
 
 const rules = `SALDO DE IA:
-- "cuánto saldo me queda", "cuánto he gastado en IA", "cuánto me queda de OpenRouter", "cuánto llevo gastado en el asistente" = get_saldo_ia. Es el crédito del modelo y de la voz de Wabid, NO el dinero personal de David.`;
+- "cuánto saldo me queda", "cuánto he gastado en IA", "cuánto me queda de OpenRouter", "cuánto llevo gastado en el asistente" = get_saldo_ia. Es el crédito del modelo y de la voz de Wabid, NO el dinero personal de David.
+- Voz: una frase; el detalle va a la pantalla.`;
 
 export const saldo: AgentModule = {
   id: "saldo",
@@ -23,7 +24,7 @@ export const saldo: AgentModule = {
       try {
         const s = await obtenerSaldo();
         return s.openrouter.estado === "ok"
-          ? { action: "get_saldo_ia", message: mensajeVoz(s), data: s }
+          ? { action: "get_saldo_ia", message: mensajeVoz(s), voz: mensajeVozCorto(s), data: s }
           : { action: "error", message: mensajeVoz(s) };
       } catch (e) {
         console.error("get_saldo_ia:", e instanceof Error ? e.message : String(e));

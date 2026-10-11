@@ -1,6 +1,8 @@
 // Lógica pura del módulo reuniones: parseo de Fathom, fechas de Lima, esperas y búsqueda.
-// Sin globals de Deno ni imports: se prueba en Node (`node --experimental-strip-types --test pure.test.ts`).
+// Sin globals de Deno; solo importa `_shared/voz.ts` (también puro): se prueba en Node (`node --experimental-strip-types --test pure.test.ts`).
 // Todo el texto que viene de reuniones o del vault es DATO: aquí solo se recorta y se muestra, nunca se interpreta.
+
+import { cortoVoz } from "../_shared/voz.ts";
 
 export type Invitado = { name: string; email: string; externo: boolean };
 export type ActionItem = { texto: string; dueno: string | null; hecho: boolean; url: string | null };
@@ -377,4 +379,31 @@ export function mensajeReunion(r: Reunion, hoy: string, otras = 0): string {
   }
   if (otras > 0) out += ` Hay ${otras} ${plural(otras, "reunión más", "reuniones más")} que también calzan.`;
   return out;
+}
+
+// --- Lo que se dice ------------------------------------------------------------------------------------
+// `mensajeEsperas` y `mensajeReunion` son lo que se ve; estas variantes son lo que se dice: el dato principal, el primero
+// de la lista y "y N más". La voz se cobra por carácter y no pasa de ~100.
+
+export function vozEsperas(esperas: Espera[], de: string | null): string {
+  const lista = de ? esperasDe(esperas, de) : esperas;
+  if (!lista.length) return mensajeEsperas(esperas, de); // ya es corto
+  if (de) {
+    const resto = lista.length - 1;
+    return `Esperas ${lista.length} ${plural(lista.length, "cosa", "cosas")} de ${lista[0].quien}: ${cortoVoz(lista[0].texto, 40)}${resto > 0 ? `; y ${resto} más` : ""}.`;
+  }
+  const personas = new Set(lista.map((e) => e.quien)).size;
+  const antigua = lista[0].dias !== null ? `; la más antigua, de ${lista[0].quien}, lleva ${lista[0].dias} ${plural(lista[0].dias, "día", "días")}` : "";
+  return `Esperas ${lista.length} ${plural(lista.length, "cosa", "cosas")} de ${personas} ${plural(personas, "persona", "personas")}${antigua}.`;
+}
+
+export function vozReunion(r: Reunion, hoy: string): string {
+  const base = `«${cortoVoz(r.titulo, 40)}» fue ${cuandoHablado(limaDia(r.inicio), hoy)}`;
+  const abiertos = r.action_items.filter((a) => !a.hecho);
+  if (abiertos.length) {
+    const resto = abiertos.length - 1;
+    return `${base}. Quedaron ${abiertos.length} ${plural(abiertos.length, "acuerdo", "acuerdos")}: ${cortoVoz(abiertos[0].texto, 40)}${resto > 0 ? `; y ${resto} más` : ""}.`;
+  }
+  const resumen = resumenCorto(r.resumen, 110);
+  return resumen ? `${base}. ${resumen}` : `${base}, pero Fathom todavía no tiene resumen.`;
 }

@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  buildAnswerMessages, clienteChips, displayCliente, fuenteHablada, mensajeMemoria, parseAnswer, pickRelated, recortarOraciones,
+  buildAnswerMessages, clienteChips, displayCliente, fuenteHablada, mensajeMemoria, parseAnswer, pickRelated, recortarOraciones, vozMemoria,
   toSources, type Hit,
 } from "./search.ts";
 
@@ -118,6 +118,26 @@ test("fuenteHablada y mensajeMemoria: lo que se dice en voz", () => {
   assert.equal(fuenteHablada("Wabid (asistente personal de David, sobre finapp)"), "Wabid");
   assert.equal(mensajeMemoria("Es el reparto mensual del gasto.", "Acme · Ventas"), "Es el reparto mensual del gasto. Fuente: Acme, Ventas.");
   assert.equal(mensajeMemoria("Sin fuente.", null), "Sin fuente.");
+});
+
+test("memoria: la pantalla lleva la fuente y la voz no", () => {
+  const respuesta = "NovaFondos está en producción en Cloud Run. Falta cargar la matriz con bien, que depende de la calibración que está haciendo Maqui.";
+  assert.equal(mensajeMemoria(respuesta, "NovaFondos · EAFC"), `${respuesta} Fuente: NovaFondos, EAFC.`);
+  // La voz: la(s) oración(es) que caben en 100 caracteres, sin «Fuente».
+  const voz = vozMemoria(respuesta);
+  assert.equal(voz, "NovaFondos está en producción en Cloud Run.");
+  assert.ok(!/fuente/i.test(voz));
+  // Una sola oración larga: se corta en la última coma y se cierra con punto, sin partir palabras.
+  const larga = "El despliegue de NovaFondos pasa por Cloud Build con aprobación manual vía API, después corre las migraciones y el job de siembra en producción.";
+  const cortada = vozMemoria(larga);
+  assert.ok(cortada.length <= 100, cortada);
+  assert.equal(cortada, "El despliegue de NovaFondos pasa por Cloud Build con aprobación manual vía API.");
+});
+
+test("el prompt de memoria pide una respuesta directa de 100 caracteres y un detalle opcional", () => {
+  const [sistema] = buildAnswerMessages("¿en qué va?", [], {});
+  assert.match(sistema.content, /Primera oración: la respuesta directa, de 100 caracteres o menos/);
+  assert.doesNotMatch(sistema.content, /Máximo 3 oraciones/);
 });
 
 test("recortarOraciones: corta en el último punto y nunca pasa del máximo", () => {

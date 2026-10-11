@@ -9,7 +9,7 @@ import {
 } from "../../_shared/vault.ts";
 import { fechaHablada, resolveDue } from "../../_shared/vault/fechas.ts";
 import { findTask } from "../../_shared/vault/match.ts";
-import { corto, hablado, preguntaCual, preguntaDonde, resumenGeneral, resumenTareas } from "../../_shared/vault/speech.ts";
+import { corto, hablado, preguntaCual, preguntaDonde, resumenGeneral, resumenTareas, vozCual, vozTareas } from "../../_shared/vault/speech.ts";
 import { classify, INBOX_FOLDER, resolveFolder } from "../../_shared/vault/taxonomy.ts";
 import { cleanText, isLevel, isStatus, type TaskStatus } from "../../_shared/vault/tasks.ts";
 import type { TaskRow } from "../../_shared/vault/types.ts";
@@ -19,7 +19,8 @@ const rules = `TAREAS (Norte, el vault de David):
 - Una tarea es algo por hacer. "agrega / anota / apunta / recuérdame … (algo pendiente)" → create_task. "ya terminé / completé / hice X", "marca X como hecha", "reabre X", "X está en curso" → update_task. "qué tengo pendiente / vencidas / para hoy / en el cajón / de <proyecto>" → list_tasks.
 - "pagué / gasté / compré" es finanzas, no tareas.
 - Fechas: pásalas como las dice David ("hoy", "mañana", "viernes", "+3") o AAAA-MM-DD si dice día y mes; no hagas cuentas de calendario.
-- Proyecto: pasa sus palabras ("acme ventas", "mi proyecto") sin inventar nombres. Si no menciona proyecto, déjalo vacío: va al cajón.`;
+- Proyecto: pasa sus palabras ("acme ventas", "mi proyecto") sin inventar nombres. Si no menciona proyecto, déjalo vacío: va al cajón.
+- Voz: una frase; el detalle va a la pantalla.`;
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 const err = (message: string): ToolResult => ({ action: "error", message });
@@ -59,18 +60,27 @@ const listTasks: Handler = async (args, ctx) => {
   const abiertas = view.groups.flatMap((g) => g.tasks);
   const filter = str(args.filter);
 
+  // `message` es lo que se ve (hasta 3 tareas); `voz`, lo que se dice (la primera y «y N más»).
   let message: string;
+  let voz: string;
   let lista: ViewTask[] = [];
   if (filter === "overdue") {
     lista = abiertas.filter((t) => t.overdue).sort((a, b) => (a.due ?? "").localeCompare(b.due ?? ""));
     message = resumenTareas("overdue", lista);
+    voz = vozTareas("overdue", lista);
   } else if (filter === "today") {
     lista = abiertas.filter((t) => t.due === hoy);
     message = resumenTareas("today", lista);
-    if (view.counts.overdue > 0) message += ` Además tienes ${view.counts.overdue} ${view.counts.overdue === 1 ? "vencida" : "vencidas"}.`;
+    voz = vozTareas("today", lista);
+    if (view.counts.overdue > 0) {
+      const ademas = ` Además tienes ${view.counts.overdue} ${view.counts.overdue === 1 ? "vencida" : "vencidas"}.`;
+      message += ademas;
+      voz += ademas;
+    }
   } else if (filter === "inbox") {
     lista = view.inbox;
     message = resumenTareas("inbox", lista);
+    voz = vozTareas("inbox", lista);
   } else if (filter === "project") {
     const m = resolveFolder(args.project, env.config, folders);
     if (m.kind === "none") return err(`No encontré un proyecto que se parezca a «${corto(str(args.project), 40)}».`);
@@ -79,11 +89,14 @@ const listTasks: Handler = async (args, ctx) => {
     const infos = m.kind === "one" ? [m.info] : m.options;
     const carpetas = new Set(infos.map((i) => i.folder));
     lista = infos[0].scope === "cajon" ? view.inbox : abiertas.filter((t) => carpetas.has(t.folder));
-    message = resumenTareas("project", lista, { projectLabel: m.kind === "one" ? hablado(m.info) : m.options[0].project });
+    const projectLabel = m.kind === "one" ? hablado(m.info) : m.options[0].project;
+    message = resumenTareas("project", lista, { projectLabel });
+    voz = vozTareas("project", lista, { projectLabel });
   } else {
     message = resumenGeneral(view.counts);
+    voz = resumenGeneral(view.counts, false);
   }
-  return { action: "list_tasks", message, data: { tasks: lista.slice(0, 10).map(compact), counts: view.counts } };
+  return { action: "list_tasks", message, voz, data: { tasks: lista.slice(0, 10).map(compact), counts: view.counts } };
 };
 
 // --- create_task -----------------------------------------------------------------------------------
@@ -94,12 +107,16 @@ const createTaskTool: Handler = async (args, ctx) => {
 
   let folder = INBOX_FOLDER;
   let aviso = "";
+  let avisoVoz = "";
   const proyecto = str(args.project).trim();
   if (proyecto) {
     const m = resolveFolder(proyecto, env.config, await knownFolders(db, userId));
     if (m.kind === "one") folder = m.info.folder;
     else if (m.kind === "many") return { action: "clarify", message: preguntaDonde(m.options) };
-    else aviso = ` No encontré el proyecto «${corto(proyecto, 40)}», así que quedó en el cajón.`;
+    else {
+      aviso = ` No encontré el proyecto «${corto(proyecto, 40)}», así que quedó en el cajón.`;
+      avisoVoz = " No encontré ese proyecto.";
+    }
   }
 
   let due: string | null = null;
@@ -119,16 +136,22 @@ const createTaskTool: Handler = async (args, ctx) => {
   }, hoy);
   const donde = folder === INBOX_FOLDER ? "el cajón" : hablado(classify(folder, env.config));
   const guardado = r.task?.text ?? cleanText(text); // lo realmente guardado (sin # de tags ni emojis de metadata)
-  const base = `Listo, anoté «${corto(guardado, 60)}» en ${donde}${r.due ? ` para ${fechaHablada(r.due, hoy)}` : ""}.${aviso}`;
-  return { action: "create_task", message: conComentario(base, args), data: r.task };
+  const cuando = r.due ? ` para ${fechaHablada(r.due, hoy)}` : "";
+  // Pantalla: con el texto de la tarea. Voz: sin repetirlo (David acaba de decirlo), solo dónde quedó y para cuándo.
+  return {
+    action: "create_task",
+    message: conComentario(`Anoté «${corto(guardado, 60)}» en ${donde}${cuando}.${aviso}`, args),
+    voz: conComentario(`Anotado en ${donde}${cuando}.${avisoVoz}`, args),
+    data: r.task,
+  };
 };
 
 // --- update_task -----------------------------------------------------------------------------------
 const VERBO: Record<TaskStatus, (t: string, cambio: boolean) => string> = {
-  completed: (t, c) => (c ? `Listo, completé «${t}».` : `«${t}» ya estaba completada.`),
+  completed: (t, c) => (c ? `Completé «${t}».` : `«${t}» ya estaba completada.`),
   pending: (t, c) => (c ? `Reabrí «${t}».` : `«${t}» ya estaba abierta.`),
-  "in-progress": (t) => `Listo, «${t}» queda en curso.`,
-  "need-help": (t) => `Anotado: «${t}» necesita ayuda.`,
+  "in-progress": (t) => `«${t}» queda en curso.`,
+  "need-help": (t) => `«${t}» necesita ayuda.`,
   failed: (t) => `Marqué «${t}» como fallida.`,
 };
 
@@ -148,7 +171,8 @@ const updateTask: Handler = async (args, ctx) => {
     if (intento === 1) await syncIndex(db, userId, env, { maxAgeMs: 30_000 }); // si acaba de sincronizar, no vuelve a pedir el árbol
     const found = findTask(search, candidatas(await loadTaskRows(db, userId)), env.config);
     if (found.kind === "many") {
-      return { action: "clarify", message: preguntaCual(found.matches.map((m) => toViewTask(m.row, env.config, hoy))) };
+      const opciones = found.matches.map((m) => toViewTask(m.row, env.config, hoy));
+      return { action: "clarify", message: preguntaCual(opciones), voz: vozCual(opciones) };
     }
     if (found.kind === "none") {
       if (intento === 0) continue;
@@ -157,7 +181,13 @@ const updateTask: Handler = async (args, ctx) => {
     const row = found.match.row;
     try {
       const r = await setTaskStatus(db, userId, env, { path: row.path, line: row.line, raw: row.raw, status }, hoy);
-      return { action: "update_task", message: conComentario(VERBO[status](corto(row.text, 60), r.changed), args), data: r.task };
+      // La voz nombra la tarea (corta): el emparejamiento es aproximado y oírla confirma que se tocó la correcta.
+      return {
+        action: "update_task",
+        message: conComentario(VERBO[status](corto(row.text, 60), r.changed), args),
+        voz: conComentario(VERBO[status](corto(row.text, 32), r.changed), args),
+        data: r.task,
+      };
     } catch (e) {
       if (e instanceof TaskNotFoundError && intento === 0) continue;
       throw e;

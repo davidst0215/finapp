@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { argumentos, respuestaInservible } from "./respuesta.ts";
+import { argumentos, conDetalle, loQueSeDice, respuestaInservible } from "./respuesta.ts";
 
 const call = (name: string, args: unknown) => ({ function: { name, arguments: typeof args === "string" ? args : JSON.stringify(args) } });
 
@@ -40,4 +40,29 @@ test("respuestas reales cortas o que mencionan 'revisando' en medio no se reinte
   for (const a of ["Sí, ya lo anoté.", "Llevas S/ 20.50 este mes.", "Estoy revisando que todo cuadre: vas bien.", "Sí", "No", "Ok", "Revisando tus gastos: gastaste S/ 450 en comida este mes.", "Déjame ver… tienes 3 deudas activas"]) {
     assert.equal(respuestaInservible(call("query", { answer: a })), false, a);
   }
+});
+
+test("loQueSeDice: `voz` si el handler la trae; si no, el mismo `message` (cliente y servidor viejos siguen igual)", () => {
+  assert.equal(loQueSeDice({ message: "Mañana tienes 3 eventos: a las nueve, Daily; a las once, Comité; y 1 más.", voz: "Mañana tienes 3 eventos; el primero, a las nueve." }), "Mañana tienes 3 eventos; el primero, a las nueve.");
+  assert.equal(loQueSeDice({ message: "Gasto de S/ 25.00 en almuerzo." }), "Gasto de S/ 25.00 en almuerzo.");
+  assert.equal(loQueSeDice({ message: "Hola.", voz: "   " }), "Hola.");
+  assert.equal(loQueSeDice({ message: "Hola.", voz: 42 }), "Hola.");
+  assert.equal(loQueSeDice({ message: undefined, voz: undefined }), "");
+});
+
+test("conDetalle: la frase se dice y el detalle se ve; sin detalle, la pantalla muestra la misma frase", () => {
+  const con = conDetalle("analyze_finances", {
+    analysis_type: "overview",
+    answer: "S/ 312 esta semana, casi todo en comida.",
+    detalle: "Esta semana gastaste S/ 312.30: comida S/ 168.90, entretenimiento S/ 85.00 y transporte S/ 58.40.",
+  });
+  assert.equal(con.voz, "S/ 312 esta semana, casi todo en comida.");
+  assert.match(con.message, /comida S\/ 168\.90, entretenimiento S\/ 85\.00/);
+  assert.equal(loQueSeDice(con), con.voz); // lo que se habla es la frase, no el desglose
+  const sin = conDetalle("query", { answer: "  Son las cuatro de la tarde.  " });
+  assert.deepEqual(sin, { action: "query", message: "Son las cuatro de la tarde.", voz: "Son las cuatro de la tarde." });
+  assert.equal(conDetalle("query", { answer: "Hola.", detalle: "   " }).message, "Hola."); // detalle en blanco no pisa la frase
+  assert.equal(conDetalle("query", { answer: "Hola.", detalle: 42 }).message, "Hola.");
+  // La frase sigue siendo lo que valida respuestaInservible: un `detalle` no rescata un `answer` vacío.
+  assert.equal(respuestaInservible(call("analyze_finances", { analysis_type: "overview", answer: "", detalle: "Mucho texto de pantalla sin frase hablada" })), true);
 });

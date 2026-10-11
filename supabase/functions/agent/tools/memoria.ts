@@ -10,7 +10,8 @@ import { fuenteHablada } from "../../_shared/vault/search.ts";
 const rules = `MEMORIA DE PROYECTOS:
 - Preguntas sobre lo que David sabe o dejó anotado de sus proyectos y clientes (estado, decisiones, trampas conocidas, repos, personas, cómo se despliega algo, qué es X) → search_memory. No la uses para gastos ni para tareas.
 - "Contexto de X", "qué sé de X", "en qué va X", "háblame de X", "trampas de X": mira el CATÁLOGO DE FICHAS del contexto y pasa en fichas el slug (máximo 2) que corresponda por significado, aunque la voz lo escriba distinto ("nova fondos" = novafondos). Con varias fichas del mismo proyecto, elige la que trata el tema preguntado (el hub si preguntan en general).
-- query = solo las palabras clave de la pregunta, sin relleno. Si nada del catálogo corresponde, deja fichas vacío.`;
+- query = solo las palabras clave de la pregunta, sin relleno. Si nada del catálogo corresponde, deja fichas vacío.
+- Voz: una frase; la fuente y el detalle van a la pantalla.`;
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 
@@ -39,7 +40,8 @@ async function searchMemoryTool(args: Record<string, unknown>, ctx: AgentContext
       return { action: "search_memory", message: res.indexed === 0 ? "Todavía no tengo fichas indexadas. Abre Tareas para sincronizar el vault." : "No encontré nada sobre eso en tus fichas." };
     }
     const fuentes = res.sources.map((s) => ({ title: s.title, slug: s.slug, path: s.path }));
-    if (res.spoken) return { action: "search_memory", message: res.spoken, data: { sources: fuentes } };
+    // Pantalla: la respuesta con su fuente. Voz: solo la respuesta, sin «Fuente: …».
+    if (res.spoken) return { action: "search_memory", message: res.spoken, voz: res.voz ?? undefined, data: { sources: fuentes } };
 
     // Sin respuesta redactada (modelo caído): se dicen las fichas encontradas.
     const titulos = res.sources.slice(0, 3).map((s) => fuenteHablada(s.title)).join("; ");
@@ -47,6 +49,7 @@ async function searchMemoryTool(args: Record<string, unknown>, ctx: AgentContext
     return {
       action: "search_memory",
       message: `Encontré ${n} ${n === 1 ? "ficha" : "fichas"} sobre eso: ${titulos}. No pude redactar la respuesta ahora.`,
+      voz: `Encontré ${n} ${n === 1 ? "ficha" : "fichas"}, pero no pude redactar la respuesta.`,
       data: { sources: fuentes },
     };
   } catch (e) {
