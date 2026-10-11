@@ -62,6 +62,7 @@ Cada módulo se entrega a producción por separado (rama → PR → merge → de
 | claude-code | `008_claude_code.sql`, `012_claude_code_v2.sql` (ver `SPEC-claude-code-v2.md`) | `functions/claude-events/`, `tools/claude-hooks/*` (script local), `routes/modulos/ClaudeCodePage.tsx`, `components/claude/*` |
 | reuniones (2ª ola) | `009_reuniones.sql` | `functions/fathom/`, `agent/tools/reuniones.ts`, `routes/modulos/ReunionesPage.tsx`, `components/reuniones/*` |
 | brief (2ª ola) | `010_brief.sql` | `functions/brief/`, `routes/modulos/BriefPage.tsx`, `components/brief/*` |
+| avisos programados (recordatorios, vencimientos, presupuestos) | `017_avisos_programados.sql` (+ `check-017.mjs`) | `functions/avisos/`, `agent/tools/avisos*.ts`, `components/avisos/{Recordatorios,AvisosAutomaticos,SwitchRow,useProgramados}.*`; toca `_shared/notify.ts` (exporta dos funciones), `agent/tools/tareas*.ts` («recuérdame» crea el aviso) |
 
 Archivos compartidos que se pueden tocar con una sola línea: `agent/registry.ts` (import + entrada).
 

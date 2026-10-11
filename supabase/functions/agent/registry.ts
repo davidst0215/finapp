@@ -1,4 +1,5 @@
 import { agenda } from "./tools/agenda.ts";
+import { avisos } from "./tools/avisos.ts";
 import { brief } from "./tools/brief.ts";
 import { correo } from "./tools/correo.ts";
 import { finanzas } from "./tools/finanzas.ts";
@@ -38,4 +39,5 @@ export const MODULES: AgentModule<any>[] = [
   memoria,
   internet,
   saldo,
+  avisos,
 ];

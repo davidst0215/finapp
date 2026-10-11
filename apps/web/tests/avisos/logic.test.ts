@@ -9,6 +9,7 @@ import {
   describeTest,
   devicePhase,
   deviceText,
+  formatCuando,
   formatRelative,
   isAppPath,
   kindLabel,
@@ -60,6 +61,38 @@ test("formatRelative: 'ayer' es el día calendario de Lima, no 24 horas", () => 
 
 test("formatRelative: una fecha futura (reloj desfasado) se lee como ahora", () => {
   assert.equal(formatRelative("2026-10-04T15:05:00Z", AHORA), "ahora");
+});
+
+// Domingo 11 de octubre de 2026, 12:00 en Lima (17:00 UTC).
+const DOMINGO = new Date("2026-10-11T17:00:00Z");
+
+test("formatCuando: hoy, mañana y días más lejanos, con la hora de Lima en 12 h", () => {
+  const casos: Array<[string, string]> = [
+    ["2026-10-11T22:00:00Z", "hoy · 5:00 p. m."],
+    ["2026-10-12T14:00:00Z", "mañana · 9:00 a. m."],
+    ["2026-10-15T14:00:00Z", "jue 15 oct · 9:00 a. m."],
+    ["2026-10-11T17:30:00Z", "hoy · 12:30 p. m."], // mediodía
+    ["2026-10-12T05:05:00Z", "mañana · 12:05 a. m."], // 00:05 de Lima: la primera hora del día es "12", no "0"
+    ["2027-01-05T15:00:00Z", "mar 5 ene 2027 · 10:00 a. m."], // otro año: lo dice
+  ];
+  for (const [iso, esperado] of casos) assert.equal(formatCuando(iso, DOMINGO), esperado, iso);
+});
+
+test("formatCuando: el día es el de Lima aunque en UTC ya sea otro (22:30 del domingo en Lima)", () => {
+  const noche = new Date("2026-10-12T03:30:00Z"); // domingo 11, 22:30 en Lima; en UTC ya es lunes 12
+  assert.equal(formatCuando("2026-10-12T04:00:00Z", noche), "hoy · 11:00 p. m."); // 23:00 del 11 en Lima
+  assert.equal(formatCuando("2026-10-12T13:00:00Z", noche), "mañana · 8:00 a. m.");
+  assert.equal(formatCuando("2026-10-13T13:00:00Z", noche), "mar 13 oct · 8:00 a. m.");
+  // cambio de mes: 23:50 del 31 de octubre en Lima
+  const finDeMes = new Date("2026-11-01T04:50:00Z");
+  assert.equal(formatCuando("2026-11-01T05:10:00Z", finDeMes), "mañana · 12:10 a. m."); // 00:10 del 1 de noviembre
+  assert.equal(formatCuando("2026-11-03T14:00:00Z", finDeMes), "mar 3 nov · 9:00 a. m.");
+});
+
+test("formatCuando: si la hora ya llegó y sigue pendiente, está por salir; una fecha rota no se pinta", () => {
+  assert.equal(formatCuando("2026-10-11T16:59:00Z", DOMINGO), "ahora");
+  assert.equal(formatCuando("2026-10-11T17:00:00Z", DOMINGO), "ahora");
+  assert.equal(formatCuando("no es fecha", DOMINGO), "");
 });
 
 test("isAppPath: tocar un aviso nunca saca al usuario de la app", () => {
