@@ -4,27 +4,37 @@
 import { comentario, conComentario } from "../prompt.ts";
 import { type AgentContext, type AgentModule, type ToolResult, tool } from "../types.ts";
 import {
-  assertOwner, createTask, ensureIndexed, GitHubError, knownFolders, loadTaskRows, PartialMoveError, setTaskStatus, syncIndex,
-  TaskNotFoundError, VaultError, vaultEnv,
+  assertOwner, createTask, ensureIndexed, GitHubError, knownFolders, loadTaskRows, PartialMoveError, resolverProyectoDicho, setTaskStatus,
+  syncIndex, TaskNotFoundError, VaultError, vaultEnv,
 } from "../../_shared/vault.ts";
-import { fechaHablada, resolveDue } from "../../_shared/vault/fechas.ts";
+import { fechaHablada, relojLima } from "../../_shared/vault/fechas.ts";
 import { findTask } from "../../_shared/vault/match.ts";
-import { corto, hablado, preguntaCual, preguntaDonde, resumenGeneral, resumenTareas, vozCual, vozTareas } from "../../_shared/vault/speech.ts";
-import { classify, INBOX_FOLDER, resolveFolder } from "../../_shared/vault/taxonomy.ts";
+import { destinoHablado, preguntaProyecto, type Resolucion } from "../../_shared/vault/proyectos.ts";
+import { corto, preguntaCual, resumenGeneral, resumenTareas, vozCual, vozTareas } from "../../_shared/vault/speech.ts";
 import { cleanText, isLevel, isStatus, type TaskStatus } from "../../_shared/vault/tasks.ts";
 import type { TaskRow } from "../../_shared/vault/types.ts";
 import { buildTasksView, isOpen, toViewTask, type ViewTask } from "../../_shared/vault/view.ts";
+import { planearTarea } from "./tareasPlan.ts";
 
 const rules = `TAREAS (Norte, el vault de David):
-- Una tarea es algo por hacer. "agrega / anota / apunta / recuérdame … (algo pendiente)" → create_task. "ya terminé / completé / hice X", "marca X como hecha", "reabre X", "X está en curso" → update_task. "qué tengo pendiente / vencidas / para hoy / en el cajón / de <proyecto>" → list_tasks.
+- Tarea = algo por hacer. "agrega / anota / apunta / agéndame / recuérdame …" → create_task. "ya terminé / completé X", "marca X como hecha", "reabre X", "X está en curso" → update_task. "qué tengo pendiente / vencidas / para hoy / en el cajón / de <proyecto>" → list_tasks.
+- "agéndame revisar X el jueves", "pendiente para mañana a las 5", "recuérdame X el lunes" → create_task con due y, si dio hora, time en 24 h ("a las 5" de la tarde = 17:00). Calendario (calendar_create_event) solo si dice "en mi calendario" o es una reunión o cita.
+- "Recuérdame" no suena a la hora: el resumen de las 7:00 del día incluye la tarea. No prometas una alarma.
 - "pagué / gasté / compré" es finanzas, no tareas.
-- Fechas: pásalas como las dice David ("hoy", "mañana", "viernes", "+3") o AAAA-MM-DD si dice día y mes; no hagas cuentas de calendario.
-- Proyecto: pasa sus palabras ("acme ventas", "mi proyecto") sin inventar nombres. Si no menciona proyecto, déjalo vacío: va al cajón.
+- Fechas y horas son de Lima, como las dice David ("hoy", "mañana", "viernes", "+3") o AAAA-MM-DD si dice día y mes; no hagas cuentas de calendario.
+- Proyecto: sus palabras tal cual ("nova fondos", "tdv bolsa", "maqui perú"); el sistema las reconoce. Sin proyecto, vacío: va al cajón. Si el sistema pregunta cuál ("¿app o normativa?") o confirma ("¿En Vera?") y David responde, repite create_task con la tarea original (mira el historial) y el proyecto completo.
 - Voz: una frase; el detalle va a la pantalla.`;
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 const err = (message: string): ToolResult => ({ action: "error", message });
-const hoyDe = (ctx: AgentContext) => ctx.limaNow.toISOString().slice(0, 10);
+const hoyDe = (ctx: AgentContext) => relojLima(ctx.limaNow).hoy;
+
+/** Una línea por proyecto pedido, sin el texto de David: sirve para ver cuántas veces no se encuentra o queda ambiguo. */
+const logProyecto = (m: Resolucion) =>
+  console.log(JSON.stringify({
+    evt: "tareas", proyecto_resuelto: m.kind === "one", candidatos: m.kind === "one" ? 1 : m.kind === "many" ? m.opciones.length : 0,
+    aproximado: m.kind !== "none" && m.aproximado,
+  }));
 
 /** Errores de dominio → frase para decir en voz; lo inesperado se registra sin datos y se dice genérico. */
 function mensajeError(e: unknown): string {
@@ -82,14 +92,15 @@ const listTasks: Handler = async (args, ctx) => {
     message = resumenTareas("inbox", lista);
     voz = vozTareas("inbox", lista);
   } else if (filter === "project") {
-    const m = resolveFolder(args.project, env.config, folders);
+    const { r: m } = await resolverProyectoDicho(db, userId, env.config, args.project);
+    logProyecto(m);
     if (m.kind === "none") return err(`No encontré un proyecto que se parezca a «${corto(str(args.project), 40)}».`);
-    const mismoProyecto = m.kind === "many" && m.options.every((o) => o.project === m.options[0].project);
-    if (m.kind === "many" && !mismoProyecto) return { action: "clarify", message: preguntaDonde(m.options) };
-    const infos = m.kind === "one" ? [m.info] : m.options;
-    const carpetas = new Set(infos.map((i) => i.folder));
-    lista = infos[0].scope === "cajon" ? view.inbox : abiertas.filter((t) => carpetas.has(t.folder));
-    const projectLabel = m.kind === "one" ? hablado(m.info) : m.options[0].project;
+    // Varios frentes del mismo proyecto ("maqui perú") se listan juntos; entre proyectos distintos se pregunta.
+    if (m.kind === "many" && !m.mismoGrupo) return { action: "clarify", ...preguntaProyecto(m) };
+    const destinos = m.kind === "one" ? [m.destino] : m.opciones;
+    const carpetas = new Set(destinos.map((d) => d.folder));
+    lista = destinos[0].scope === "cajon" ? view.inbox : abiertas.filter((t) => carpetas.has(t.folder));
+    const projectLabel = m.kind === "one" ? destinoHablado(m.destino) : destinos[0].grupoEtiqueta;
     message = resumenTareas("project", lista, { projectLabel });
     voz = vozTareas("project", lista, { projectLabel });
   } else {
@@ -102,46 +113,30 @@ const listTasks: Handler = async (args, ctx) => {
 // --- create_task -----------------------------------------------------------------------------------
 const createTaskTool: Handler = async (args, ctx) => {
   const { env, db, userId, hoy } = acceso(ctx);
-  const text = str(args.text).trim();
-  if (!text) return err("No entendí qué tarea anotar.");
-
-  let folder = INBOX_FOLDER;
-  let aviso = "";
-  let avisoVoz = "";
-  const proyecto = str(args.project).trim();
-  if (proyecto) {
-    const m = resolveFolder(proyecto, env.config, await knownFolders(db, userId));
-    if (m.kind === "one") folder = m.info.folder;
-    else if (m.kind === "many") return { action: "clarify", message: preguntaDonde(m.options) };
-    else {
-      aviso = ` No encontré el proyecto «${corto(proyecto, 40)}», así que quedó en el cajón.`;
-      avisoVoz = " No encontré ese proyecto.";
-    }
-  }
-
-  let due: string | null = null;
-  const dueRaw = str(args.due).trim();
-  if (dueRaw) {
-    due = resolveDue(dueRaw, hoy);
-    if (!due) return { action: "clarify", message: `No entendí la fecha «${corto(dueRaw, 30)}». Dímela como mañana, el viernes o el 15 de octubre.` };
-  }
+  // El proyecto solo se busca si David nombró uno: sin proyecto la tarea va al cajón. (Con el índice ligero; el completo, si hace falta.)
+  const dicho = str(args.project).trim();
+  const resuelto = dicho ? (await resolverProyectoDicho(db, userId, env.config, dicho)).r : null;
+  const planeado = planearTarea(args, { hoy, minutos: relojLima(ctx.limaNow).minutos, dictado: ctx.text }, resuelto ? () => resuelto : null);
+  const pedido = "plan" in planeado ? planeado.plan.proyecto : planeado.proyecto;
+  if (pedido) logProyecto(pedido);
+  if ("respuesta" in planeado) return planeado.respuesta;
+  const { plan } = planeado;
 
   const r = await createTask(db, userId, env, {
-    text,
-    folder,
-    due,
+    text: plan.text,
+    folder: plan.folder,
+    due: plan.due,
     level: isLevel(args.priority) ? args.priority : undefined,
     shared: str(args.with).trim() || undefined,
-    note: str(args.note).trim() || undefined,
+    note: plan.note ?? undefined,
   }, hoy);
-  const donde = folder === INBOX_FOLDER ? "el cajón" : hablado(classify(folder, env.config));
-  const guardado = r.task?.text ?? cleanText(text); // lo realmente guardado (sin # de tags ni emojis de metadata)
-  const cuando = r.due ? ` para ${fechaHablada(r.due, hoy)}` : "";
+  const guardado = r.task?.text ?? cleanText(plan.text); // lo realmente guardado (sin # de tags ni emojis de metadata)
+  const cuando = r.due ? ` para ${fechaHablada(r.due, hoy)}${plan.hora ? ` a ${plan.horaHablada}` : ""}` : "";
   // Pantalla: con el texto de la tarea. Voz: sin repetirlo (David acaba de decirlo), solo dónde quedó y para cuándo.
   return {
     action: "create_task",
-    message: conComentario(`Anoté «${corto(guardado, 60)}» en ${donde}${cuando}.${aviso}`, args),
-    voz: conComentario(`Anotado en ${donde}${cuando}.${avisoVoz}`, args),
+    message: conComentario(`Anoté «${corto(guardado, 60)}» en ${plan.donde}${cuando}.${plan.aviso}${plan.recordatorio}`, args),
+    voz: conComentario(`Anotado en ${plan.donde}${cuando}.${plan.avisoVoz}`, args),
     data: r.task,
   };
 };
@@ -204,10 +199,11 @@ export const tareas: AgentModule = {
       filter: { type: "string", enum: ["today", "overdue", "project", "inbox", "summary"], description: "today=para hoy, overdue=vencidas, project=de un proyecto/frente, inbox=cajón desastre, summary=resumen general" },
       project: { type: "string", description: "Solo con filter=project: proyecto o frente con las palabras de David" },
     }, ["filter"]),
-    tool("create_task", "Crea una tarea nueva en Norte (algo por hacer: 'agrega', 'anota', 'recuérdame…').", {
+    tool("create_task", "Crea una tarea nueva en Norte (algo por hacer: 'agrega', 'anota', 'agéndame…', 'recuérdame…'), con fecha y hora si las dijo.", {
       text: { type: "string", description: "La tarea, corta y en infinitivo (ej. 'Llamar a Ana')" },
-      project: { type: "string", description: "Proyecto o frente con las palabras de David; vacío si no lo dijo (va al cajón)" },
+      project: { type: "string", description: "Proyecto o frente con las palabras de David ('nova fondos', 'maqui colombia cobranzas'); vacío si no lo dijo (va al cajón)" },
       due: { type: "string", description: "Cuándo: 'hoy', 'mañana', 'viernes', '+3' o AAAA-MM-DD si dijo día y mes" },
+      time: { type: "string", description: "Hora en 24 h HH:MM si la dijo ('a las 5' de la tarde = 17:00); vacío si no" },
       priority: { type: "string", enum: ["alto", "medio", "bajo"] },
       with: { type: "string", description: "Persona, si es trabajo conjunto o si espera algo de ella" },
       note: { type: "string", description: "Detalle adicional, opcional" },

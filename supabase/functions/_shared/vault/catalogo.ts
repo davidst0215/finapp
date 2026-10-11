@@ -16,7 +16,9 @@ export const MAX_CATALOGO_CHARS = 5000;
 export const MAX_FICHAS_CATALOGO = 80;
 export const MAX_FICHAS_ELEGIDAS = 2;
 export const MAX_FICHA_CHARS = 6000;
-export const MAX_FICHA_SOLA = 9000; // si el modelo elige una sola ficha, puede leerse más
+// Si el modelo elige una sola ficha, se lee casi entera. Las 49 fichas de hoy miden 12 090 caracteres como máximo (cinco pasan
+// de 9 000 y perdían secciones): 20 000 las deja a todas completas por ~1 000 tokens más en esas pocas.
+export const MAX_FICHA_SOLA = 20_000;
 const TITULO_MAX = 70;
 const FRASES = [100, 70, 40, 0]; // largo máximo de la frase "Qué es"; baja hasta que el catálogo cabe
 
@@ -173,6 +175,74 @@ export function recortarFicha(content: string, max = MAX_FICHA_CHARS, pregunta =
   }
   const cuerpo = [...elegidas.entries()].sort((a, b) => a[0] - b[0]).map(([, p]) => p).join("\n\n");
   return cuerpo + AVISO;
+}
+
+/** ¿`recortarFicha` tuvo que dejar partes fuera? (lleva su aviso al final) */
+export const fueRecortada = (texto: string): boolean => texto.endsWith("[ficha recortada]");
+
+// Palabras de pregunta que no identifican nada en una ficha.
+const VACIAS = new Set([
+  "sobre", "donde", "cuando", "como", "cual", "cuales", "quien", "quienes", "cuanto", "cuantos", "cuanta", "para", "entre", "desde", "hasta",
+  "tiene", "tengo", "tenemos", "hace", "hacer", "esta", "este", "esto", "estos", "estas", "pero", "porque", "segun", "tambien", "puede", "pueden",
+  "hemos", "habia", "algo", "todo", "toda", "todos", "todas", "ficha", "fichas", "proyecto", "quedo", "queda", "cosa", "cosas",
+]);
+
+/** Raíces (5 letras) de las palabras con contenido de la pregunta, sin repetir: "cesión" → "cesio". Como mucho 8. */
+export function palabrasClave(pregunta: string): string[] {
+  const out: string[] = [];
+  for (const w of sinAcentos(pregunta).split(/[^a-z0-9ñ]+/)) {
+    if (w.length < 4 || VACIAS.has(w)) continue;
+    const r = w.slice(0, 5);
+    if (!out.includes(r)) out.push(r);
+  }
+  return out.slice(0, 8);
+}
+
+/**
+ * Las partes de la ficha que mencionan las palabras de la pregunta: cada línea que coincide con la anterior y la siguiente, bajo
+ * su encabezado, las de más coincidencias primero hasta `max` caracteres, y en su orden original. "" si nada coincide. Es la
+ * segunda oportunidad cuando la ficha se leyó recortada y la respuesta salió «No lo encuentro».
+ */
+export function fragmentosDeFicha(content: string, pregunta: string, max = 4500): string {
+  const roots = palabrasClave(pregunta);
+  if (!roots.length) return "";
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const plano = lines.map(sinAcentos);
+  const score = plano.map((l) => roots.reduce((n, r) => n + (l.includes(r) ? 1 : 0), 0));
+
+  type Ventana = { from: number; to: number; score: number };
+  const ventanas: Ventana[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (score[i] === 0) continue;
+    const from = Math.max(0, i - 1), to = Math.min(lines.length - 1, i + 1);
+    const ult = ventanas[ventanas.length - 1];
+    if (ult && from <= ult.to + 1) {
+      ult.to = Math.max(ult.to, to);
+      ult.score += score[i];
+    } else {
+      ventanas.push({ from, to, score: score[i] });
+    }
+  }
+  if (!ventanas.length) return "";
+
+  const titulo = lines.find((l) => /^#\s/.test(l)) ?? "";
+  const encabezado = (idx: number): string => {
+    for (let k = idx; k >= 0; k--) if (/^#{2,}\s/.test(lines[k])) return lines[k];
+    return "";
+  };
+  const elegidas: { from: number; texto: string }[] = [];
+  let usado = titulo.length;
+  for (const v of [...ventanas].sort((a, b) => b.score - a.score || a.from - b.from)) {
+    let texto = lines.slice(v.from, v.to + 1).join("\n").trim().slice(0, max); // el tope solo defiende de una línea gigante
+    const h = encabezado(v.from);
+    if (h && !texto.startsWith(h)) texto = `${h}\n${texto}`;
+    if (usado + texto.length + 3 > max) continue;
+    elegidas.push({ from: v.from, texto });
+    usado += texto.length + 3;
+  }
+  if (!elegidas.length) return "";
+  elegidas.sort((a, b) => a.from - b.from);
+  return [titulo, ...elegidas.map((e) => e.texto)].filter(Boolean).join("\n…\n");
 }
 
 // --- Caché por instancia ----------------------------------------------------------------------------------

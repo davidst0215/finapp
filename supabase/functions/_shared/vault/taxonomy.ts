@@ -5,6 +5,7 @@
 // La configuración real NO vive en el código (el repo es público): llega por la variable VAULT_PROJECTS_JSON
 // con el mismo JSON que usa Norte. Sin ella todo se trata como personal y sigue funcionando.
 // Puro: sin globals de Deno.
+import { coincide, norm } from "../texto.ts";
 
 export const INBOX_FOLDER = "cajon-desastre";
 export const INBOX_LABEL = "Cajón desastre";
@@ -103,9 +104,6 @@ export function listDestinations(cfg: Config, knownFolders: string[]): FolderInf
 }
 
 // --- Texto libre → carpeta (para la voz) ---------------------------------------------------------
-const norm = (s: string) =>
-  s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-
 const STOP = new Set([
   "de", "del", "la", "el", "los", "las", "en", "y", "a", "al", "para", "un", "una", "con", "mi", "mis",
   "proyecto", "frente", "carpeta", "tarea", "tareas", "pendiente", "pendientes", "lista",
@@ -114,8 +112,7 @@ const STOP = new Set([
 export const tokens = (s: string): string[] => norm(s).split(" ").filter((t) => t && !STOP.has(t));
 
 /** Dos palabras coinciden si son iguales o una es prefijo de la otra (plurales, "costo"/"costos"). */
-export const tokenMatch = (a: string, b: string): boolean =>
-  a === b || (a.length >= 4 && b.length >= 4 && (a.startsWith(b) || b.startsWith(a)));
+export const tokenMatch = coincide;
 
 export type FolderMatch =
   | { kind: "one"; info: FolderInfo }

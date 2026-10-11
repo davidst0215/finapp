@@ -3,14 +3,16 @@
 // "nova fondos" → novafondos); el handler lee esas fichas completas y hace UNA segunda llamada al modelo para redactar
 // una respuesta corta que cita la ficha. Si no eligió ninguna, cae a la búsqueda por palabras (Postgres full-text).
 import { type AgentContext, type AgentModule, type ToolResult, tool } from "../types.ts";
-import { assertOwner, cargarCatalogo, ensureIndexed, GitHubError, searchMemory, VaultError, vaultEnv } from "../../_shared/vault.ts";
+import { assertOwner, cargarCatalogo, carpetasDePendientes, ensureIndexed, GitHubError, searchMemory, VaultError, vaultEnv } from "../../_shared/vault.ts";
 import { type FichaCat, resolverFichas } from "../../_shared/vault/catalogo.ts";
 import { fuenteHablada } from "../../_shared/vault/search.ts";
+import { relojLima } from "../../_shared/vault/fechas.ts";
 
 const rules = `MEMORIA DE PROYECTOS:
 - Preguntas sobre lo que David sabe o dejó anotado de sus proyectos y clientes (estado, decisiones, trampas conocidas, repos, personas, cómo se despliega algo, qué es X) → search_memory. No la uses para gastos ni para tareas.
 - "Contexto de X", "qué sé de X", "en qué va X", "háblame de X", "trampas de X": mira el CATÁLOGO DE FICHAS del contexto y pasa en fichas el slug (máximo 2) que corresponda por significado, aunque la voz lo escriba distinto ("nova fondos" = novafondos). Con varias fichas del mismo proyecto, elige la que trata el tema preguntado (el hub si preguntan en general).
-- query = solo las palabras clave de la pregunta, sin relleno. Si nada del catálogo corresponde, deja fichas vacío.
+- query = solo las palabras clave de la pregunta (2 a 5 palabras), sin relleno ni la pregunta entera. Si nada del catálogo corresponde, deja fichas vacío.
+- El sistema suma solo los pendientes reales del proyecto (tareas abiertas y hechas) al leer la ficha. "Qué pendientes tengo en X" es list_tasks, no esto.
 - Voz: una frase; la fuente y el detalle van a la pantalla.`;
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
@@ -28,13 +30,24 @@ async function searchMemoryTool(args: Record<string, unknown>, ctx: AgentContext
     const env = vaultEnv();
     assertOwner(ctx.user.id, env);
     await ensureIndexed(ctx.supabase, ctx.user.id, env); // primera vez: trae el vault antes de buscar
-    const q = str(args.query).trim() || ctx.text;
+    // Palabras clave, no un párrafo: un `query` desbocado no debe llegar a la búsqueda ni al modelo que redacta.
+    const delModelo = str(args.query).replace(/\s+/g, " ").trim().slice(0, 160);
+    const q = delModelo || ctx.text.slice(0, 160); // sin palabras clave del modelo se busca con lo que dijo David… pero eso no se registra
     // Solo cuentan los slugs que existen en el catálogo; lo demás se descarta y, sin fichas válidas, se busca por palabras.
     const { validas, descartadas } = resolverFichas(args.fichas, data?.fichas ?? []);
     if (descartadas.length) console.log(JSON.stringify({ evt: "memoria_fichas_descartadas", n: descartadas.length }));
+    // Las tareas reales de los proyectos de la pregunta y de las fichas elegidas son el estado más reciente; el modelo que
+    // redacta responde a lo que David dijo (no solo a las palabras clave).
     const res = await searchMemory(ctx.supabase, ctx.user.id, {
-      q, cliente: str(args.cliente).trim() || undefined, answer: true, fichaPaths: validas.map((f) => f.path),
+      q, pregunta: ctx.text, cliente: str(args.cliente).trim() || undefined, answer: true, fichaPaths: validas.map((f) => f.path),
+      pendientes: await carpetasDePendientes(ctx.supabase, ctx.user.id, env.config, validas.map((f) => f.slug), q), hoy: relojLima(ctx.limaNow).hoy, incluirPendientes: true,
     });
+    // Una línea por búsqueda, sin el texto de David: `query` son las palabras clave que eligió el modelo (acotadas a 60); si el modelo
+    // no las dio y se buscó con el dictado crudo, va vacía.
+    console.log(JSON.stringify({
+      evt: "memoria", fichas: res.meta.fichas, hits: res.meta.hits, encontrado: res.meta.encontrado, redactada: res.meta.redactada, query: delModelo.slice(0, 60),
+      pendientes: res.meta.pendientes, recortada: res.meta.recortada, segunda: res.meta.segunda, ampliada: res.meta.ampliada, llm: res.meta.llm, tok_in: res.meta.tok_in, tok_out: res.meta.tok_out,
+    }));
 
     if (!res.sources.length) {
       return { action: "search_memory", message: res.indexed === 0 ? "Todavía no tengo fichas indexadas. Abre Tareas para sincronizar el vault." : "No encontré nada sobre eso en tus fichas." };
