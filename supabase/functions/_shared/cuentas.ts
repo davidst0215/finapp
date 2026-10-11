@@ -3,6 +3,7 @@
 //
 // Esquema (001_initial_schema.sql): accounts(account_name ≤100, account_type, currency_code → currencies, current_balance,
 // is_active). Los tipos y la moneda salen de ahí; la web (Accounts.tsx) crea cuentas con el mismo juego de campos.
+import { type Cambio, patrimonio, redondear, textoTc } from "./fx.ts";
 import { coincide, cubre, norm } from "./texto.ts";
 import { paraVoz, VOZ_MAX } from "./voz.ts";
 
@@ -231,12 +232,35 @@ export function fraseCuentaCreada(c: CuentaNueva): { message: string; voz: strin
   };
 }
 
-/** Pantalla: todas las cuentas con su saldo. Voz: cuántas hay y el total por moneda (las tarjetas restan: son deuda). */
-export function fraseCuentas(cuentas: CuentaMin[]): { message: string; voz: string } {
+/**
+ * Pantalla: todas las cuentas con su saldo. Voz: cuántas hay y el total (las tarjetas restan: son deuda).
+ * Con `tc` (tipo de cambio USD→PEN) y cuentas en dólares, el total va EN SOLES con los dólares convertidos y la voz solo menciona
+ * los dólares, corto («incluye US$ 500»). Sin `tc`, o con otra moneda de por medio, el total va por moneda (nunca se suman dólares como soles).
+ */
+export function fraseCuentas(cuentas: CuentaMin[], tc?: Cambio): { message: string; voz: string } {
   if (!cuentas.length) {
     return { message: "No tienes cuentas todavía. Dime cómo se llama la primera.", voz: "No tienes cuentas todavía. ¿Cómo se llama la primera?" };
   }
   const saldo = (c: CuentaMin) => Number(c.current_balance ?? 0);
+  const p = patrimonio(cuentas, tc);
+  if (tc && p.hayUsd && !p.otrasMonedas) {
+    const n = cuentas.length;
+    const tienes = `Tienes ${n} ${n === 1 ? "cuenta" : "cuentas"}`;
+    const deuda = (c: CuentaMin) => (c.account_type === "credit_card" ? "debes " : "");
+    const linea = (c: CuentaMin) =>
+      c.currency_code === "USD"
+        ? `${c.account_name}: ${deuda(c)}${monto(saldo(c), "USD")} (≈ ${monto(redondear(saldo(c) * tc.valor), "PEN")})`
+        : `${c.account_name}: ${deuda(c)}${monto(saldo(c), c.currency_code)}`;
+    const incluye = p.usd === 0 ? "" : ` (incluye ${monto(p.usd, "USD")} a TC ${textoTc(tc.valor)})`;
+    return {
+      message: `${tienes}: ${cuentas.map(linea).join("; ")}. Total: ${monto(p.soles, "PEN")}${incluye}.`,
+      voz: queCabe([
+        ...(p.usd === 0 ? [] : [`${tienes}; en total ${monto(Math.round(p.soles), "PEN")}, incluye ${monto(Math.round(p.usd), "USD")}.`]),
+        `${tienes}; en total ${monto(Math.round(p.soles), "PEN")}.`,
+        `${tienes}.`,
+      ]),
+    };
+  }
   const linea = (c: CuentaMin) => `${c.account_name}: ${c.account_type === "credit_card" ? "debes " : ""}${monto(saldo(c), c.currency_code)}`;
   const porMoneda = new Map<string, number>();
   for (const c of cuentas) {

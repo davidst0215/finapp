@@ -5,6 +5,7 @@ import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import { SpendingPieChart } from '@/components/charts/SpendingPieChart';
 import { IncomeExpenseBar } from '@/components/charts/IncomeExpenseBar';
+import { NotaCambio } from '@/components/ui/NotaCambio';
 
 interface Analysis {
   summary: string;
@@ -21,6 +22,9 @@ interface MonthData {
   total_expenses: number;
   net_balance: number;
   transaction_count: number;
+  /** Parte del ingreso / gasto que fue en dólares (ya incluida, convertida a soles). */
+  income_usd?: number;
+  expenses_usd?: number;
 }
 
 interface CategorySpending {
@@ -39,6 +43,7 @@ export function ReportsPage() {
   const [prevMonth, setPrevMonth] = useState<MonthData | null>(null);
   const [categorySpending, setCategorySpending] = useState<CategorySpending[]>([]);
   const [monthlyBarData, setMonthlyBarData] = useState<Array<{ month: string; income: number; expenses: number }>>([]);
+  const [conDolares, setConDolares] = useState(false);
   const [loadingAnalysis, setLoadingAnalysis] = useState(false);
   const [loadingData, setLoadingData] = useState(true);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
@@ -64,12 +69,14 @@ export function ReportsPage() {
     // Barras últimos 6 meses
     const monthNames = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
     const bars = [];
+    let dolares = false;
     for (let i = 5; i >= 0; i--) {
       let m = month - i;
       let y = year;
       if (m <= 0) { m += 12; y -= 1; }
       const { data } = await supabase.rpc('fn_get_monthly_summary', { p_year: y, p_month: m });
       const row = data?.[0] as MonthData | undefined;
+      if (row && (Number(row.income_usd) > 0 || Number(row.expenses_usd) > 0)) dolares = true;
       bars.push({
         month: monthNames[m - 1] ?? '',
         income: row?.total_income ?? 0,
@@ -77,6 +84,7 @@ export function ReportsPage() {
       });
     }
     setMonthlyBarData(bars);
+    setConDolares(dolares);
     setLoadingData(false);
   }
 
@@ -245,6 +253,7 @@ export function ReportsPage() {
             totalExpenses={categorySpending.reduce((s, c) => s + c.total_amount, 0)}
           />
           <IncomeExpenseBar data={monthlyBarData} />
+          {conDolares && <NotaCambio texto="Todo en soles: los movimientos en dólares se convierten con el tipo de cambio de su día." />}
         </>
       )}
     </div>
