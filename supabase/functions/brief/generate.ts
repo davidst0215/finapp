@@ -1,6 +1,7 @@
 // Genera y guarda el brief del día. Lo usan la función `brief` (cron y botón de la web) y la tool del agente.
 // Corre con el cliente de servicio: nunca recibe un user_id del cliente (quien llama ya validó al dueño).
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
+import { type Cambio, historial, type Punto, type Tasa, tipoCambioVigente, ultimaTasa } from "../_shared/fx.ts";
 import { calendarEvents, describeError } from "../_shared/google.ts";
 import { addDays, limaDateKey, limaParts } from "../_shared/google/time.ts";
 import { llmConfigured, llmFetch } from "../_shared/llm.ts";
@@ -14,9 +15,12 @@ import {
   type EventoCrudo,
   type Fuente,
   type FuentesBrief,
+  type GastoCrudo,
+  pagosEnSoles,
   type RecurrenteCrudo,
   type Secciones,
   SISTEMA_BRIEF,
+  sumarEnSoles,
   type TareaCruda,
   corridaReciente,
   vaultSinConectar,
@@ -33,6 +37,7 @@ export type Origen = Brief["origen"];
 const COLUMNAS = "fecha, texto, secciones, creado, origen, notificado";
 const LLM_TIMEOUT_MS = 15_000;
 const PAGINA = 1000; // tope de filas por consulta de PostgREST
+const FX_TIMEOUT_MS = 6_000; // lo más que el brief espera al tipo de cambio
 
 const mensajeError = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -63,26 +68,48 @@ async function leerTareas(db: SupabaseClient, userId: string): Promise<Fuente<Ta
   return { ok: true, data: (data ?? []) as TareaCruda[] };
 }
 
-// Gastado del mes: solo soles y solo gastos (las transferencias no son gasto). Mes de Lima.
-async function leerGasto(db: SupabaseClient, userId: string, desde: string, hasta: string): Promise<Fuente<number>> {
-  let total = 0;
+// Gastado del mes en SOLES: solo gastos (las transferencias no son gasto), mes de Lima. Los dólares entran convertidos con el tipo de
+// cambio de su día (`historial`); sin ninguno guardado quedan fuera, nunca sumados como soles.
+async function leerGasto(db: SupabaseClient, userId: string, desde: string, hasta: string, historial: Punto[]): Promise<Fuente<number>> {
+  const filas: GastoCrudo[] = [];
   for (let from = 0;; from += PAGINA) {
-    const { data, error } = await db.from("transactions").select("amount")
-      .eq("user_id", userId).eq("transaction_type", "expense").eq("currency_code", "PEN")
+    const { data, error } = await db.from("transactions").select("amount, currency_code, transaction_date")
+      .eq("user_id", userId).eq("transaction_type", "expense")
       .gte("transaction_date", desde).lt("transaction_date", hasta)
       .order("transaction_id").range(from, from + PAGINA - 1);
     if (error) {
       console.error("brief gasto:", error.message);
       return { ok: false, estado: "error", mensaje: "No pude leer lo gastado del mes." };
     }
-    for (const r of data ?? []) total += Number(r.amount);
-    if ((data?.length ?? 0) < PAGINA) return { ok: true, data: total };
+    filas.push(...((data ?? []) as GastoCrudo[]));
+    if ((data?.length ?? 0) < PAGINA) return { ok: true, data: sumarEnSoles(filas, historial) };
   }
 }
 
-async function leerPagos(db: SupabaseClient, userId: string, hoy: string, desde: string, hasta: string): Promise<Fuente<{ recurrentes: RecurrenteCrudo[]; pagados: string[] }>> {
+// Tipo de cambio de cada día del mes (más el último anterior): si falla la lectura, vacío (los dólares quedan fuera, no se inventa nada).
+const leerHistorial = (db: SupabaseClient, desdeMes: string): Promise<Punto[]> => historial(db, desdeMes.slice(0, 10)).catch(() => []);
+
+// El tipo de cambio vigente para el brief: lo refresca si venció (el cron de las 7:00 es quien lo hace casi siempre) sin demorar el brief más
+// de unos segundos; si no responde, el último guardado. Nunca tumba el brief.
+async function leerCambio(db: SupabaseClient, ahora: Date, hoy: string): Promise<Tasa | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const r = await Promise.race([
+      tipoCambioVigente(db, { ahora, hoy }),
+      new Promise<null>((ok) => { timer = setTimeout(() => ok(null), FX_TIMEOUT_MS); }),
+    ]);
+    return r ? r.tasa : await ultimaTasa(db);
+  } catch (e) {
+    console.error("brief tipo de cambio:", mensajeError(e));
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function leerPagos(db: SupabaseClient, userId: string, hoy: string, desde: string, hasta: string, tc: Cambio): Promise<Fuente<{ recurrentes: RecurrenteCrudo[]; pagados: string[] }>> {
   const [rec, pagos] = await Promise.all([
-    db.from("recurring_transactions").select("recurring_id, description, amount, next_due_date")
+    db.from("recurring_transactions").select("recurring_id, description, amount, currency_code, next_due_date")
       .eq("user_id", userId).eq("is_active", true).eq("transaction_type", "expense")
       .lte("next_due_date", addDays(hoy, VENTANA_PAGOS_DIAS)).gte("next_due_date", addDays(hoy, -MAX_VENCIDO_DIAS))
       .order("next_due_date"),
@@ -96,7 +123,7 @@ async function leerPagos(db: SupabaseClient, userId: string, hoy: string, desde:
   return {
     ok: true,
     data: {
-      recurrentes: (rec.data ?? []) as RecurrenteCrudo[],
+      recurrentes: pagosEnSoles((rec.data ?? []) as (RecurrenteCrudo & { currency_code?: string | null })[], tc),
       pagados: (pagos.data ?? []).map((t: { recurring_id: string | null }) => t.recurring_id).filter((id): id is string => Boolean(id)),
     },
   };
@@ -166,11 +193,12 @@ export async function generarBrief(db: SupabaseClient, userId: string, origen: O
   if (existente && !opts.force) return { brief: existente, persistido: true };
 
   const mes = ventanaMes(fecha);
+  const tc = await leerCambio(db, ahora, fecha);
   const [agenda, tareas, gasto, pagos] = await Promise.all([
     leerAgenda(userId, fecha),
     leerTareas(db, userId),
-    leerGasto(db, userId, mes.desde, mes.hasta),
-    leerPagos(db, userId, fecha, mes.desde, mes.hasta),
+    leerHistorial(db, mes.desde).then((h) => leerGasto(db, userId, mes.desde, mes.hasta, h)),
+    leerPagos(db, userId, fecha, mes.desde, mes.hasta, tc),
   ]);
   const fuentes: FuentesBrief = { agenda, tareas, gasto, pagos };
   const secciones = buildSections(ahora, fuentes);

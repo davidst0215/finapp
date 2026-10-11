@@ -9,6 +9,9 @@ import { CategoryIcon } from '@/components/ui/CategoryIcon';
 import { useAuthStore } from '@/stores/authStore';
 import { formatCurrency } from '@/lib/utils';
 import { Spinner } from '@/components/ui/Spinner';
+import { NotaCambio } from '@/components/ui/NotaCambio';
+import { conversionDePatrimonio, diaLima, equivalenteEnSoles, notaConversion, patrimonio } from '@/lib/fx';
+import { useTipoCambio } from '@/stores/fxStore';
 
 interface MonthlySummary {
   total_income: number;
@@ -17,12 +20,16 @@ interface MonthlySummary {
   transaction_count: number;
   top_category_name: string;
   top_category_amount: number;
+  /** Cuánto del ingreso y del gasto fue en dólares (ya está dentro de total_income / total_expenses, en soles). Faltan en un resumen viejo. */
+  income_usd?: number;
+  expenses_usd?: number;
 }
 
 export function DashboardPage() {
   const profile = useAuthStore(s => s.profile);
   const { transactions, accounts, fetchTransactions, fetchAccounts, loadingTransactions } = useAppStore();
   const [summary, setSummary] = useCachedState<MonthlySummary>('finanzas.resumen');
+  const { tc, listo } = useTipoCambio();
 
   useEffect(() => {
     fetchTransactions(10);
@@ -36,10 +43,16 @@ export function DashboardPage() {
       });
   }, [fetchTransactions, fetchAccounts]);
 
-  const totalBalance = accounts.reduce((sum, acc) => {
-    if (acc.account_type === 'credit_card') return sum - acc.current_balance;
-    return sum + acc.current_balance;
-  }, 0);
+  // Balance en soles: las cuentas en dólares se convierten con el tipo de cambio vigente; la tarjeta resta (su saldo es deuda).
+  const balance = patrimonio(accounts, tc);
+  const totalBalance = balance.soles;
+  // Primera carga (todavía sin tipo de cambio ni lectura terminada): sin nota, para no decir «falta» cuando solo está llegando.
+  const notaBalance = !tc && !listo ? null : notaConversion(conversionDePatrimonio(balance, tc), diaLima(new Date()));
+  // Dólares dentro del resumen del mes (la base ya los convirtió con el tipo de cambio de cada día).
+  const usdMes = [
+    summary?.expenses_usd ? `${formatCurrency(summary.expenses_usd, 'USD')} en gastos` : null,
+    summary?.income_usd ? `${formatCurrency(summary.income_usd, 'USD')} en ingresos` : null,
+  ].filter(Boolean);
 
   const greeting = () => {
     const hour = new Date().getHours();
@@ -57,16 +70,20 @@ export function DashboardPage() {
       </div>
 
       {/* Balance total + calendar link */}
-      <div className="card flex items-center justify-between">
-        <div>
-          <p className="text-slate-400 text-xs mb-0.5">Balance total</p>
-          <p className={`text-2xl font-bold ${totalBalance >= 0 ? 'text-income' : 'text-expense'}`}>
-            {formatCurrency(totalBalance)}
-          </p>
+      <div className="card">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-slate-400 text-xs mb-0.5">Balance total</p>
+            <p className={`text-2xl font-bold ${totalBalance >= 0 ? 'text-income' : 'text-expense'}`}>
+              {formatCurrency(totalBalance)}
+            </p>
+          </div>
+          <Link to="/calendar" className="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center text-slate-400 active:bg-slate-700">
+            <CalendarDays size={18} />
+          </Link>
         </div>
-        <Link to="/calendar" className="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center text-slate-400 active:bg-slate-700">
-          <CalendarDays size={18} />
-        </Link>
+        {/* A todo el ancho de la tarjeta: bajo el total, no entre él y el botón del calendario */}
+        <NotaCambio texto={notaBalance} className="mt-2" />
       </div>
 
       {/* Resumen mensual */}
@@ -86,6 +103,9 @@ export function DashboardPage() {
             </div>
             <p className="text-lg font-bold text-expense">{formatCurrency(summary.total_expenses)}</p>
           </div>
+          {usdMes.length > 0 && (
+            <NotaCambio className="col-span-2 -mt-1" texto={`Incluye ${usdMes.join(' y ')} (TC de cada día).`} />
+          )}
         </div>
       )}
 
@@ -104,8 +124,10 @@ export function DashboardPage() {
                 key={acc.account_id}
                 name={acc.account_name}
                 balance={acc.current_balance}
+                currency={acc.currency_code}
+                equivalent={equivalenteEnSoles(acc.current_balance, acc.currency_code, tc, diaLima(new Date()))}
                 type={acc.account_type}
-                className="min-w-[220px] flex-shrink-0"
+                className="min-w-[264px] flex-shrink-0"
               />
             ))}
           </div>

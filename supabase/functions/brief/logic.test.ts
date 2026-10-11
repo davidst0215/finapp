@@ -21,6 +21,8 @@ import {
   MAX_TEXTO,
   tituloBrief,
   ventanaMes,
+  sumarEnSoles,
+  pagosEnSoles,
 } from "./logic.ts";
 
 // Lunes 5 oct 2026, 7:00 en Lima = 12:00 UTC
@@ -313,4 +315,41 @@ test("acotar: abreviaturas y montos no parten la oración; una sola oración lar
   assert.equal(acotar("Habla con el Dr. Pérez por S/ 45.90. Luego revisa lo demás con calma, sin apuro, como siempre.", 60), "Habla con el Dr. Pérez por S/ 45.90.");
   const una = "Tienes dos tareas vencidas, un pago mañana y tres esperas sin respuesta desde hace más de una semana";
   assert.equal(acotar(una, 50), "Tienes dos tareas vencidas.");
+});
+
+// ------------------------------------------------------------------------------------------------ multimoneda
+const H = [{ fecha: "2026-10-01", valor: 3.4 }, { fecha: "2026-10-05", valor: 3.5 }];
+
+test("sumarEnSoles: los soles tal cual y los dólares con el tipo de cambio de SU día de Lima", () => {
+  const filas = [
+    { amount: "100.00", currency_code: "PEN", transaction_date: "2026-10-10T15:00:00Z" },
+    { amount: 10, currency_code: "USD", transaction_date: "2026-10-02T15:00:00Z" }, // 3.40 → 34
+    { amount: 10, currency_code: "USD", transaction_date: "2026-10-06T15:00:00Z" }, // 3.50 → 35
+    { amount: 10, currency_code: "USD", transaction_date: "2026-10-05T03:00:00Z" }, // 22:00 del 4 en Lima → 3.40 → 34
+    { amount: 5, transaction_date: "2026-10-06T15:00:00Z" }, // sin moneda = soles
+  ];
+  assert.equal(sumarEnSoles(filas, H), 100 + 34 + 35 + 34 + 5);
+});
+
+test("sumarEnSoles: sin tipo de cambio los dólares quedan fuera (no se suman como soles); otra moneda tampoco", () => {
+  const filas = [
+    { amount: 100, currency_code: "PEN", transaction_date: "2026-10-10T15:00:00Z" },
+    { amount: 10, currency_code: "USD", transaction_date: "2026-10-10T15:00:00Z" },
+    { amount: 10, currency_code: "EUR", transaction_date: "2026-10-10T15:00:00Z" },
+  ];
+  assert.equal(sumarEnSoles(filas, []), 100);
+  assert.equal(sumarEnSoles(filas, H), 100 + 35);
+  assert.equal(sumarEnSoles([], H), 0);
+});
+
+test("pagosEnSoles: el pago en dólares se muestra en soles; sin tipo de cambio queda con su monto marcado «(en dólares)»", () => {
+  const rec = [
+    { recurring_id: "1", description: "Hosting", amount: "10.00", currency_code: "USD", next_due_date: "2026-10-08" },
+    { recurring_id: "2", description: "Alquiler", amount: 1000, currency_code: "PEN", next_due_date: "2026-10-05" },
+  ];
+  const conTc = pagosEnSoles(rec, { valor: 3.5, fecha: "2026-10-05" });
+  assert.deepEqual(conTc.map((p) => [p.description, p.amount]), [["Hosting", 35], ["Alquiler", 1000]]);
+  assert.ok(conTc.every((p) => !("currency_code" in p)), "el resto del brief no conoce la moneda");
+  const sinTc = pagosEnSoles(rec, null);
+  assert.deepEqual(sinTc.map((p) => [p.description, p.amount]), [["Hosting (en dólares)", 10], ["Alquiler", 1000]]);
 });

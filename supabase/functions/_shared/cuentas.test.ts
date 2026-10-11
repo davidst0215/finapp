@@ -322,3 +322,35 @@ test("monto y opcionesHabladas", () => {
   assert.equal(opcionesHabladas(CUENTAS.slice(0, 2)), "BCP Soles o BCP Dólares");
   assert.equal(opcionesHabladas(CUENTAS.slice(0, 4)), "BCP Soles, BCP Dólares o Interbank");
 });
+
+test("frases: con tipo de cambio la lista da el total EN SOLES, los dólares convertidos, y la voz los menciona corto", async () => {
+  const { prepararVoz, VOZ_MAX } = await import("./voz.ts");
+  const tc = { valor: 3.5, fecha: "2026-10-07" };
+  const f = fraseCuentas(CUENTAS, tc); // 1200 + 500 + 80 − 800 = 980 soles; 300 dólares → 1050 soles
+  assert.match(f.message, /BCP Dólares: US\$ 300\.00 \(≈ S\/ 1,050\.00\)/);
+  assert.match(f.message, /Visa Oro: debes S\/ 800\.00/);
+  assert.match(f.message, /Total: S\/ 2,030\.00 \(incluye US\$ 300\.00 a TC 3\.5\)\.$/);
+  assert.equal(f.voz, "Tienes 5 cuentas; en total S/ 2,030.00, incluye US$ 300.00.");
+  assert.ok(prepararVoz(f.voz).length <= VOZ_MAX);
+});
+
+test("frases: si el total en soles + dólares no cabe en la voz, se dice solo el total en soles (nunca un monto cortado)", async () => {
+  const { prepararVoz, VOZ_MAX } = await import("./voz.ts");
+  const f = fraseCuentas([cta("1", "BCP", "checking", "PEN", 12345.67), cta("2", "Wise", "savings", "USD", 8765.43)], { valor: 3.45, fecha: "x" });
+  assert.match(f.message, /Total: S\/ 42,586\.\d\d \(incluye US\$ 8,765\.43 a TC 3\.45\)\.$/);
+  assert.match(f.voz, /^Tienes 2 cuentas; en total S\/ 42,586\.00\.$|^Tienes 2 cuentas; en total S\/ 42,586\.00, incluye US\$ 8,765\.00\.$/);
+  assert.ok(prepararVoz(f.voz).length <= VOZ_MAX, prepararVoz(f.voz));
+});
+
+test("frases: una tarjeta en dólares resta su deuda convertida; sin dólares el tipo de cambio no cambia nada", () => {
+  const tc = { valor: 3.5, fecha: "x" };
+  const f = fraseCuentas([cta("1", "BCP", "checking", "PEN", 1000), cta("2", "Visa USD", "credit_card", "USD", 100)], tc);
+  assert.match(f.message, /Visa USD: debes US\$ 100\.00 \(≈ S\/ 350\.00\)/);
+  assert.match(f.message, /Total: S\/ 650\.00 \(incluye -US\$ 100\.00 a TC 3\.5\)\.$/);
+  assert.equal(fraseCuentas(CUENTAS.filter((c) => c.currency_code === "PEN"), tc).voz, fraseCuentas(CUENTAS.filter((c) => c.currency_code === "PEN")).voz);
+});
+
+test("frases: dólares sin tipo de cambio → total por moneda como antes (jamás sumados como soles)", () => {
+  assert.equal(fraseCuentas(CUENTAS, null).voz, fraseCuentas(CUENTAS).voz);
+  assert.match(fraseCuentas(CUENTAS, null).message, /Total: S\/ 980\.00 y US\$ 300\.00\.$/);
+});
