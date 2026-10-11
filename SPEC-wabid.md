@@ -62,6 +62,7 @@ Cada módulo se entrega a producción por separado (rama → PR → merge → de
 | claude-code | `008_claude_code.sql`, `012_claude_code_v2.sql` (ver `SPEC-claude-code-v2.md`) | `functions/claude-events/`, `tools/claude-hooks/*` (script local), `routes/modulos/ClaudeCodePage.tsx`, `components/claude/*` |
 | reuniones (2ª ola) | `009_reuniones.sql` | `functions/fathom/`, `agent/tools/reuniones.ts`, `routes/modulos/ReunionesPage.tsx`, `components/reuniones/*` |
 | brief (2ª ola) | `010_brief.sql` | `functions/brief/`, `routes/modulos/BriefPage.tsx`, `components/brief/*` |
+| contactos (agenda propia + WhatsApp/llamadas) | `018_contactos.sql` (+ `check-018.mjs`) | `_shared/telefono.ts`, `_shared/contactos.ts`, `agent/tools/contactos.ts`, `routes/modulos/ContactosPage.tsx`, `components/contactos/*`, `lib/{telefono,contactos,accionContacto}.ts`; en `agent/types.ts` el campo `accion` del resultado; en `routes/AddTransaction.tsx` solo la tarjeta de acción. Wabid NUNCA envía ni llama: deja un botón (api.whatsapp.com/send, tel:) y David toca. El teléfono viaja solo en `accion`, nunca en `message` ni `voz` (vuelven al modelo como historial). |
 
 Archivos compartidos que se pueden tocar con una sola línea: `agent/registry.ts` (import + entrada).
 

@@ -1,5 +1,6 @@
 import { agenda } from "./tools/agenda.ts";
 import { brief } from "./tools/brief.ts";
+import { contactos } from "./tools/contactos.ts";
 import { correo } from "./tools/correo.ts";
 import { finanzas } from "./tools/finanzas.ts";
 import { reuniones } from "./tools/reuniones.ts";
@@ -38,4 +39,5 @@ export const MODULES: AgentModule<any>[] = [
   memoria,
   internet,
   saldo,
+  contactos,
 ];

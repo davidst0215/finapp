@@ -10,6 +10,8 @@ import { limpiarParaVoz, MAX_ENVIO } from '@/lib/vozTexto';
 import { respaldoDeVoz, separarRespuesta } from '@/lib/respuestaAgente';
 import { esFraseDeCierre, leerEscucharAlAbrir, MAX_SILENCIOS } from '@/lib/conversacion';
 import { cn } from '@/lib/utils';
+import { accionSegura, type AccionContacto as DatosAccion } from '@/lib/accionContacto';
+import { AccionContacto } from '@/components/contactos/AccionContacto';
 
 type OrbState = 'idle' | 'listening' | 'thinking' | 'speaking';
 
@@ -32,6 +34,8 @@ export function AddTransactionPage() {
   const [subtitle, setSubtitle] = useState('');
   const [showInput, setShowInput] = useState(false);
   const [input, setInput] = useState('');
+  // El botón de WhatsApp o de llamada que acompaña a la última respuesta (contactos). `id` reinicia el componente en cada acción nueva.
+  const [accion, setAccion] = useState<{ id: number; datos: DatosAccion } | null>(null);
 
   // Conversation memory (last 5 exchanges)
   const conversationRef = useRef<ConversationEntry[]>([]);
@@ -175,6 +179,7 @@ export function AddTransactionPage() {
     cortarVoz();
     setOrbState('thinking');
     setSubtitle('');
+    setAccion(null); // la acción de la respuesta anterior ya no corresponde a lo que David acaba de pedir
     navigator.vibrate?.(12); // señal breve: el pedido salió
 
     // Add to memory
@@ -227,6 +232,12 @@ export function AddTransactionPage() {
       const message = String(resultado.message ?? '');
       // Un servidor viejo no manda `voz`: se dice el mismo `message`.
       const dicho = typeof resultado.voz === 'string' && resultado.voz.trim() ? resultado.voz : message;
+
+      // Contactos: el enlace de WhatsApp o del marcador llega en `accion`. Se muestra como botón (el navegador exige un toque de David para
+      // abrir otra app) y solo si es un enlace que la app reconoce. NUNCA va al historial de abajo: lleva el teléfono y el historial
+      // vuelve al modelo en el siguiente pedido; solo `message`, que el servidor escribe sin números.
+      const datosAccion = accionSegura(resultado.accion);
+      if (datosAccion) setAccion({ id: turno, datos: datosAccion });
 
       // Add to memory
       conversationRef.current.push({ role: 'assistant', content: message });
@@ -562,6 +573,9 @@ export function AddTransactionPage() {
 
       {/* ── Input bar ── */}
       <div className="w-full pb-2">
+        <div aria-live="polite">
+          {accion && <AccionContacto key={accion.id} accion={accion.datos} onCerrar={() => setAccion(null)} />}
+        </div>
         <div className="relative">
 
           <motion.div
