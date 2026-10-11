@@ -10,7 +10,7 @@ export interface EstadoVoz {
   /** Id de la burbuja que se está leyendo; null si nada suena. */
   id: string | null;
   fase: 'cargando' | 'sonando' | null;
-  /** Se leyó solo el inicio (el texto pasaba de 600 caracteres). */
+  /** Se leyó solo un resumen (la primera parte, hasta ~100 caracteres): leer todo el mensaje costaría mucho más. */
   recortado: boolean;
   /** Burbuja cuya lectura no llegó a sonar (se muestra un aviso junto al botón). */
   falloId: string | null;

@@ -1,11 +1,12 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, type User } from "jsr:@supabase/supabase-js@2";
 import { LLM_FALLBACK, LLM_MODEL, llmConfigured, llmConRespaldo } from "../_shared/llm.ts";
-import { pedirVoz, vozConfigurada } from "../_shared/elevenlabs.ts";
+import { pedirVoz, vozConfigurada, vozModelo } from "../_shared/elevenlabs.ts";
+import { prepararVoz, VOZ_MAX } from "../_shared/voz.ts";
 import { PERSONA } from "./prompt.ts";
 import { MODULES } from "./registry.ts";
 import { bearer, jwtSub } from "../_shared/jwt.ts";
-import { argumentos, respuestaInservible } from "./respuesta.ts";
+import { argumentos, loQueSeDice, respuestaInservible } from "./respuesta.ts";
 import { Tiempos } from "./tiempos.ts";
 import type { AgentContext, ToolResult } from "./types.ts";
 
@@ -27,7 +28,8 @@ const MAX_TEXTO = 2000; // un dictado largo cabe de sobra; más es abuso o error
 // Si el modelo no terminó en este plazo sale un segundo pedido a otro proveedor (ver _shared/respaldo.ts).
 // Io Net, el primero, respondió siempre en ≤3 s en la medición del 5-oct: el respaldo queda para las colas.
 const RESPALDO_MS = 3000;
-const VOZ_MAX = 400; // lo que se dice en voz alta; el texto completo igual llega a la pantalla
+// Lo que se dice en voz alta no pasa de VOZ_MAX (100) caracteres ya convertidos (_shared/voz.ts): el texto completo
+// igual llega a la pantalla en `message`, y `voz` (si el handler lo trae) es lo que se dice en su lugar.
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
@@ -42,15 +44,16 @@ Deno.serve(async (req: Request) => {
   // Con `voz`, texto y audio van en una sola respuesta: primera línea el JSON del resultado y después el MP3
   // mientras ElevenLabs lo genera. Ahorra el segundo viaje celular→servidor (y su validación de sesión) que
   // costaba pedir /tts aparte. Si la voz falla, la respuesta termina tras el JSON y la app usa /tts o la del navegador.
-  const conVoz = (result: ToolResult): Response => {
+  const conVoz = (result: ToolResult, hablado: string): Response => {
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     (async () => {
       let escritor: WritableStreamDefaultWriter<Uint8Array> | null = writable.getWriter();
       try {
         await escritor.write(new TextEncoder().encode(JSON.stringify(result) + "\n"));
         const t0 = performance.now();
-        const audio = await pedirVoz(result.message.slice(0, VOZ_MAX));
-        console.log(JSON.stringify({ evt: "agent_voz", status: audio.status, ttfb: Math.round(performance.now() - t0) }));
+        const audio = await pedirVoz(hablado);
+        // voz_chars = lo que se cobra: el largo exacto enviado a ElevenLabs, ya con los montos en palabras.
+        console.log(JSON.stringify({ evt: "agent_voz", status: audio.status, ttfb: Math.round(performance.now() - t0), voz_chars: hablado.length, model: vozModelo() }));
         if (!audio.ok || !audio.body) {
           await audio.body?.cancel();
           return;
@@ -82,7 +85,9 @@ Deno.serve(async (req: Request) => {
     if (!text || typeof text !== "string") return json({ error: "Se requiere 'text'" }, 400);
     if (text.length > MAX_TEXTO) return json({ error: "Mensaje demasiado largo" }, 413);
     const quiereVoz = voz === true && vozConfigurada();
-    const responder = (result: ToolResult) => (quiereVoz && result.message ? conVoz(result) : json(result));
+    // El texto de la voz se prepara una sola vez: la voz y el log (`voz_chars`, `msg_chars`) usan exactamente el mismo.
+    const hablar = (result: ToolResult) => (quiereVoz ? prepararVoz(loQueSeDice(result), VOZ_MAX) : "");
+    const responder = (result: ToolResult, hablado = hablar(result)) => (hablado ? conVoz(result, hablado) : json(result));
 
     const supabase = createClient(Deno.env.get("SUPABASE_URL") ?? "", Deno.env.get("SUPABASE_ANON_KEY") ?? "", {
       global: { headers: { Authorization: `Bearer ${token}` } },
@@ -160,8 +165,10 @@ Deno.serve(async (req: Request) => {
       console.error(`agent: respuesta inservible del modelo (intento ${intento + 1})`);
     }
     if (respuestaInservible(call) || !call) {
-      console.log(JSON.stringify({ evt: "agent", fn: "(inservible)", prov, respaldo, ...t.resumen() }));
-      return responder({ action: "query", message: "No me salió la respuesta. ¿Me lo repites?" });
+      const fallo: ToolResult = { action: "query", message: "No me salió la respuesta. ¿Me lo repites?" };
+      const hablado = hablar(fallo);
+      console.log(JSON.stringify({ evt: "agent", fn: "(inservible)", prov, respaldo, msg_chars: fallo.message.length, voz_chars: hablado.length, ...t.resumen() }));
+      return responder(fallo, hablado);
     }
 
     const owner = OWNER.get(call.function.name);
@@ -170,8 +177,12 @@ Deno.serve(async (req: Request) => {
     const result = await t.medir("tool", owner.handlers[call.function.name](args, ctx, dataByModule.get(owner.id)));
     // Una línea por pedido, sin contenido de David: sirve para seguir el p50 en los logs.
     // `fn` y no `tool`: resumen() ya trae `tool` (los ms de la fase) y pisaba el nombre.
-    console.log(JSON.stringify({ evt: "agent", fn: call.function.name, prov, respaldo, voz: quiereVoz, ...t.resumen() }));
-    return responder(result);
+    // `msg_chars` = lo que se ve, `voz_chars` = lo que se manda (y cobra) a ElevenLabs; con el promedio de `voz_chars` se mide el gasto.
+    const hablado = hablar(result);
+    console.log(JSON.stringify({
+      evt: "agent", fn: call.function.name, prov, respaldo, voz: quiereVoz, msg_chars: result.message.length, voz_chars: hablado.length, ...t.resumen(),
+    }));
+    return responder(result, hablado);
   } catch (error) {
     console.error("agent error:", error instanceof Error ? error.message : String(error));
     return json({ error: "Algo falló de mi lado. Intenta de nuevo." }, 500);

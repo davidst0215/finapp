@@ -14,7 +14,7 @@ const general: AgentModule = {
   id: "general",
   definitions: [
     tool("query", "Responde preguntas generales o saludos. NO para acciones de otros módulos.", {
-      answer: { type: "string", description: "Respuesta FINAL que David escucha. Nunca un marcador ni 'déjame revisar'." },
+      answer: { type: "string", description: "Respuesta FINAL que David escucha: UNA frase de 80 caracteres o menos, el dato primero, sin relleno ni despedida. Nunca un marcador ni 'déjame revisar'." },
     }, ["answer"]),
   ],
   handlers: {

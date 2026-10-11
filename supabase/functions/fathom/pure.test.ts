@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   buscarReuniones, construirEsperas, cuandoHablado, avanzarPlan, planSync, diasEntre, esperasDe, fechaAlta, hoyLima, leerConsulta,
-  leerNota, limaDia, mensajeEsperas, mensajeReunion, parseMeeting, parsePage, resumenCorto, type Reunion,
+  leerNota, limaDia, mensajeEsperas, mensajeReunion, parseMeeting, parsePage, resumenCorto, type Reunion, vozEsperas, vozReunion,
 } from "./pure.ts";
 
 const crudo = {
@@ -255,4 +255,26 @@ test("mensajeReunion: sin inventar", () => {
   const vacia = mensajeReunion({ ...r, resumen: "", action_items: [] }, "2026-10-04", 2);
   assert.match(vacia, /todavía no tiene resumen/);
   assert.match(vacia, /Hay 2 reuniones más/);
+});
+
+test("vozReunion: el primer acuerdo abierto, o el inicio del resumen; la pantalla conserva todo", () => {
+  const r = parseMeeting(crudo)!;
+  assert.equal(vozReunion(r, "2026-10-04"), "«Sync con Daniel» fue el 30 de septiembre. Quedaron 1 acuerdo: Enviar precios.");
+  const tres = { ...r, action_items: ["Enviar propuesta al cliente", "Agendar demo", "Cerrar contrato"].map((texto) => ({ texto, dueno: null, hecho: false, url: null })) };
+  assert.equal(vozReunion(tres, "2026-10-04"), "«Sync con Daniel» fue el 30 de septiembre. Quedaron 3 acuerdos: Enviar propuesta al cliente; y 2 más.");
+  assert.match(vozReunion({ ...r, action_items: [] }, "2026-10-04"), /^«Sync con Daniel» fue el 30 de septiembre\. Revisar el cotizador\./);
+  assert.match(vozReunion({ ...r, resumen: "", action_items: [] }, "2026-10-04"), /todavía no tiene resumen/);
+  assert.ok(mensajeReunion(tres, "2026-10-04").length > vozReunion(tres, "2026-10-04").length);
+});
+
+test("vozEsperas: cuántas, la primera y quién lleva más esperando", () => {
+  const e = construirEsperas([
+    T("Enviar precios", "daniel", "R · 2 oct · c"),
+    T("Contrato", "daniel-rojas", "R · 28 sep · c"),
+    T("Otra", "marco", "R · 1 oct · c"),
+  ], "2026-10-04");
+  assert.equal(vozEsperas(e, "daniel"), "Esperas 2 cosas de Daniel rojas: Contrato; y 1 más.");
+  assert.equal(vozEsperas(e, null), "Esperas 3 cosas de 3 personas; la más antigua, de Daniel rojas, lleva 6 días.");
+  assert.equal(vozEsperas([], "Pedro"), "No tengo nada pendiente que estés esperando de Pedro.");
+  assert.equal(vozEsperas([], null), "No estás esperando nada de nadie.");
 });

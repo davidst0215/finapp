@@ -228,3 +228,18 @@ export function mensajeVoz(s: Saldo): string {
   const voz = v.estado === "ok" && v.limite > 0 ? ` y la voz va en ${Math.round((v.usados / v.limite) * 100)}%` : "";
   return `${primera} Este mes llevas ${usd(o.mes)}${voz}.`;
 }
+
+/**
+ * Lo que se dice: el saldo en cifras redondas y cuánto dura, en una frase. El gasto del mes y lo de la voz se ven en pantalla
+ * (`mensajeVoz`). ElevenLabs cobra por carácter y "US$ 9.73" son 41 en palabras contra 17 de "unos US$ 10".
+ */
+export function mensajeVozCorto(s: Saldo): string {
+  const o = s.openrouter;
+  if (o.estado !== "ok") return "No pude consultar tu saldo ahora.";
+  if (o.proyeccion.tipo === "agotado") return "Se te acabó el saldo, conviene recargar.";
+  const monto = o.restante >= 1 ? `unos US$ ${Math.round(o.restante)}` : usd(o.restante);
+  const bajo = o.bajo ? ", conviene recargar" : "";
+  if (o.proyeccion.tipo === "desconocida") return `Te quedan ${monto}${bajo}.`;
+  const dura = o.proyeccion.tipo === "mas_de_12_meses" ? "dura más de doce meses" : `alcanza para ${duracion(o.proyeccion.dias)}`;
+  return `Te quedan ${monto}${bajo}; ${dura}.`;
+}

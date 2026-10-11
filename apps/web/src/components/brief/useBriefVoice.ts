@@ -1,17 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { functionUrl, supabase } from '@/lib/supabase';
 import { reproducirStream, type Reproduccion } from '@/lib/audioStream';
+import { recortarParaVoz } from '@/lib/vozTexto';
 
-const MAX_TTS = 400;
-
-/** Recorta a MAX_TTS en el último fin de frase completa (o en palabra si no hay). */
-export function recortarParaVoz(text: string): string {
-  if (text.length <= MAX_TTS) return text;
-  const corte = text.slice(0, MAX_TTS);
-  const fin = Math.max(corte.lastIndexOf('. '), corte.lastIndexOf('! '), corte.lastIndexOf('? '));
-  if (fin >= 40) return corte.slice(0, fin + 1);
-  return `${corte.slice(0, corte.lastIndexOf(' ')).trimEnd()}.`;
-}
+/** Lo que se lee del brief: su titular (la primera oración, hasta MAX_VOZ caracteres). El texto completo se ve en pantalla. */
+export const recortarBrief = (text: string): string => recortarParaVoz(text).texto;
 
 export type VoiceState = 'idle' | 'loading' | 'playing' | 'error';
 
@@ -39,7 +32,7 @@ export function useBriefVoice(text: string) {
   const respaldoNavegador = useCallback(async (mine: number) => {
     if (turn.current !== mine) return;
     if (!('speechSynthesis' in window)) { setState('error'); return; }
-    const hablado = recortarParaVoz(text);
+    const hablado = recortarBrief(text);
     setState('playing');
     await new Promise<void>((ok) => {
       const tope = setTimeout(ok, hablado.length * 90 + 3000);
@@ -74,7 +67,7 @@ export function useBriefVoice(text: string) {
           Authorization: `Bearer ${session.access_token}`,
           apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
         },
-        body: JSON.stringify({ text: recortarParaVoz(text) }),
+        body: JSON.stringify({ text: recortarBrief(text) }),
       });
       if (!res.ok) throw new Error('TTS failed');
       if (turn.current !== mine) return;

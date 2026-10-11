@@ -1,11 +1,14 @@
 // Respuesta de "¿qué me falta pagar?" armada con los datos, no por el modelo:
 // no inventa montos, no promete "revisar" y le ahorra tokens (latencia) a la llamada.
+// `resumenRecurrentes` es lo que se ve (hasta 5 pagos con su fecha); `vozRecurrentes` es lo que se dice: el total, el primero y "y N más".
+
+import { cortoVoz } from "../../_shared/voz.ts";
 
 export type Recurrente = { recurring_id: string; description: string; amount: number; frequency: string; next_due_date: string };
 export type FiltroRecurrentes = "all" | "pending" | "paid";
 
 const MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
-const MAX_EN_VOZ = 5;
+const MAX_EN_PANTALLA = 5;
 
 const soles = (n: number) => `S/ ${Number(n).toFixed(2)}`;
 
@@ -16,10 +19,23 @@ export function fechaHablada(iso: string): string {
 }
 
 function enumerar(partes: string[]): string {
-  const visibles = partes.slice(0, MAX_EN_VOZ);
+  const visibles = partes.slice(0, MAX_EN_PANTALLA);
   const resto = partes.length - visibles.length;
   if (resto > 0) return `${visibles.join(", ")} y ${resto} más`;
   return visibles.length > 1 ? `${visibles.slice(0, -1).join(", ")} y ${visibles.at(-1)}` : visibles[0] ?? "";
+}
+
+const soles0 = (n: number) => `S/ ${Math.round(Number(n))}`; // para la voz: cifras redondas
+
+/** Lo que cuenta este mes: pagados, pendientes (vencen este mes o ya vencieron, sin pago) y el total de una lista. */
+function estadoDelMes(lista: Recurrente[], pagados: Set<string>, hoy: string) {
+  const finDeMes = `${hoy.slice(0, 8)}${new Date(Number(hoy.slice(0, 4)), Number(hoy.slice(5, 7)), 0).getDate()}`;
+  const pagadosMes = lista.filter((r) => pagados.has(r.recurring_id));
+  const pendientes = lista
+    .filter((r) => !pagados.has(r.recurring_id) && r.next_due_date.slice(0, 10) <= finDeMes)
+    .sort((a, b) => a.next_due_date.localeCompare(b.next_due_date));
+  const suma = (rs: Recurrente[]) => rs.reduce((s, r) => s + Number(r.amount), 0);
+  return { pagadosMes, pendientes, suma };
 }
 
 /**
@@ -29,13 +45,8 @@ function enumerar(partes: string[]): string {
 export function resumenRecurrentes(lista: Recurrente[], pagados: Set<string>, hoy: string, filtro: FiltroRecurrentes): string {
   if (lista.length === 0) return "No tienes pagos fijos registrados. Dime uno, por ejemplo: Netflix 52 mensual.";
 
-  const finDeMes = `${hoy.slice(0, 8)}${new Date(Number(hoy.slice(0, 4)), Number(hoy.slice(5, 7)), 0).getDate()}`;
-  const pagadosMes = lista.filter((r) => pagados.has(r.recurring_id));
-  // Pendiente = vence este mes (o ya venció) y no tiene pago registrado este mes.
-  const pendientes = lista
-    .filter((r) => !pagados.has(r.recurring_id) && r.next_due_date.slice(0, 10) <= finDeMes)
-    .sort((a, b) => a.next_due_date.localeCompare(b.next_due_date));
-  const total = (rs: Recurrente[]) => soles(rs.reduce((s, r) => s + Number(r.amount), 0));
+  const { pagadosMes, pendientes, suma } = estadoDelMes(lista, pagados, hoy);
+  const total = (rs: Recurrente[]) => soles(suma(rs));
   const pendiente = (r: Recurrente) =>
     `${r.description} ${soles(r.amount)} ${r.next_due_date.slice(0, 10) < hoy ? `vencido desde ${fechaHablada(r.next_due_date)}` : fechaHablada(r.next_due_date)}`;
 
@@ -54,4 +65,23 @@ export function resumenRecurrentes(lista: Recurrente[], pagados: Set<string>, ho
     : `Tienes ${cuantos}.`;
   if (pendientes.length === 0) return `${base} Este mes no te falta ninguno.`;
   return `${base} Te ${pendientes.length === 1 ? "falta" : "faltan"} ${enumerar(pendientes.map(pendiente))}.`;
+}
+
+/** Lo que se dice: el total y solo el primer pago, con "y N más". Fechas y el resto se ven en pantalla. */
+export function vozRecurrentes(lista: Recurrente[], pagados: Set<string>, hoy: string, filtro: FiltroRecurrentes): string {
+  if (lista.length === 0) return resumenRecurrentes(lista, pagados, hoy, filtro); // ya es corto
+  const { pagadosMes, pendientes, suma } = estadoDelMes(lista, pagados, hoy);
+  const primero = (r: Recurrente) => `${cortoVoz(r.description, 24)} ${soles0(r.amount)}${r.next_due_date.slice(0, 10) < hoy ? ", vencido" : ""}`;
+  const faltan = pendientes.length
+    ? `Te ${pendientes.length === 1 ? "falta" : "faltan"} ${soles0(suma(pendientes))}: ${primero(pendientes[0]!)}${pendientes.length > 1 ? `; y ${pendientes.length - 1} más` : ""}.`
+    : "";
+
+  if (filtro === "paid") {
+    if (pagadosMes.length === 0) return resumenRecurrentes(lista, pagados, hoy, filtro);
+    return `Este mes ya pagaste ${soles0(suma(pagadosMes))} en ${pagadosMes.length} ${pagadosMes.length === 1 ? "pago" : "pagos"}.`;
+  }
+  if (filtro === "pending") return faltan || resumenRecurrentes(lista, pagados, hoy, filtro);
+  const cuantos = `${lista.length} ${lista.length === 1 ? "pago fijo" : "pagos fijos"}`;
+  const base = lista.every((r) => r.frequency === "monthly") ? `Tienes ${cuantos} por ${soles0(suma(lista))} al mes.` : `Tienes ${cuantos}.`;
+  return faltan ? `${base} ${faltan}` : `${base} Este mes no te falta ninguno.`;
 }

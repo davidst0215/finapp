@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildTasksView, firstLink, plainNote, toViewTask } from "./view.ts";
-import { corto, hablado, preguntaCual, preguntaDonde, resumenGeneral, resumenTareas } from "./speech.ts";
+import { corto, hablado, preguntaCual, preguntaDonde, resumenGeneral, resumenTareas, vozCual, vozTareas } from "./speech.ts";
 import { parseConfig } from "./taxonomy.ts";
 import type { TaskRow } from "./types.ts";
 
@@ -107,7 +107,7 @@ test("buildTasksView: destinos incluyen la configuración y el cajón al final; 
 });
 
 test("speech.corto y hablado", () => {
-  assert.equal(corto("Validar la bolsa de septiembre con el equipo de finanzas y contabilidad", 40), "Validar la bolsa de septiembre con el");
+  assert.equal(corto("Validar la bolsa de septiembre con el equipo de finanzas y contabilidad", 40), "Validar la bolsa de septiembre");
   assert.equal(corto("corto"), "corto");
   assert.equal(hablado({ project: "Acme", frente: "Ventas" }), "Acme Ventas");
   assert.equal(hablado({ project: "Life", frente: null }), "Life");
@@ -131,7 +131,7 @@ test("speech.resumenTareas: vencidas, hoy, proyecto y cajón", () => {
   );
   assert.equal(
     resumenTareas("inbox", v.inbox, { max: 1 }),
-    "Tienes 2 en el cajón. Las primeras: Otra del cajón, de Cajón desastre. Y 1 más.",
+    "Tienes 2 en el cajón. La primera: Otra del cajón, de Cajón desastre. Y 1 más.",
   );
   assert.equal(resumenTareas("overdue", []), "No tienes tareas vencidas.");
   assert.equal(resumenTareas("today", []), "No tienes tareas para hoy.");
@@ -155,4 +155,26 @@ test("speech.resumenGeneral y preguntas de aclaración", () => {
   const dests = v.destinations.filter((d) => d.project === "Acme");
   assert.equal(preguntaDonde(dests), "¿En qué frente de Acme: Ventas o Soporte?");
   assert.equal(preguntaDonde(v.destinations.filter((d) => d.folder === "acme-ventas" || d.folder === "beta-datos")), "¿En cuál: Acme Ventas, Beta Datos?");
+});
+
+test("speech.vozTareas: solo la primera y «y N más»; la pantalla sigue con hasta 3", () => {
+  const v = buildTasksView(ROWS, CFG, [], HOY, null);
+  const todas = v.groups.flatMap((g) => g.tasks);
+  const vencidas = todas.filter((t) => t.overdue);
+  assert.equal(vozTareas("overdue", vencidas), "Tienes 2 tareas vencidas: Cerrar propuesta, de Acme Ventas. Y 1 más.");
+  assert.equal(vozTareas("today", todas.filter((t) => t.due === HOY)), "Para hoy tienes 1 tarea: Revisar tickets, de Acme Soporte.");
+  assert.equal(vozTareas("project", v.groups[0].tasks, { projectLabel: "Acme Ventas" }), "En Acme Ventas tienes 3 pendientes: Cerrar propuesta. Y 2 más.");
+  assert.equal(vozTareas("overdue", []), "No tienes tareas vencidas.");
+  // Con títulos larguísimos la voz sigue cabiendo en el tope.
+  const largas = Array.from({ length: 8 }, (_, i) =>
+    toViewTask(row({ folder: "acme-ventas", text: `Tarea número ${i} con un título bastante largo que describe muchísimas cosas por hacer hoy mismo`, due: "2026-10-01" }), CFG, HOY));
+  assert.ok(vozTareas("overdue", largas).length <= 130, vozTareas("overdue", largas));
+});
+
+test("speech.resumenGeneral sin cajón (voz) y vozCual: una sola pregunta", () => {
+  assert.equal(resumenGeneral({ open: 1, overdue: 1, today: 0, inbox: 3 }, false), "Tienes 1 pendiente, 1 vencida y 0 para hoy.");
+  const v = buildTasksView(ROWS, CFG, [], HOY, null);
+  assert.equal(vozCual(v.groups[0].tasks.slice(0, 2)), "¿Cuál: Cerrar propuesta, de Acme Ventas; o Sin fecha alta, de Acme Ventas?");
+  assert.match(vozCual(v.groups[0].tasks), /^¿Cuál de las 3: /);
+  assert.ok(vozCual(v.groups[0].tasks).endsWith("?"));
 });

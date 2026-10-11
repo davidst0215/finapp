@@ -1,7 +1,8 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { bearer, jwtSub } from "../_shared/jwt.ts";
-import { pedirVoz, vozConfigurada } from "../_shared/elevenlabs.ts";
+import { pedirVoz, vozConfigurada, vozModelo } from "../_shared/elevenlabs.ts";
+import { prepararVoz, VOZ_MAX } from "../_shared/voz.ts";
 
 // Un cliente por instancia: guarda las llaves públicas de Auth (JWKS) entre pedidos, así la firma
 // del token se verifica aquí mismo en vez de preguntarle a Auth en cada frase (getUser: p50 225 ms,
@@ -34,8 +35,12 @@ Deno.serve(async (req: Request) => {
     const sub = jwtSub(token);
     if (!sub) return jsonError("No autorizado", 401);
 
+    // Se acepta hasta 600 de entrada por los clientes que aún mandan más; lo que se habla nunca pasa de VOZ_MAX (100)
+    // caracteres ya convertidos: el servidor, no el cliente, pone el tope a lo que cobra ElevenLabs.
     const { text } = await req.json();
     if (!text || typeof text !== "string" || text.length > 600) return jsonError("Texto inválido", 400);
+    const hablado = prepararVoz(text, VOZ_MAX);
+    if (!hablado) return jsonError("Texto inválido", 400);
 
     // El token se confirma ANTES de pedir la voz: lo que cobra ElevenLabs no puede depender
     // de que el gateway tenga verify_jwt activo. getClaims revisa firma y vencimiento con la llave
@@ -44,9 +49,10 @@ Deno.serve(async (req: Request) => {
     const { data: verificado, error: errorToken } = await supabase.auth.getClaims(token);
     const authMs = Math.round(performance.now() - t0);
     if (errorToken || verificado?.claims?.sub !== sub) return jsonError("No autorizado", 401);
-    console.log(JSON.stringify({ evt: "tts", auth: authMs, chars: text.length }));
+    // chars = lo que mandó el cliente; voz_chars = lo que se envía (y cobra) a ElevenLabs.
+    console.log(JSON.stringify({ evt: "tts", auth: authMs, chars: text.length, voz_chars: hablado.length, model: vozModelo() }));
 
-    const response = await pedirVoz(text);
+    const response = await pedirVoz(hablado);
     if (!response.ok || !response.body) {
       console.error("tts elevenlabs:", response.status, (await response.text()).slice(0, 300));
       return jsonError("No pude generar la voz", 502);

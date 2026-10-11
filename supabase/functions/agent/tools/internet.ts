@@ -11,7 +11,8 @@ const TIEMPO_MAX_MS = 9000; // el celular corta a los 15 s y antes ya corrió la
 const rules = `INTERNET:
 - Datos actuales o de afuera que no están en el contexto: noticias, clima, tipo de cambio, precios, resultados deportivos, horarios, qué pasó con algo o alguien → search_web.
 - consulta = qué buscar, en pocas palabras, con lugar o fecha si importa (por ejemplo "tipo de cambio dólar sol hoy Perú").
-- Lo personal de David (gastos, tareas, agenda, correo, reuniones, sus proyectos) NUNCA va a internet: usa sus módulos. No pongas datos de David en la consulta.`;
+- Lo personal de David (gastos, tareas, agenda, correo, reuniones, sus proyectos) NUNCA va a internet: usa sus módulos. No pongas datos de David en la consulta.
+- Voz: una frase con el dato principal.`;
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 
@@ -41,7 +42,7 @@ async function searchWeb(args: Record<string, unknown>, ctx: AgentContext): Prom
             role: "system",
             // Probado el 5-oct: sin estos límites salían 3 oraciones con fechas entre paréntesis y montos de 4 decimales
             // ("S/ 3.4357", que la voz no sabe leer), y en deportes mezclaba un partido viejo con uno reciente.
-            content: `Respondes por voz a David, en Lima, Perú. Ahora en Lima es ${hoy}: esa es la fecha de hoy, aunque los resultados vengan fechados en otras zonas horarias. Con lo que dicen los resultados de la búsqueda, responde en 1 o 2 oraciones, máximo 40 palabras, con el dato principal primero. Si hay varios resultados en el tiempo, usa el más reciente; si los resultados no responden la pregunta o son viejos, dilo. Si el dato cambia durante el día, di de cuándo es con palabras ("hoy a las seis de la tarde"). Montos con 2 decimales (S/ 3.44, US$ 20.00). Sin listas, enlaces, paréntesis ni markdown.`,
+            content: `Respondes por voz a David, en Lima, Perú. Ahora en Lima es ${hoy}: esa es la fecha de hoy, aunque los resultados vengan fechados en otras zonas horarias. Con lo que dicen los resultados de la búsqueda, responde con el dato principal primero en UNA oración de 80 caracteres o menos (se dice en voz alta, cada carácter cuesta); solo si hace falta, una segunda oración corta de contexto que se verá en pantalla. Si hay varios resultados en el tiempo, usa el más reciente; si los resultados no responden la pregunta o son viejos, dilo. Si el dato cambia durante el día, di de cuándo es con palabras ("hoy a las seis de la tarde"). Montos con 2 decimales (S/ 3.44, US$ 20.00). Sin listas, enlaces, paréntesis ni markdown.`,
           },
           { role: "user", content: consulta },
         ],

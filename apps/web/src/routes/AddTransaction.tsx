@@ -6,6 +6,7 @@ import { useAppStore } from '@/stores/appStore';
 import { useAuthStore } from '@/stores/authStore';
 import { supabase, functionUrl, calentarFunciones } from '@/lib/supabase';
 import { reproducirStream, type Reproduccion } from '@/lib/audioStream';
+import { recortarParaVoz } from '@/lib/vozTexto';
 import { separarRespuesta } from '@/lib/respuestaAgente';
 import { esFraseDeCierre, leerEscucharAlAbrir, MAX_SILENCIOS } from '@/lib/conversacion';
 import { cn } from '@/lib/utils';
@@ -108,7 +109,7 @@ export function AddTransactionPage() {
           'Authorization': `Bearer ${session.access_token}`,
           'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
         },
-        body: JSON.stringify({ text: text.slice(0, 400) }),
+        body: JSON.stringify({ text: recortarParaVoz(text).texto }), // el servidor también pone el tope (100); aquí no se manda de más
       });
       if (!response.ok) throw new Error('TTS failed');
       if (!vigente()) return;
@@ -139,7 +140,8 @@ export function AddTransactionPage() {
 
   // La voz que vino con la respuesta del agente. El texto aparece cuando empieza a oírse, no antes: así no
   // queda un silencio entre leer y escuchar. Si no trajo voz o no llegó a sonar, se pide a /tts (o al navegador).
-  const hablar = useCallback(async (message: string, audio: ReadableStream<Uint8Array> | null, vigente: () => boolean) => {
+  // `message` es lo que se ve y `dicho` lo que se dice (el campo `voz` de la respuesta, o el mismo `message` si no viene).
+  const hablar = useCallback(async (message: string, dicho: string, audio: ReadableStream<Uint8Array> | null, vigente: () => boolean) => {
     if (audio) {
       const reproduccion = reproducirStream(new Response(audio), new Audio(), () => {
         if (!vigente()) return;
@@ -151,7 +153,7 @@ export function AddTransactionPage() {
       if (sono || !vigente()) return;
     }
     setSubtitle(message);
-    await speak(message, vigente);
+    await speak(dicho, vigente);
   }, [speak]);
 
   // ── Agente con memoria de la conversación: texto y voz llegan en una sola respuesta ──
@@ -211,12 +213,14 @@ export function AddTransactionPage() {
       }
 
       const message = String(resultado.message ?? '');
+      // Un servidor viejo no manda `voz`: se dice el mismo `message`.
+      const dicho = typeof resultado.voz === 'string' && resultado.voz.trim() ? resultado.voz : message;
 
       // Add to memory
       conversationRef.current.push({ role: 'assistant', content: message });
       if (conversationRef.current.length > 10) conversationRef.current = conversationRef.current.slice(-10);
 
-      await hablar(message, audio, vigente);
+      await hablar(message, dicho, audio, vigente);
       if (!vigente()) return;
 
       // En conversación, apenas termina la voz vuelve a escuchar (el micrófono nunca oye a Wabid hablando).

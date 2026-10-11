@@ -1,6 +1,6 @@
 import { comentario, conComentario } from "../prompt.ts";
 import { type AgentContext, type AgentModule, tool } from "../types.ts";
-import { type FiltroRecurrentes, type Recurrente, resumenRecurrentes } from "./recurrentes.ts";
+import { fechaHablada, type FiltroRecurrentes, type Recurrente, resumenRecurrentes, vozRecurrentes } from "./recurrentes.ts";
 import { rangoSemana } from "./semana.ts";
 
 type Account = { account_id: string; account_name: string; current_balance: number; account_type: string };
@@ -15,7 +15,8 @@ const rules = `FINANZAS:
 - Moneda soles por defecto, dólares si lo dice. "mil" = 1000.
 - Gasto: gasté, pagué, compré, costó. Ingreso: sueldo, cobré, me pagaron, gané.
 - "pon 500 en comida" = presupuesto. "Netflix 45 mensual" = recurrente. "ahorrar 5000 para viaje" = meta.
-- "no fueron 60" o "cámbialo a 60" = editar el último.`;
+- "no fueron 60" o "cámbialo a 60" = editar el último.
+- Voz: una frase. En consultas (analyze_finances) di solo la cifra pedida, redonda y sin céntimos; el desglose va a la pantalla.`;
 
 async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: Data }> {
   const { supabase, user, limaNow } = ctx;
@@ -202,7 +203,7 @@ export const finanzas: AgentModule<Data> = {
     }, ["filter"]),
     tool("analyze_finances", "Analiza patrones financieros, proyecciones y comparaciones: ¿cómo voy?, ¿me alcanza?, ¿en qué gasto más?, ¿dónde puedo ahorrar?", {
       analysis_type: { type: "string", enum: ["projection", "comparison", "recommendations", "overview", "alert_check"] },
-      answer: { type: "string", description: "Respuesta FINAL que David escucha, con los números reales del contexto, en frases cortas (sin bullets). Montos en cifras S/ 0.00. Nunca un marcador ni 'déjame revisar': si no hay datos, dilo." },
+      answer: { type: "string", description: "Respuesta FINAL que David escucha: UNA frase de 80 caracteres o menos con la cifra pedida (real, del contexto), redonda y sin céntimos: 'S/ 312'. Nunca un marcador ni 'déjame revisar': si no hay datos, dilo. Con mucho que contar, el dato principal y '¿Te detallo?'." },
     }, ["analysis_type", "answer"]),
   ],
   handlers: {
@@ -222,14 +223,14 @@ export const finanzas: AgentModule<Data> = {
       if (error) return err(error.message);
       const label = type === "income" ? "ingreso" : "gasto";
       const sym = currency === "USD" ? "US$" : "S/";
-      return { action: "create_transaction", message: conComentario(`Listo, ${label} de ${sym} ${Number(args.amount).toFixed(2)} en ${args.description}.`, args), data: tx };
+      return { action: "create_transaction", message: conComentario(`${label[0]!.toUpperCase()}${label.slice(1)} de ${sym} ${Number(args.amount).toFixed(2)} en ${args.description}.`, args), data: tx };
     },
     async create_budget(args, { supabase, user }, { categories }) {
       const cat = categories.find((c) => c.category_name.toLowerCase() === str(args.category_name).toLowerCase() && c.category_type === "expense");
       if (!cat) return err(`No encontré la categoría "${args.category_name}".`);
       const { error } = await supabase.from("budgets").insert({ user_id: user.id, category_id: cat.category_id, amount_limit: args.amount_limit, period_type: "monthly", alert_threshold: 0.8, is_active: true });
       if (error) return err(error.message);
-      return { action: "create_budget", message: `Presupuesto de S/ ${Number(args.amount_limit).toFixed(2)} creado para ${cat.category_name}.` };
+      return { action: "create_budget", message: `Presupuesto de S/ ${Number(args.amount_limit).toFixed(2)} para ${cat.category_name}.` };
     },
     async create_goal(args, { supabase, user }) {
       const { error } = await supabase.from("savings_goals").insert({ user_id: user.id, goal_name: args.goal_name, target_amount: args.target_amount, current_amount: 0, currency_code: "PEN", target_date: args.target_date ?? null, is_completed: false });
@@ -308,12 +309,15 @@ export const finanzas: AgentModule<Data> = {
       if (error) return err(error.message);
       const proximo = nextDueDate(rec.next_due_date, rec.frequency);
       await supabase.from("recurring_transactions").update({ next_due_date: proximo }).eq("recurring_id", rec.recurring_id);
-      return { action: "pay_recurring", message: `${rec.description} de S/ ${Number(rec.amount).toFixed(2)} marcado como pagado. Próximo pago: ${proximo}.` };
+      // La fecha va en palabras ("el 5 de noviembre"): con "2026-11-05" la voz leía los números sueltos.
+      return { action: "pay_recurring", message: `${rec.description} pagado, S/ ${Number(rec.amount).toFixed(2)}. Próximo: ${fechaHablada(proximo)}.` };
     },
     list_recurring: async (args, { limaNow }, { recurring, paidIds, recurrentesOk }) => {
       if (!recurrentesOk) return err("No pude leer tus pagos fijos. Intenta de nuevo en un momento.");
       const filtro = (["all", "pending", "paid"].includes(str(args.filter)) ? str(args.filter) : "pending") as FiltroRecurrentes;
-      return { action: "list_recurring", message: resumenRecurrentes(recurring, paidIds, limaNow.toISOString().slice(0, 10), filtro) };
+      const hoy = limaNow.toISOString().slice(0, 10);
+      // Pantalla: hasta 5 pagos con su fecha. Voz: el total, el primero y «y N más».
+      return { action: "list_recurring", message: resumenRecurrentes(recurring, paidIds, hoy, filtro), voz: vozRecurrentes(recurring, paidIds, hoy, filtro) };
     },
     analyze_finances: async (args) => ({ action: "analyze_finances", message: str(args.answer) }),
   },

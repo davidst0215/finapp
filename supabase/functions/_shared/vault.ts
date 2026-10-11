@@ -20,7 +20,7 @@ import {
 import { armarCatalogo, CatalogoCache, parametrosBusqueda, recortarFicha, topePorFicha, type Catalogo, type CatalogoRow } from "./vault/catalogo.ts";
 import { rowsForFile } from "./vault/rows.ts";
 import {
-  buildAnswerMessages, clienteChips, mensajeMemoria, parseAnswer, pickRelated, toSources, type ClienteChip, type Hit,
+  buildAnswerMessages, clienteChips, mensajeMemoria, parseAnswer, pickRelated, toSources, type ClienteChip, type Hit, vozMemoria,
   type Related, type RelatedRow, type Source,
 } from "./vault/search.ts";
 import {
@@ -379,8 +379,10 @@ export type SearchResult = {
   related: Related[];
   clientes: ClienteChip[];
   indexed: number;
-  /** Mensaje corto para la voz (solo si se pidió respuesta). */
+  /** Mensaje para la pantalla del agente: la respuesta con su fuente (solo si se pidió respuesta). */
   spoken: string | null;
+  /** Lo que se dice en voz alta: la respuesta sin fuente, de ~100 caracteres como máximo (solo si se pidió respuesta). */
+  voz: string | null;
 };
 
 const catalogoCache = new CatalogoCache();
@@ -464,7 +466,7 @@ export async function searchMemory(db: SupabaseClient, userId: string, input: Se
   const catalog = await catalogP;
   const clientes = clienteChips(catalog);
   const base = { q, clientes, indexed: catalog.length };
-  if (!hits.length) return { ...base, answer: null, answerError: null, sources: [], related: [], spoken: null };
+  if (!hits.length) return { ...base, answer: null, answerError: null, sources: [], related: [], spoken: null, voz: null };
 
   // Relacionados: fichas enlazadas desde la mejor coincidencia (wikilinks y padre) y luego el resto de coincidencias.
   const top = hits[0];
@@ -477,6 +479,7 @@ export async function searchMemory(db: SupabaseClient, userId: string, input: Se
   let answer: string | null = null;
   let answerError: string | null = null;
   let spoken: string | null = null;
+  let voz: string | null = null;
   let shown = hits;
   if (wantAnswer) {
     const fuentes = hits.slice(0, fichaHits.length ? fichaHits.length + 2 : 4);
@@ -494,6 +497,7 @@ export async function searchMemory(db: SupabaseClient, userId: string, input: Se
         const usadas = parsed.found ? (parsed.used.length ? parsed.used.map((n) => fuentes[n - 1]) : fuentes.slice(0, 2)) : fuentes;
         shown = usadas;
         spoken = parsed.found ? mensajeMemoria(parsed.answer, usadas[0]?.title ?? null) : mensajeMemoria(parsed.answer, null);
+        voz = vozMemoria(parsed.answer);
       } catch (e) {
         console.error("vault: no pude redactar la respuesta:", e instanceof Error ? e.message : String(e));
         answerError = "No pude redactar la respuesta; estas son las fichas encontradas.";
@@ -506,5 +510,5 @@ export async function searchMemory(db: SupabaseClient, userId: string, input: Se
     rest: hits.filter((h) => !shown.includes(h)),
     exclude: new Set(shown.map((h) => h.path)),
   });
-  return { ...base, answer, answerError, sources: toSources(shown), related, spoken };
+  return { ...base, answer, answerError, sources: toSources(shown), related, spoken, voz };
 }

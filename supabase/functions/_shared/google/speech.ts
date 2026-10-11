@@ -1,6 +1,6 @@
 // Frases que Wabid dice (y muestra) sobre la agenda y el correo. Las arma el código, no el modelo:
 // horas y días como se hablan, sin inventar nada. Lógica pura.
-import { palabras } from "../voz.ts";
+import { cortoVoz, palabras } from "../voz.ts";
 import type { CalEvent } from "./events.ts";
 import type { MailItem } from "./mail.ts";
 import { addDays, DIAS, limaDateKey, limaHM, MESES, weekdayOf } from "./time.ts";
@@ -31,25 +31,42 @@ const corto = (s: string, max = 60) => (s.length > max ? `${s.slice(0, max - 1).
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const plural = (n: number, uno: string, varios: string) => `${n} ${n === 1 ? uno : varios}`;
 
-// Qué tienes en `key`. Para hoy solo cuenta lo que aún no terminó.
-export function resumenAgenda(events: CalEvent[], key: string, now: Date): string {
+type Agenda = { today: string; dia: string; todos: CalEvent[]; terminados: boolean };
+
+// Los eventos de `key` que cuentan: sin los rechazados y, para hoy, solo los que aún no terminaron. Los de todo el día primero.
+function agendaDe(events: CalEvent[], key: string, now: Date): Agenda {
   const today = limaDateKey(now);
   const nowHM = limaHM(now);
-  const dia = diaHablado(key, today);
   const delDia = events.filter((e) => e.my_response !== "declined" && e.day_key <= key && key <= e.end_day_key);
   const vigentes = key === today ? delDia.filter((e) => e.all_day || e.end_hm === "00:00" || e.end_hm > nowHM) : delDia;
-
-  if (vigentes.length === 0) {
-    if (key === today && delDia.length > 0) return "Ya no te quedan eventos hoy.";
-    return key === today ? "No tienes nada en la agenda hoy." : `No tienes nada en la agenda ${dia}.`;
-  }
   const todos = [...vigentes].sort((a, b) => Number(b.all_day) - Number(a.all_day) || a.start_hm.localeCompare(b.start_hm));
-  const lista = todos.slice(0, 4).map((e) => (e.all_day ? `todo el día, ${corto(e.title)}` : `a ${horaHablada(e.start_hm)}, ${corto(e.title)}`));
-  const resto = todos.length - lista.length;
-  const intro = key === today
-    ? `Te ${todos.length === 1 ? "queda" : "quedan"} ${plural(todos.length, "evento", "eventos")} hoy`
-    : `${cap(dia)} tienes ${plural(todos.length, "evento", "eventos")}`;
-  return `${intro}: ${lista.join("; ")}${resto > 0 ? `; y ${resto} más` : ""}.`;
+  return { today, dia: diaHablado(key, today), todos, terminados: delDia.length > 0 };
+}
+
+const agendaVacia = (a: Agenda, key: string) =>
+  key === a.today ? (a.terminados ? "Ya no te quedan eventos hoy." : "No tienes nada en la agenda hoy.") : `No tienes nada en la agenda ${a.dia}.`;
+
+const introAgenda = (a: Agenda, key: string) =>
+  key === a.today ? `Te ${a.todos.length === 1 ? "queda" : "quedan"} ${plural(a.todos.length, "evento", "eventos")} hoy` : `${cap(a.dia)} tienes ${plural(a.todos.length, "evento", "eventos")}`;
+
+const itemAgenda = (e: CalEvent, max: number) => (e.all_day ? `todo el día, ${corto(e.title, max)}` : `a ${horaHablada(e.start_hm)}, ${corto(e.title, max)}`);
+const itemAgendaVoz = (e: CalEvent) => (e.all_day ? `todo el día, ${cortoVoz(e.title, 30)}` : `a ${horaHablada(e.start_hm)}, ${cortoVoz(e.title, 30)}`);
+
+// Qué tienes en `key` (lo que se ve: hasta 4 eventos). Para hoy solo cuenta lo que aún no terminó.
+export function resumenAgenda(events: CalEvent[], key: string, now: Date): string {
+  const a = agendaDe(events, key, now);
+  if (a.todos.length === 0) return agendaVacia(a, key);
+  const lista = a.todos.slice(0, 4).map((e) => itemAgenda(e, 60));
+  const resto = a.todos.length - lista.length;
+  return `${introAgenda(a, key)}: ${lista.join("; ")}${resto > 0 ? `; y ${resto} más` : ""}.`;
+}
+
+// Lo que se dice: cuántos eventos hay, el primero y "y N más". El resto se ve en pantalla.
+export function vozAgenda(events: CalEvent[], key: string, now: Date): string {
+  const a = agendaDe(events, key, now);
+  if (a.todos.length === 0) return agendaVacia(a, key);
+  const resto = a.todos.length - 1;
+  return `${introAgenda(a, key)}: ${itemAgendaVoz(a.todos[0]!)}${resto > 0 ? `; y ${resto} más` : ""}.`;
 }
 
 export const remitenteCorto = (m: Pick<MailItem, "from_name" | "from_email">) => {
@@ -66,4 +83,15 @@ export function resumenCorreo(items: MailItem[]): string {
   const resto = items.filter((m) => m !== alarma).slice(0, alarma ? 2 : 3);
   if (resto.length) partes.push(resto.map((m) => `${corto(remitenteCorto(m), 24)}: ${corto(m.subject)}`).join("; ") + ".");
   return partes.join(" ");
+}
+
+// Lo que se dice: cuántos hay y lo más urgente (una alarma, o si no el primero). El resto se ve en pantalla.
+export function vozCorreo(items: MailItem[]): string {
+  if (items.length === 0) return "No tienes correos importantes recientes.";
+  const sinLeer = items.filter((m) => m.unread).length;
+  const cuenta = `Tienes ${plural(items.length, "correo importante", "correos importantes")}${sinLeer > 0 ? `, ${sinLeer} sin leer` : ""}`;
+  const alarma = items.find((m) => m.alarm);
+  if (alarma) return `${cuenta}. Ojo: ${remitenteCorto(alarma)} avisa «${cortoVoz(alarma.subject, 32)}».`;
+  const primero = items[0]!;
+  return `${cuenta}; el primero, de ${cortoVoz(remitenteCorto(primero), 20)}: ${cortoVoz(primero.subject, 32)}.`;
 }

@@ -27,3 +27,9 @@ export function respuestaInservible(call: ToolCall): boolean {
   const texto = args.answer.trim();
   return texto.length < 2 || RELLENO.test(texto);
 }
+
+/** Lo que se dice en voz alta: `voz` si el handler lo trae; si no, el mismo `message` que se ve. */
+export function loQueSeDice(r: { message?: unknown; voz?: unknown }): string {
+  const voz = typeof r.voz === "string" ? r.voz.trim() : "";
+  return voz || (typeof r.message === "string" ? r.message : "");
+}

@@ -44,3 +44,87 @@ export function paraVoz(text: string): string {
   t = t.replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, "");
   return t.replace(/\s{2,}/g, " ").trim();
 }
+
+// --- Tope de voz -----------------------------------------------------------------------------------------------------
+// ElevenLabs cobra por carácter enviado. Todo lo que se manda pasa por `prepararVoz`: nunca más de VOZ_MAX caracteres
+// ya convertidos (los montos en palabras crecen: "S/ 45.90" son 8 caracteres y "cuarenta y cinco soles con noventa
+// céntimos" son 43), cortado donde una voz humana pararía y nunca a mitad de palabra.
+
+/** Máximo de caracteres que se mandan a la voz en cada respuesta (ya convertidos a palabras). */
+export const VOZ_MAX = 100;
+
+// Abreviaturas que llevan punto sin cerrar la oración: "Dr. Pérez", "Av. Arequipa", "EE. UU.", "pág. 3".
+const ABREVIATURAS = new Set(["dr", "dra", "sr", "sra", "srta", "ud", "uds", "av", "ing", "lic", "prof", "pág", "págs", "núm", "tel", "vs", "aprox", "ee", "jr"]);
+const CIERRES = new Set([")", "]", "»", '"', "'", "”", "’"]);
+
+/**
+ * Posiciones (exclusivas) donde termina una oración. Un punto cuenta solo si va seguido de espacio o del final, y no
+ * cuando lo que sigue empieza en minúscula ("p. m. mañana", "etc. y"), ni tras una abreviatura de tratamiento. Así
+ * "S/ 45.90", "12.5 por ciento" y "Dr. Pérez" no parten una oración.
+ */
+export function finesDeOracion(texto: string): number[] {
+  const fines: number[] = [];
+  for (const m of texto.matchAll(/[.!?…]+/g)) {
+    let fin = m.index + m[0].length;
+    while (fin < texto.length && CIERRES.has(texto[fin])) fin++;
+    if (fin < texto.length && !/\s/.test(texto[fin])) continue; // "45.90", "a.b": no es un fin
+    const resto = texto.slice(fin).trimStart();
+    if (resto && /^\p{Ll}/u.test(resto)) continue; // sigue en minúscula: la oración continúa
+    if (m[0] === ".") {
+      const palabra = /(\p{L}+)$/u.exec(texto.slice(0, m.index))?.[1]?.toLowerCase();
+      if (palabra && ABREVIATURAS.has(palabra)) continue;
+    }
+    fines.push(fin);
+  }
+  return fines;
+}
+
+/**
+ * Recorta `texto` a `max` caracteres como lo diría una persona:
+ * 1. hasta el último fin de oración que cabe (si deja al menos el 30 % del tope; una oración de 10 letras no es una respuesta);
+ * 2. si la primera oración ya se pasa, hasta la última pausa natural (coma, punto y coma o dos puntos) y cierra con punto;
+ * 3. sin pausa, hasta la última palabra completa, cerrando con punto.
+ * Nunca pasa de `max` ni corta una palabra (salvo una "palabra" sola más larga que el tope, p. ej. una URL).
+ */
+export function acotarVoz(texto: string, max: number = VOZ_MAX): string {
+  const t = texto.replace(/\s+/g, " ").trim();
+  if (t.length <= max) return t;
+
+  const fin = finesDeOracion(t).filter((f) => f <= max).at(-1) ?? 0;
+  if (fin >= max * 0.3) return t.slice(0, fin).trim();
+
+  // Hay que dejar sitio al punto final. `ventana` son palabras completas (corta en el último espacio si hace falta).
+  const ventana = t.slice(0, max - 1);
+  const completa = /\s/.test(t[max - 1] ?? " ");
+  const palabras = completa ? ventana : ventana.slice(0, Math.max(ventana.lastIndexOf(" "), 0)) || ventana;
+
+  const pausa = [...palabras.matchAll(/[,;:](?=\s)/g)].at(-1)?.index ?? -1;
+  const corte = pausa >= max * 0.35 ? palabras.slice(0, pausa) : palabras;
+  return `${sinColgantes(corte)}.`;
+}
+
+// Palabras que no pueden cerrar una frase ("…lo que pasa con la."): si el corte las deja al final se quitan.
+const COLGANTES = new Set(["a", "al", "con", "de", "del", "e", "el", "en", "la", "las", "lo", "los", "o", "para", "por", "que", "se", "su", "sus", "u", "un", "una", "y", "tu", "tus", "mi", "mis", "sin", "como", "ni"]);
+
+function sinColgantes(texto: string): string {
+  let t = texto.replace(/[\s,;:.!?…\-–—]+$/, "");
+  for (;;) {
+    const m = /^(.*\s)(\p{L}+)$/su.exec(t);
+    if (!m || !COLGANTES.has(m[2].toLowerCase())) return t;
+    t = m[1].replace(/[\s,;:.!?…\-–—]+$/, "");
+  }
+}
+
+/** Lo que de verdad se manda a ElevenLabs: montos y símbolos en palabras (paraVoz) y luego el tope. */
+export function prepararVoz(texto: string, max: number = VOZ_MAX): string {
+  return acotarVoz(paraVoz(texto), max);
+}
+
+/** Recorta un título o nombre para decirlo: en el límite de una palabra, sin puntos suspensivos (la voz los lee raro). */
+export function cortoVoz(s: string, max: number): string {
+  const t = s.replace(/\s+/g, " ").trim();
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max);
+  const sp = cut.lastIndexOf(" ");
+  return sinColgantes(sp > max * 0.5 ? cut.slice(0, sp) : cut);
+}

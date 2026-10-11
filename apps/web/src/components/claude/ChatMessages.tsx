@@ -170,7 +170,7 @@ function ClaudeBubble({ item, spacing, showMeta }: { item: ClaudeItem; spacing: 
                 type="button"
                 onClick={() => alternarVoz(item.id, item.text)}
                 aria-pressed={mia}
-                aria-label={mia ? 'Detener la lectura' : 'Escuchar esta respuesta'}
+                aria-label={mia ? 'Detener la lectura' : 'Escuchar un resumen de esta respuesta'}
                 className="flex min-h-[44px] items-center gap-1.5 rounded-full pr-2 text-[14px] font-semibold text-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
               >
                 {mia ? (voz.fase === 'cargando' ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Square size={14} fill="currentColor" aria-hidden="true" />) : <Volume2 size={17} strokeWidth={1.9} aria-hidden="true" />}

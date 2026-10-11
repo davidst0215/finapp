@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mapEvent, type CalEvent, type RawEvent } from "./events.ts";
 import type { MailItem } from "./mail.ts";
-import { diaHablado, horaHablada, remitenteCorto, resumenAgenda, resumenCorreo } from "./speech.ts";
+import { diaHablado, horaHablada, remitenteCorto, resumenAgenda, resumenCorreo, vozAgenda, vozCorreo } from "./speech.ts";
 
 const LUNES_8AM = new Date("2026-10-05T13:00:00Z"); // lunes 5 de octubre de 2026, 08:00 en Lima
 
@@ -106,5 +106,39 @@ describe("resumen del correo", () => {
   it("remitente corto: nombre de pila o usuario del correo", () => {
     assert.equal(remitenteCorto({ from_name: "Mónica Pérez", from_email: "m@x.co" }), "Mónica");
     assert.equal(remitenteCorto({ from_name: "", from_email: "alertas@bcp.com.pe" }), "alertas");
+  });
+});
+
+describe("lo que se dice de la agenda y el correo (la pantalla conserva el detalle)", () => {
+  const seis = Array.from({ length: 5 }, (_, i) =>
+    ev(`v${i}`, i === 0 ? "Daily de Maqui Colombia" : `Evento ${i}`, `${String(9 + i).padStart(2, "0")}:00`, `${String(9 + i).padStart(2, "0")}:30`));
+
+  it("agenda: el primer evento y «y N más»", () => {
+    assert.equal(vozAgenda(seis, "2026-10-05", LUNES_8AM), "Te quedan 5 eventos hoy: a las nueve de la mañana, Daily de Maqui Colombia; y 4 más.");
+    assert.match(resumenAgenda(seis, "2026-10-05", LUNES_8AM), /Evento 3; y 1 más\.$/); // la pantalla sigue con 4
+    const otroDia = seis.map((e) => ({ ...e, day_key: "2026-10-06", end_day_key: "2026-10-06" }));
+    assert.equal(vozAgenda(otroDia.slice(0, 1), "2026-10-06", LUNES_8AM), "Mañana tienes 1 evento: a las nueve de la mañana, Daily de Maqui Colombia.");
+  });
+
+  it("agenda: vacía, y título largo cortado en palabra", () => {
+    assert.equal(vozAgenda([], "2026-10-06", LUNES_8AM), "No tienes nada en la agenda mañana.");
+    const largo = { ...ev("9", "Revisión trimestral de resultados con el comité de dirección y los socios", "09:00", "10:00") };
+    const v = vozAgenda([largo], "2026-10-05", LUNES_8AM);
+    assert.equal(v, "Te queda 1 evento hoy: a las nueve de la mañana, Revisión trimestral.");
+    assert.ok(v.length <= 100);
+  });
+
+  it("correo: cuántos y lo más urgente (la alarma, o el primero)", () => {
+    const mail = (over: Partial<MailItem>): MailItem => ({
+      id: "1", thread_id: "t", from_name: "", from_email: "x@y.co", subject: "Asunto", snippet: "", received_at: "", unread: true, important: true, alarm: false, ...over,
+    });
+    const items = [
+      mail({ id: "1", from_name: "Mónica Pérez", subject: "Informe 03 de costos listo para revisión" }),
+      mail({ id: "2", from_name: "BCP", subject: "Cargo no reconocido en tu tarjeta de crédito", alarm: true }),
+    ];
+    assert.equal(vozCorreo(items), "Tienes 2 correos importantes, 2 sin leer. Ojo: BCP avisa «Cargo no reconocido».");
+    assert.equal(vozCorreo([items[0]!]), "Tienes 1 correo importante, 1 sin leer; el primero, de Mónica: Informe 03 de costos listo.");
+    assert.equal(vozCorreo([]), "No tienes correos importantes recientes.");
+    assert.ok(resumenCorreo(items).length > vozCorreo(items).length);
   });
 });

@@ -3,11 +3,13 @@
 // y corre antes de confirmar la sesión. Todo ocurre en el handler.
 import { adminClient } from "../../_shared/http.ts";
 import { generarBrief } from "../../brief/generate.ts";
+import { vozBrief } from "../../brief/logic.ts";
 import { type AgentModule, tool } from "../types.ts";
 
 const rules = `BRIEF DEL DÍA:
 - "mi brief", "resumen del día", "cómo viene mi día" = get_brief.
-- "qué tengo hoy", "qué reuniones tengo", "mi agenda de <día>" = calendar_view, no get_brief.`;
+- "qué tengo hoy", "qué reuniones tengo", "mi agenda de <día>" = calendar_view, no get_brief.
+- Voz: una frase (el titular); el brief completo va a la pantalla.`;
 
 export const brief: AgentModule = {
   id: "brief",
@@ -22,7 +24,8 @@ export const brief: AgentModule = {
       }
       try {
         const { brief: b } = await generarBrief(adminClient(), user.id, "manual");
-        return { action: "get_brief", message: b.texto, data: { fecha: b.fecha } };
+        // Pantalla: el brief completo. Voz: solo el titular, con los conteos de las secciones.
+        return { action: "get_brief", message: b.texto, voz: vozBrief(b.secciones), data: { fecha: b.fecha } };
       } catch (e) {
         console.error("get_brief:", e instanceof Error ? e.message : String(e));
         return { action: "error", message: "No pude armar tu brief ahora. Intenta de nuevo en un momento." };

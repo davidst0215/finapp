@@ -5,7 +5,10 @@ export type ToolDefinition = {
   function: { name: string; description: string; parameters: Record<string, unknown> };
 };
 
-export type ToolResult = { action: string; message: string; data?: unknown };
+// `message` es lo que se ve (el detalle completo). `voz`, si viene, es lo que se dice en voz alta: una frase corta con el dato
+// principal, porque ElevenLabs cobra por carácter. Sin `voz` se dice `message`. Siempre pasa por el tope VOZ_MAX.
+// Opcional a propósito: un cliente viejo ignora `voz` y sigue funcionando con `message`.
+export type ToolResult = { action: string; message: string; voz?: string; data?: unknown };
 
 export type AgentContext = {
   supabase: SupabaseClient; // cliente con el JWT del usuario: aplica RLS
