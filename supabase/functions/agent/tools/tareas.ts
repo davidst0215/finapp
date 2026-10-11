@@ -19,7 +19,7 @@ import { fraseAvisoTarea, planDeTarea } from "./avisosPlan.ts";
 import { type PlanTarea, planearTarea } from "./tareasPlan.ts";
 
 const rules = `TAREAS (Norte, el vault de David):
-- Tarea = algo por hacer. "agrega / anota / apunta / agéndame …" → create_task. "ya terminé / completé X", "marca X como hecha", "reabre X", "X está en curso" → update_task. "qué tengo pendiente / vencidas / para hoy / en el cajón / de <proyecto>" → list_tasks.
+- Tarea = algo por hacer. "agrega / apunta / agéndame …" + una acción pendiente → create_task. Lo que se decidió o pasó ("anota que decidimos …") es una nota (add_note), no una tarea. "ya terminé / completé X", "marca X como hecha", "reabre X", "X está en curso" → update_task. "qué tengo pendiente / vencidas / para hoy / en el cajón / de <proyecto>" → list_tasks.
 - "agéndame revisar X el jueves", "pendiente para mañana a las 5" → create_task con due y, si dio hora, time en 24 h ("a las 5" de la tarde = 17:00). Calendario (calendar_create_event) solo si dice "en mi calendario" o es una reunión o cita.
 - "Recuérdame / avísame" solo, sin pedir anotarlo, es create_reminder (otro módulo). Si dice "anótalo y recuérdame", create_task: además programa el aviso a la hora que dio (solo el día: 9:00); no lo repitas. La hora de "y recuérdame a las 5" va en time (17:00), aunque la tarea no tenga hora.
 - "pagué / gasté / compré" es finanzas, no tareas.
@@ -27,14 +27,14 @@ const rules = `TAREAS (Norte, el vault de David):
 - Proyecto: sus palabras tal cual ("nova fondos", "tdv bolsa", "maqui perú"); el sistema las reconoce. Sin proyecto, vacío: va al cajón. Si el sistema pregunta cuál ("¿app o normativa?") o confirma ("¿En Vera?") y David responde, repite create_task con la tarea original (mira el historial) y el proyecto completo. Si pregunta la hora ("¿A qué hora te aviso?"), repite create_task con la hora en time.
 - Voz: una frase; el detalle va a la pantalla.`;
 
-const str = (v: unknown) => (typeof v === "string" ? v : "");
-const err = (message: string): ToolResult => ({ action: "error", message });
+export const str = (v: unknown) => (typeof v === "string" ? v : "");
+export const err = (message: string): ToolResult => ({ action: "error", message });
 const hoyDe = (ctx: AgentContext) => relojLima(ctx.limaNow).hoy;
 
 /** Una línea por proyecto pedido, sin el texto de David: sirve para ver cuántas veces no se encuentra o queda ambiguo. */
-const logProyecto = (m: Resolucion) =>
+export const logProyecto = (m: Resolucion, evt = "tareas") =>
   console.log(JSON.stringify({
-    evt: "tareas", proyecto_resuelto: m.kind === "one", candidatos: m.kind === "one" ? 1 : m.kind === "many" ? m.opciones.length : 0,
+    evt, proyecto_resuelto: m.kind === "one", candidatos: m.kind === "one" ? 1 : m.kind === "many" ? m.opciones.length : 0,
     aproximado: m.kind !== "none" && m.aproximado,
   }));
 
@@ -55,7 +55,7 @@ const guard = (fn: Handler): Handler => async (args, ctx) => {
   }
 };
 
-function acceso(ctx: AgentContext) {
+export function acceso(ctx: AgentContext) {
   const env = vaultEnv();
   assertOwner(ctx.user.id, env);
   return { env, db: ctx.supabase, userId: ctx.user.id, hoy: hoyDe(ctx) };
@@ -217,7 +217,7 @@ export const tareas: AgentModule = {
       filter: { type: "string", enum: ["today", "overdue", "project", "inbox", "summary"], description: "today=para hoy, overdue=vencidas, project=de un proyecto/frente, inbox=cajón desastre, summary=resumen general" },
       project: { type: "string", description: "Solo con filter=project: proyecto o frente con las palabras de David" },
     }, ["filter"]),
-    tool("create_task", "Crea una tarea nueva en Norte (algo por hacer: 'agrega', 'anota', 'agéndame…', 'recuérdame…'), con fecha y hora si las dijo.", {
+    tool("create_task", "Crea una tarea nueva en Norte (algo por hacer: 'agrega', 'apunta', 'agéndame…', 'recuérdame…'; no para decisiones, que son notas), con fecha y hora si las dijo.", {
       text: { type: "string", description: "La tarea, corta y en infinitivo (ej. 'Llamar a Ana')" },
       project: { type: "string", description: "Proyecto o frente con las palabras de David ('nova fondos', 'maqui colombia cobranzas'); vacío si no lo dijo (va al cajón)" },
       due: { type: "string", description: "Cuándo: 'hoy', 'mañana', 'viernes', '+3' o AAAA-MM-DD si dijo día y mes" },
