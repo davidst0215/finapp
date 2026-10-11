@@ -39,12 +39,15 @@ export function montosAVoz(texto: string): string {
 /** Texto listo para la voz: montos a palabras (determinista) y sin formato de texto. */
 export function paraVoz(text: string): string {
   // Un enlace markdown se dice por su texto: la URL no se lee ("[el doc](https://…)" → "el doc").
-  let t = montosAVoz(text.replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1"));
+  let t = montosAVoz(text.replace(ENLACE_MD, "$1"));
   t = t.replace(/\*\*|\*/g, "").replace(/#{1,3}\s/g, "").replace(/(^|\n)\s*[-•]\s/g, "$1");
   t = t.replace(/(\d+(?:\.\d+)?)%/g, "$1 por ciento");
   t = t.replace(EMOJI, (c) => (SIMBOLOS_DE_TEXTO.has(c) ? c : ""));
   return t.replace(/\s{2,}/g, " ").trim();
 }
+
+// [texto](url) e ![alt](url). La URL admite un nivel de paréntesis: https://es.wikipedia.org/wiki/Foo_(bar).
+const ENLACE_MD = /!?\[([^\]]*)\]\((?:[^()]|\([^()]*\))*\)/g;
 
 // Emojis y sus piezas: pictogramas (⭐ ⏰ 🫠 …), tonos de piel, banderas, selector de variación (U+FE0F), unión (U+200D) y
 // teclas (U+20E3). ElevenLabs los leería como "estrella" o los saltaría, pero cobra el carácter.
@@ -89,7 +92,7 @@ export function finesDeOracion(texto: string): number[] {
 /** Una oración más corta que esto no es una respuesta ("Sí."): se sigue hasta la pausa en vez de quedarse con ella. */
 const MIN_ORACION = 12;
 // Tras una coma que abre un contraste ("…, pero no los gastos") no se corta: dejaría una afirmación falsa ("Te alcanza.").
-const CONTRASTE = /^(?:pero|aunque|sin embargo|salvo|excepto|no)(?![\p{L}\p{N}])/iu;
+const CONTRASTE = /^(?:pero|aunque|sin embargo|salvo|excepto|y no|no)(?![\p{L}\p{N}])/iu;
 
 /**
  * Recorta `texto` a `max` caracteres como lo diría una persona:
@@ -116,20 +119,66 @@ export function acotarVoz(texto: string, max: number = VOZ_MAX): string {
     .filter((m) => m.index < palabras.length && !CONTRASTE.test(t.slice(m.index + 1).trimStart()));
   const pausa = pausas.at(-1)?.index ?? -1;
   const corte = pausa >= max * 0.35 ? palabras.slice(0, pausa) : palabras;
-  return `${sinColgantes(corte)}.`;
+  return cerrar(t, corte, max);
 }
 
-// Palabras que no pueden cerrar una frase ("…lo que pasa con la."): si el corte las deja al final se quitan.
-const COLGANTES = new Set(["a", "al", "con", "de", "del", "e", "el", "en", "la", "las", "lo", "los", "o", "para", "por", "que", "se", "su", "sus", "u", "un", "una", "y", "tu", "tus", "mi", "mis", "sin", "como", "ni", "no", "sí", "más", "menos", "muy", "ya", "pero", "aunque", "salvo", "excepto", "embargo"]);
+// Conectores que cambian el sentido de lo anterior: si el corte los borra, la frase afirma lo contrario.
+const CONTRASTE_PALABRAS = new Set(["pero", "aunque", "salvo", "excepto", "embargo", "no"]);
+// Un conector que trae su negación ("…, pero no para los gastos"): se puede conservar aunque lo demás se acorte.
+// Está justo después del corte, o tras lo que falta de la cláusula (hasta su primera pausa).
+const CONECTOR_NEGADO = /^(?:[\s,;:]*|[^,;:]*[,;:]\s*)((?:pero|y|aunque|sino) no|no)(?![\p{L}\p{N}])/iu;
+// La primera pausa que sigue al corte abre un contraste: se cortó dentro de la cláusula que ese contraste matiza.
+const SIGUE_UN_CONTRASTE = /^[^,;:]*[,;:]\s*(?:pero|aunque|sin embargo|salvo|excepto|y no|no)(?![\p{L}\p{N}])/iu;
 
-function sinColgantes(texto: string): string {
+/**
+ * Cierra el corte con punto. Si al quitar las palabras colgantes se borró un conector de contraste o una negación (o el
+ * corte cae justo antes de uno), la frase quedaría afirmando lo contrario ("Tu saldo alcanza para todo el mes." cuando era
+ * "…, pero no para los gastos variables"). Entonces:
+ * 1. se corta antes de esa cláusula afirmativa, en el límite anterior (oración o pausa), si deja al menos MIN_ORACION;
+ * 2. si no, se conserva la negación acortando la cláusula para que quepa ("Tu saldo alcanza para todos los pagos fijos, pero no.").
+ * Si ninguna de las dos es posible (el conector no trae "no"), se cierra como siempre.
+ */
+function cerrar(t: string, corte: string, max: number): string {
+  const { texto: limpio, quitadas } = quitarColgantes(corte);
+  const resto = t.slice(corte.length);
+  const cambiaElSentido = quitadas.some((w) => CONTRASTE_PALABRAS.has(w)) ||
+    CONTRASTE.test(resto.replace(/^[\s,;:.!?…\-–—]+/, "")) || SIGUE_UN_CONTRASTE.test(resto);
+  if (!cambiaElSentido) return `${limpio}.`;
+
+  const fin = finesDeOracion(limpio).filter((f) => f < limpio.length).at(-1) ?? 0;
+  const coma = [...limpio.matchAll(/[,;:](?=\s)/g)].at(-1)?.index ?? -1;
+  const previos = [fin > 0 ? limpio.slice(0, fin).trim() : "", coma > 0 ? `${sinColgantes(limpio.slice(0, coma))}.` : ""];
+  const previo = previos.sort((a, b) => b.length - a.length)[0] ?? "";
+  if (previo.length >= MIN_ORACION) return previo;
+
+  const conector = CONECTOR_NEGADO.exec(t.slice(limpio.length))?.[1];
+  if (conector) {
+    const union = /^y\b/i.test(conector) ? " " : ", ";
+    const afirmativa = cortoVoz(limpio, max - union.length - conector.length - 1);
+    if (afirmativa.length >= MIN_ORACION) return `${afirmativa}${union}${conector}.`;
+  }
+  return `${limpio}.`;
+}
+
+// Palabras que no pueden cerrar una frase ("…lo que pasa con la."): si el corte las deja al final se quitan. Un número
+// dicho en palabras ("mil quinientos") tampoco: sin su unidad ("soles") diría una cifra que no es la del monto.
+const NUMERALES = [...U, ...D, ...C, "cien", "mil", "millón", "millones"].filter(Boolean);
+const COLGANTES = new Set([
+  ...NUMERALES,"a", "al", "con", "de", "del", "e", "el", "en", "la", "las", "lo", "los", "o", "para", "por", "que", "se", "su", "sus", "u", "un", "una", "y", "tu", "tus", "mi", "mis", "sin", "como", "ni", "no", "sí", "más", "menos", "muy", "ya", "pero", "aunque", "salvo", "excepto", "embargo", "este", "esta", "estos", "estas", "ese", "esa", "esos", "esas", "todos", "todas", "cada"]);
+
+/** El texto sin puntuación ni palabras colgantes al final, y las palabras que se quitaron (en minúscula, de atrás hacia adelante). */
+function quitarColgantes(texto: string): { texto: string; quitadas: string[] } {
   let t = texto.replace(/[\s,;:.!?…\-–—]+$/, "");
+  const quitadas: string[] = [];
   for (;;) {
     const m = /^(.*\s)(\p{L}+)$/su.exec(t);
-    if (!m || !COLGANTES.has(m[2].toLowerCase())) return t;
+    if (!m || !COLGANTES.has(m[2].toLowerCase())) return { texto: t, quitadas };
+    quitadas.push(m[2].toLowerCase());
     t = m[1].replace(/[\s,;:.!?…\-–—]+$/, "");
   }
 }
+
+const sinColgantes = (texto: string): string => quitarColgantes(texto).texto;
 
 /** Lo que de verdad se manda a ElevenLabs: montos y símbolos en palabras (paraVoz) y luego el tope. */
 export function prepararVoz(texto: string, max: number = VOZ_MAX): string {

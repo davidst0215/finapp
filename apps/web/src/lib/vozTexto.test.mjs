@@ -23,6 +23,8 @@ test("limpiarParaVoz: código, énfasis, enlaces, encabezados", () => {
 
 test("limpiarParaVoz: un enlace markdown queda como su texto y una imagen como su descripción", () => {
   assert.equal(limpiarParaVoz("Mira [el informe](https://x.y/z?a=1) y ![captura](a.png)."), "Mira el informe y captura.");
+  // Una URL con paréntesis (Wikipedia) no deja restos.
+  assert.equal(limpiarParaVoz("Ver [Foo](https://es.wikipedia.org/wiki/Foo_(bar)) hoy."), "Ver Foo hoy.");
 });
 
 test("primeraParte: salta código y líneas sin letras; una línea muy corta se junta con la siguiente", () => {
