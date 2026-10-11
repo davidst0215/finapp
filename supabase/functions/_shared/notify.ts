@@ -6,6 +6,7 @@ import {
   buildPushPayload,
   nextFailureCount,
   NO_PUSH,
+  PUSH_FALLIDO,
   shouldDropSubscription,
   parseSubscriptionInput,
   type PushSendResult,
@@ -43,7 +44,8 @@ export async function notifyDetailed(db: SupabaseClient, userId: string, notice:
   return { id, push: await pushToDevices(db, userId, id, notice) };
 }
 
-async function insertNotice(db: SupabaseClient, userId: string, notice: Notice): Promise<string | null> {
+// Exportadas para la función `avisos`: guarda en la bandeja UNA vez y reintenta solo el push (no duplica la fila).
+export async function insertNotice(db: SupabaseClient, userId: string, notice: Notice): Promise<string | null> {
   const { data, error } = await db.from("notifications").insert({
     user_id: userId,
     kind: notice.kind,
@@ -61,7 +63,7 @@ async function insertNotice(db: SupabaseClient, userId: string, notice: Notice):
 type SubscriptionRow = { subscription_id: string; endpoint: string; p256dh: string; auth: string; failures: number };
 type DbWrite = PromiseLike<{ error: { message: string } | null }>;
 
-async function pushToDevices(db: SupabaseClient, userId: string, notificationId: string, notice: Notice): Promise<PushSummary> {
+export async function pushToDevices(db: SupabaseClient, userId: string, notificationId: string, notice: Notice): Promise<PushSummary> {
   try {
     if (!pushConfigured()) return NO_PUSH; // aún sin claves VAPID: el aviso queda solo en la bandeja
 
@@ -70,7 +72,7 @@ async function pushToDevices(db: SupabaseClient, userId: string, notificationId:
       .eq("user_id", userId);
     if (error) {
       console.error("push: leer suscripciones:", error.message);
-      return NO_PUSH;
+      return PUSH_FALLIDO; // un error real, no «sin suscripciones»: quien reintenta (función avisos) no debe darlo por entregado
     }
     const subs = (data ?? []) as SubscriptionRow[];
     if (subs.length === 0) return NO_PUSH;
@@ -92,7 +94,7 @@ async function pushToDevices(db: SupabaseClient, userId: string, notificationId:
     return summarizePush(results);
   } catch (e) {
     console.error("push:", e instanceof Error ? e.message : String(e));
-    return NO_PUSH;
+    return PUSH_FALLIDO;
   }
 }
 

@@ -1,6 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "jsr:@supabase/supabase-js@2";
+import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 
+import { patrimonio, textoTc, ultimaTasa } from "../_shared/fx.ts";
 import { LLM_BODY, LLM_URL, llmAuth, llmConfigured } from "../_shared/llm.ts";
 
 const SYSTEM_PROMPT = `Eres un asistente financiero personal inteligente. Tu nombre es FinBot.
@@ -12,7 +13,7 @@ REGLAS:
 - Si te preguntan algo que no está en el contexto, dilo honestamente
 - Da consejos prácticos basados en los patrones que ves
 - Usa formato corto: bullets, números, sin párrafos largos
-- Moneda: Soles peruanos (S/)
+- Moneda: Soles peruanos (S/). Los totales ya traen los dólares convertidos a soles; lo que va en US$ está en dólares. Nunca sumes dólares como soles
 - Si detectas problemas (gastos excesivos, presupuestos rebasados), alerta al usuario
 - Sé directo, no uses frases de relleno como "¡Excelente pregunta!"`;
 
@@ -192,7 +193,7 @@ Deno.serve(async (req: Request) => {
 });
 
 async function buildFinancialContext(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient,
   userId: string
 ): Promise<string> {
   const now = new Date();
@@ -216,10 +217,13 @@ async function buildFinancialContext(
     for (const c of categories.slice(0, 8)) parts.push(`- ${c.category_name}: S/${c.total_amount} (${c.percentage}%)`);
   }
 
-  const { data: accounts } = await supabase.from("accounts").select("account_name, account_type, current_balance").eq("user_id", userId).eq("is_active", true);
+  const { data: accounts } = await supabase.from("accounts").select("account_name, account_type, currency_code, current_balance").eq("user_id", userId).eq("is_active", true);
   if (accounts && accounts.length > 0) {
-    parts.push("\nCUENTAS:");
-    for (const a of accounts) parts.push(`- ${a.account_name} ${a.account_type === "credit_card" ? "(TC)" : ""}: S/${a.current_balance}`);
+    parts.push("\nCUENTAS (la tarjeta de crédito muestra lo que debes):");
+    for (const a of accounts) parts.push(`- ${a.account_name} ${a.account_type === "credit_card" ? "(TC)" : ""}: ${a.currency_code === "USD" ? "US$" : "S/"}${a.current_balance}`);
+    const tc = await ultimaTasa(supabase);
+    const p = patrimonio(accounts, tc);
+    parts.push(`PATRIMONIO NETO EN SOLES: S/${p.soles.toFixed(2)}${p.hayUsd ? (p.usdEnSoles !== null ? ` (incluye US$${p.usd.toFixed(2)} a TC ${textoTc(tc!.valor)})` : ` (SIN contar US$${p.usd.toFixed(2)}: falta el tipo de cambio)`) : ""}`);
   }
 
   const { data: budgets } = await supabase.rpc("fn_get_budget_status");
@@ -231,12 +235,12 @@ async function buildFinancialContext(
     }
   }
 
-  const { data: recentTx } = await supabase.from("transactions").select("description, amount, transaction_type, transaction_date").eq("user_id", userId).order("transaction_date", { ascending: false }).limit(10);
+  const { data: recentTx } = await supabase.from("transactions").select("description, amount, currency_code, transaction_type, transaction_date").eq("user_id", userId).order("transaction_date", { ascending: false }).limit(10);
   if (recentTx && recentTx.length > 0) {
     parts.push("\nÚLTIMAS TRANSACCIONES:");
     for (const t of recentTx) {
       const tipo = t.transaction_type === "income" ? "+" : "-";
-      parts.push(`- ${new Date(t.transaction_date).toLocaleDateString("es-PE")}: ${tipo}S/${t.amount} - ${t.description ?? "Sin desc."}`);
+      parts.push(`- ${new Date(t.transaction_date).toLocaleDateString("es-PE")}: ${tipo}${t.currency_code === "USD" ? "US$" : "S/"}${t.amount} - ${t.description ?? "Sin desc."}`);
     }
   }
 

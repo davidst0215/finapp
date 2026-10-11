@@ -202,9 +202,12 @@ export function pushPolicyFor(kind: string): { urgency: PushUrgency; ttl: number
 // Resultado de enviar a UN dispositivo. `error` = ni siquiera hubo respuesta HTTP (red, cifrado, tiempo agotado).
 export type PushSendResult = { outcome: PushOutcome | "error"; status: number | null };
 
-export type PushSummary = { devices: number; sent: number; removed: number; failed: number; statuses: Array<number | null> };
+// `error`: el envío NO se pudo intentar (no se leyeron las suscripciones o algo lanzó). No es lo mismo que NO_PUSH, que es "no hay a quién
+// enviar" (sin suscripciones o VAPID sin configurar): lo segundo no mejora al reintentar; lo primero sí.
+export type PushSummary = { devices: number; sent: number; removed: number; failed: number; statuses: Array<number | null>; error?: boolean };
 
 export const NO_PUSH: PushSummary = { devices: 0, sent: 0, removed: 0, failed: 0, statuses: [] };
+export const PUSH_FALLIDO: PushSummary = { ...NO_PUSH, error: true };
 
 export function summarizePush(results: PushSendResult[]): PushSummary {
   return {

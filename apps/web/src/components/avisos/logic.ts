@@ -50,6 +50,26 @@ export function formatRelative(iso: string, now: Date): string {
   return fecha.getUTCFullYear() === hoy.getUTCFullYear() ? dia : `${dia} ${fecha.getUTCFullYear()}`;
 }
 
+const DIAS_CORTOS = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
+
+// Cuándo suena un recordatorio, en hora de Lima: "hoy · 5:00 p. m.", "mañana · 9:00 a. m.", "jue 15 oct · 9:00 a. m.".
+// Los días cuentan por calendario de Lima (a las 22:30 de Lima ya es el día siguiente en UTC). Si la hora ya llegó y el
+// aviso sigue pendiente, está por salir: "ahora".
+export function formatCuando(iso: string, now: Date): string {
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return '';
+  if (then <= now.getTime()) return 'ahora';
+  const lima = new Date(then - LIMA_MS);
+  const h = lima.getUTCHours();
+  const hora = `${h % 12 === 0 ? 12 : h % 12}:${String(lima.getUTCMinutes()).padStart(2, '0')} ${h < 12 ? 'a. m.' : 'p. m.'}`;
+  const dias = diaDeLima(then) - diaDeLima(now.getTime());
+  if (dias === 0) return `hoy · ${hora}`;
+  if (dias === 1) return `mañana · ${hora}`;
+  const hoy = new Date(now.getTime() - LIMA_MS);
+  const anio = lima.getUTCFullYear() === hoy.getUTCFullYear() ? '' : ` ${lima.getUTCFullYear()}`;
+  return `${DIAS_CORTOS[lima.getUTCDay()]} ${lima.getUTCDate()} ${MESES[lima.getUTCMonth()]}${anio} · ${hora}`;
+}
+
 // ── Rutas ────────────────────────────────────────────────────────────────────
 
 // Misma regla que el servidor (supabase/functions/_shared/webpush-core.ts, isSafeAppPath): solo rutas de esta app.

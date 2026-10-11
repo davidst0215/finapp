@@ -7,7 +7,16 @@ import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import { Spinner } from '@/components/ui/Spinner';
+import { NotaCambio } from '@/components/ui/NotaCambio';
+import { conversionDePatrimonio, diaLima, equivalenteEnSoles, notaConversion, patrimonio } from '@/lib/fx';
+import { useTipoCambio } from '@/stores/fxStore';
 import type { AccountType } from '@/types/database';
+
+type Moneda = 'PEN' | 'USD';
+const MONEDAS: { code: Moneda; label: string }[] = [
+  { code: 'PEN', label: 'S/ Soles' },
+  { code: 'USD', label: 'US$ Dólares' },
+];
 
 const accountTypeConfig: Record<string, { icon: typeof Wallet; label: string; color: string }> = {
   checking: { icon: Wallet, label: 'Cuenta corriente', color: '#f0f0f2' },
@@ -23,8 +32,10 @@ export function AccountsPage() {
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
   const [type, setType] = useState<AccountType>('checking');
+  const [currency, setCurrency] = useState<Moneda>('PEN');
   const [balance, setBalance] = useState('');
   const [saving, setSaving] = useState(false);
+  const { tc, listo } = useTipoCambio();
 
   useEffect(() => {
     fetchAccounts();
@@ -34,27 +45,32 @@ export function AccountsPage() {
     if (!name) return;
     setSaving(true);
 
-    await supabase.from('accounts').insert({
+    const { error } = await supabase.from('accounts').insert({
       account_name: name,
       account_type: type,
-      currency_code: 'PEN',
+      currency_code: currency,
       current_balance: parseFloat(balance) || 0,
       color: accountTypeConfig[type]?.color ?? '#c8ccd4',
       is_active: true,
     });
+    setSaving(false);
+    if (error) {
+      addToast('No pude crear la cuenta. Inténtalo de nuevo.', 'warning');
+      return;
+    }
 
     setName('');
     setBalance('');
+    setCurrency('PEN');
     setShowForm(false);
-    setSaving(false);
     fetchAccounts();
     addToast('Cuenta creada');
   };
 
-  const totalBalance = accounts.reduce((sum, acc) => {
-    if (acc.account_type === 'credit_card') return sum - acc.current_balance;
-    return sum + acc.current_balance;
-  }, 0);
+  // Patrimonio en soles: las cuentas en dólares se convierten con el tipo de cambio vigente; la tarjeta resta (su saldo es deuda).
+  const patri = patrimonio(accounts, tc);
+  const hoy = diaLima(new Date());
+  const totalBalance = patri.soles;
 
   return (
     <div className="space-y-5">
@@ -74,6 +90,8 @@ export function AccountsPage() {
         <p className={cn('text-2xl font-bold', totalBalance >= 0 ? 'text-income' : 'text-expense')}>
           {formatCurrency(totalBalance)}
         </p>
+        {/* Primera carga (sin tipo de cambio ni lectura terminada): sin nota, para no decir «falta» cuando solo está llegando */}
+        <NotaCambio texto={!tc && !listo ? null : notaConversion(conversionDePatrimonio(patri, tc), hoy)} className="mt-1" />
       </div>
 
       {/* Formulario nueva cuenta */}
@@ -93,8 +111,25 @@ export function AccountsPage() {
                 key={key}
                 onClick={() => setType(key as AccountType)}
                 className={cn(
-                  'px-3 py-1.5 rounded-lg text-xs font-medium',
+                  'px-3 min-h-11 rounded-lg text-xs font-medium',
                   type === key ? 'bg-primary-600 text-slate-950' : 'bg-slate-800 text-slate-400'
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {/* Moneda: no se puede cambiar después de registrar movimientos, por eso se elige al crear */}
+          <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Moneda de la cuenta">
+            {MONEDAS.map(({ code, label }) => (
+              <button
+                key={code}
+                role="radio"
+                aria-checked={currency === code}
+                onClick={() => setCurrency(code)}
+                className={cn(
+                  'min-h-11 rounded-lg text-sm font-medium',
+                  currency === code ? 'bg-primary-600 text-slate-950' : 'bg-slate-800 text-slate-400'
                 )}
               >
                 {label}
@@ -105,7 +140,7 @@ export function AccountsPage() {
             type="number"
             value={balance}
             onChange={e => setBalance(e.target.value)}
-            placeholder="Saldo inicial (S/)"
+            placeholder={`Saldo inicial (${currency === 'USD' ? 'US$' : 'S/'})`}
             className="input"
             inputMode="decimal"
           />
@@ -122,6 +157,8 @@ export function AccountsPage() {
             key={acc.account_id}
             name={acc.account_name}
             balance={acc.current_balance}
+            currency={acc.currency_code}
+            equivalent={equivalenteEnSoles(acc.current_balance, acc.currency_code, tc, hoy)}
             type={acc.account_type}
           />
         ))}

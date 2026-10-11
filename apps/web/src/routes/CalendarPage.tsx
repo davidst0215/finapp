@@ -6,6 +6,9 @@ import { formatCurrency } from '@/lib/utils';
 import { Calendar } from '@/components/ui/Calendar';
 import { CategoryIcon } from '@/components/ui/CategoryIcon';
 import { cn } from '@/lib/utils';
+import { NotaCambio } from '@/components/ui/NotaCambio';
+import { conversionDeTotal, diaLima, juntarTotales, notaConversion, totalEnSoles, type Monto } from '@/lib/fx';
+import { useTipoCambio } from '@/stores/fxStore';
 
 function toKey(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -26,6 +29,7 @@ function formatShortDate(d: Date) {
 export function CalendarPage() {
   const navigate = useNavigate();
   const { transactions, fetchTransactions } = useAppStore();
+  const { tc, historial, listo } = useTipoCambio();
 
   const [mode, setMode] = useState<'day' | 'range'>('day');
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
@@ -90,9 +94,20 @@ export function CalendarPage() {
     return [];
   }, [transactions, mode, selectedDate, rangeStart, rangeEnd]);
 
-  const totalIncome = filteredTransactions.filter(t => t.transaction_type === 'income').reduce((s, t) => s + t.amount, 0);
-  const totalExpense = filteredTransactions.filter(t => t.transaction_type === 'expense').reduce((s, t) => s + t.amount, 0);
+  // Todo en soles: los movimientos en dólares se convierten con el tipo de cambio de SU día (el mismo criterio que los resúmenes de la base).
+  const enSoles = (tipo: 'income' | 'expense') =>
+    totalEnSoles(
+      filteredTransactions.filter(t => t.transaction_type === tipo).map((t): Monto => ({ monto: t.amount, moneda: t.currency_code, fecha: diaLima(t.transaction_date) })),
+      tc,
+      historial,
+    );
+  const ingresos = enSoles('income');
+  const gastos = enSoles('expense');
+  const totalIncome = ingresos.soles;
+  const totalExpense = gastos.soles;
   const netTotal = totalIncome - totalExpense;
+  // Primera carga (todavía sin tipo de cambio ni lectura terminada): sin nota, para no decir «falta» cuando solo está llegando.
+  const notaPeriodo = !tc && !listo ? null : notaConversion(conversionDeTotal(juntarTotales(ingresos, gastos), tc?.fecha), diaLima(new Date()));
 
   // Period label
   const periodLabel = () => {
@@ -188,6 +203,7 @@ export function CalendarPage() {
           </div>
         </div>
       )}
+      {filteredTransactions.length > 0 && (mode === 'range' && rangeEnd) && <NotaCambio texto={notaPeriodo} className="-mt-3" />}
 
       {/* Transactions list */}
       {filteredTransactions.length === 0 ? (

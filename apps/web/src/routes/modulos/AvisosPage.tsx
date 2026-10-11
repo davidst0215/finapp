@@ -1,15 +1,20 @@
 import { ArrowLeft } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { AvisosAutomaticos } from '@/components/avisos/AvisosAutomaticos';
 import { NoticeList } from '@/components/avisos/NoticeList';
 import { PushSwitch } from '@/components/avisos/PushSwitch';
+import { Recordatorios } from '@/components/avisos/Recordatorios';
 import { TestPush } from '@/components/avisos/TestPush';
 import { useInbox } from '@/components/avisos/useInbox';
+import { useProgramados } from '@/components/avisos/useProgramados';
 import { usePush } from '@/components/avisos/usePush';
 
-// Avisos: activar las notificaciones push en este dispositivo y revisar la bandeja de lo que Wabid te avisó.
+// Avisos: activar las notificaciones push en este dispositivo, elegir qué avisos automáticos recibir, ver (y cancelar) los
+// recordatorios pendientes y revisar la bandeja de lo que Wabid te avisó.
 export function AvisosPage() {
   const push = usePush();
   const inbox = useInbox();
+  const programados = useProgramados();
 
   const canTry = push.phase === 'checking' || push.phase === 'off' || push.phase === 'on';
 
@@ -37,6 +42,22 @@ export function AvisosPage() {
         {/* Sin soporte o con el permiso bloqueado no hay nada que probar: el texto de arriba ya explica por qué. */}
         {canTry && <TestPush phase={push.phase} testing={push.testing} outcome={push.testOutcome} onTest={sendTest} />}
       </section>
+
+      <AvisosAutomaticos
+        prefs={programados.prefs}
+        status={programados.status}
+        guardando={programados.guardando}
+        error={programados.prefError}
+        onChange={programados.cambiarPref}
+      />
+
+      <Recordatorios
+        items={programados.items}
+        status={programados.status}
+        error={programados.error}
+        onRetry={programados.retry}
+        onCancel={programados.cancelar}
+      />
 
       <NoticeList
         items={inbox.items}
