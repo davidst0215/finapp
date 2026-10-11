@@ -36,6 +36,10 @@ test('leerTipoCambio: acepta la fila de la tabla (valor como texto) y rechaza lo
   assert.deepEqual(leerTipoCambio({ valor: '3.453', fecha: '2026-10-07', fuente: 'x', obtenido_en: 'y' }), { valor: 3.453, fecha: '2026-10-07', fuente: 'x', obtenido_en: 'y' });
   assert.equal(leerTipoCambio({ valor: 0, fecha: '2026-10-07' }), null);
   assert.equal(leerTipoCambio({ valor: 3400, fecha: '2026-10-07' }), null);
+  assert.equal(leerTipoCambio({ valor: 1.99, fecha: '2026-10-07' }), null, 'menos de 2 soles por dólar es un dato roto (igual que el CHECK de la base)');
+  assert.equal(leerTipoCambio({ valor: 6.01, fecha: '2026-10-07' }), null);
+  assert.equal(leerTipoCambio({ valor: 2, fecha: '2026-10-07' })?.valor, 2);
+  assert.equal(leerTipoCambio({ valor: 6, fecha: '2026-10-07' })?.valor, 6);
   assert.equal(leerTipoCambio({ valor: 3.4 }), null);
   assert.equal(leerTipoCambio(null), null);
 });

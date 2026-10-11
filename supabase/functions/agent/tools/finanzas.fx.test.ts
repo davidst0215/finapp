@@ -81,8 +81,17 @@ test("loadContext con dólares: tipo de cambio, patrimonio neto en soles, dólar
   assert.match(prompt, /-US\$15 Netflix/);
   assert.match(prompt, /-S\/30 Almuerzo/);
   assert.match(prompt, /Total fijo mensual: S\/1035\.00/, "10 dólares = S/ 35 más el alquiler");
+  assert.match(prompt, /- Hosting: S\/35 \(US\$ 10\.00\) \(monthly\)/, "el pago convertido muestra su original");
+  assert.match(prompt, /- Alquiler: S\/1000 \(monthly\)/);
   assert.equal(d.tc?.valor, 3.5);
   assert.equal(d.recurring.find((r) => r.recurring_id === "r1")?.original, "US$ 10.00");
+});
+
+test("loadContext: los totales de la base se imprimen a céntimos, sin restos de coma flotante", async () => {
+  const sucio = { ...MESES, total_income: 1500.0000000000002, total_expenses: 175.34999999999997, net_balance: 1324.6500000000003, expenses_usd: 32.5 };
+  const { prompt } = await finanzas.loadContext!(ctx(leer({ accounts: cuentas() }, sucio)));
+  assert.match(prompt, /- Ingresos: S\/1500\n- Gastos: S\/175\.35\n- Balance neto: S\/1324\.65\n/);
+  assert.doesNotMatch(prompt, /\d{6,}/, "ninguna cifra con 6 dígitos seguidos (restos de coma flotante)");
 });
 
 test("loadContext con dólares y SIN tipo de cambio: avisa y no los suma como soles", async () => {
@@ -153,6 +162,14 @@ test("create_recurring: el pago fijo lleva la moneda de su cuenta (la primera en
   assert.deepEqual([inserts[0]!.row.account_id, inserts[0]!.row.currency_code], ["p", "PEN"]);
   await h.create_recurring({ description: "Hosting", amount: 10, frequency: "monthly" }, ctx(db), data([acc("u", "Wise", "savings", "USD")]));
   assert.deepEqual([inserts[1]!.row.account_id, inserts[1]!.row.currency_code], ["u", "USD"]);
+});
+
+test("create_recurring: la confirmación dice el símbolo de la cuenta (US$ si cae en una cuenta en dólares)", async () => {
+  const { db } = base();
+  const sol = await h.create_recurring({ description: "Netflix", amount: 45, frequency: "monthly" }, ctx(db), data([acc("u", "Wise", "savings", "USD"), acc("p", "BCP")]));
+  assert.match(sol.message, /de S\/ 45\.00/);
+  const usd = await h.create_recurring({ description: "Hosting", amount: 10, frequency: "monthly" }, ctx(db), data([acc("u", "Wise", "savings", "USD")]));
+  assert.match(usd.message, /de US\$ 10\.00/);
 });
 
 test("pay_recurring: el pago lleva la moneda del recurrente (antes iba siempre PEN) y el mensaje dice US$", async () => {

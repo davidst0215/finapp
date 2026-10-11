@@ -29,7 +29,7 @@ function formatShortDate(d: Date) {
 export function CalendarPage() {
   const navigate = useNavigate();
   const { transactions, fetchTransactions } = useAppStore();
-  const { tc, historial } = useTipoCambio();
+  const { tc, historial, listo } = useTipoCambio();
 
   const [mode, setMode] = useState<'day' | 'range'>('day');
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
@@ -106,7 +106,8 @@ export function CalendarPage() {
   const totalIncome = ingresos.soles;
   const totalExpense = gastos.soles;
   const netTotal = totalIncome - totalExpense;
-  const notaPeriodo = notaConversion(conversionDeTotal(juntarTotales(ingresos, gastos), tc?.fecha), diaLima(new Date()));
+  // Primera carga (todavía sin tipo de cambio ni lectura terminada): sin nota, para no decir «falta» cuando solo está llegando.
+  const notaPeriodo = !tc && !listo ? null : notaConversion(conversionDeTotal(juntarTotales(ingresos, gastos), tc?.fecha), diaLima(new Date()));
 
   // Period label
   const periodLabel = () => {

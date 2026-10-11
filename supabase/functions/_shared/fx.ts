@@ -33,20 +33,39 @@ export type Cambio = { valor: number; fecha: string } | null | undefined;
 const MESES: Record<string, number> = {
   ene: 1, jan: 1, feb: 2, mar: 3, abr: 4, apr: 4, may: 5, jun: 6, jul: 7, ago: 8, aug: 8, set: 9, sep: 9, oct: 10, nov: 11, dic: 12, dec: 12,
 };
-// Un dólar vale entre 1 y 20 soles: fuera de ahí es un dato roto, no un tipo de cambio.
-const plausible = (n: number) => Number.isFinite(n) && n >= 1 && n <= 20;
+// Un dólar vale entre 2 y 6 soles (igual que el CHECK de fx_rates): fuera de ahí es un dato roto, no un tipo de cambio.
+export const plausible = (n: number) => Number.isFinite(n) && n >= 2 && n <= 6;
+/** Un valor nuevo que se aparta más de esto del último guardado se rechaza (un salto así es un error de la fuente, no el mercado). */
+export const DESVIO_MAX = 0.1;
+/** ¿Se aparta de la referencia más de DESVIO_MAX? Sin referencia (nada guardado todavía) nunca. */
+export const desviado = (valor: number, referencia: number | null | undefined): boolean =>
+  referencia != null && referencia > 0 && Math.abs(valor / referencia - 1) > DESVIO_MAX;
 const dos = (n: number) => String(n).padStart(2, "0");
 
 export const urlBcrp = (desde: string, hasta: string) =>
   `https://estadisticas.bcrp.gob.pe/estadisticas/series/api/${BCRP_SERIE}/json/${desde}/${hasta}/esp`;
 
 /**
- * El primer objeto JSON de un texto, ignorando lo que venga después. La API de BCRP a veces pega tras el JSON un aviso de PHP en HTML
- * («<br /><font size='1'><table class='xdebug-error…»), y con eso JSON.parse del texto entero falla aunque los datos estén bien.
+ * El primer objeto JSON válido de un texto, ignorando lo que venga antes o después. La API de BCRP a veces pega un aviso de PHP en HTML
+ * («<br /><font size='1'><table class='xdebug-error…») tras el JSON, y con eso JSON.parse del texto entero falla aunque los datos estén
+ * bien. Si el aviso viniera ANTES y llevara llaves («{x}»), se prueba cada «{» hasta dar con un bloque que sí parsea.
  */
 export function primerJson(texto: string): string | null {
-  const ini = texto.indexOf("{");
-  if (ini < 0) return null;
+  for (let ini = texto.indexOf("{"); ini >= 0; ini = texto.indexOf("{", ini + 1)) {
+    const bloque = bloqueBalanceado(texto, ini);
+    if (bloque === null) continue;
+    try {
+      JSON.parse(bloque);
+      return bloque;
+    } catch {
+      // no era el JSON (una llave suelta del aviso): se prueba con la siguiente
+    }
+  }
+  return null;
+}
+
+/** El texto desde la llave de `ini` hasta su llave de cierre (respeta comillas y escapes), o null si no cierra. */
+function bloqueBalanceado(texto: string, ini: number): string | null {
   let prof = 0, enTexto = false, escape = false;
   for (let i = ini; i < texto.length; i++) {
     const c = texto[i]!;
@@ -205,6 +224,16 @@ export async function historial(db: Db, desde: string): Promise<Punto[]> {
   return filas.map((r) => ({ fecha: String(r.fecha), valor: Number(r.valor) })).filter((p) => plausible(p.valor));
 }
 
+/**
+ * Cuándo fue la última consulta exitosa: el MÁXIMO de obtenido_en de todas las filas. La fila de la fecha más nueva puede ser de una
+ * consulta anterior (el respaldo no pisa filas ya guardadas), así que mirar solo esa haría refrescar de más.
+ */
+export async function ultimaConsulta(db: Db): Promise<string | null> {
+  const { data, error } = await db.from("fx_rates").select("obtenido_en").eq("par", PAR_USD).order("obtenido_en", { ascending: false }).limit(1);
+  const v = (data?.[0] as { obtenido_en?: unknown } | undefined)?.obtenido_en;
+  return error || !v ? null : String(v);
+}
+
 /** ¿Hace falta volver a pedirlo? Sí si no hay nada guardado o la última consulta pasó de VIGENCIA_HORAS. */
 export function hayQueRefrescar(ultima: Tasa | null, ahora: Date): boolean {
   if (!ultima) return true;
@@ -213,23 +242,30 @@ export function hayQueRefrescar(ultima: Tasa | null, ahora: Date): boolean {
 }
 
 /**
- * Pide el tipo de cambio y lo guarda (upsert por par+fecha). `db` debe ser el cliente de SERVICIO: authenticated no escribe fx_rates.
- * BCRP primero; si no trae ningún valor, el respaldo (un solo valor, el de hoy). null si ninguna fuente respondió: queda lo guardado.
+ * Pide el tipo de cambio y lo guarda. `db` debe ser el cliente de SERVICIO: authenticated no escribe fx_rates.
+ *  - BCRP primero (upsert por par+fecha: lo oficial corrige lo que hubiera). Los valores que se apartan más de 10 % del último guardado
+ *    se descartan (sin nada guardado todavía, no hay con qué comparar).
+ *  - Si BCRP no trae ningún valor aceptable, el respaldo: UN valor, el de hoy, que solo se inserta si no hay ya una fila para esa fecha
+ *    (ON CONFLICT DO NOTHING): el respaldo nunca pisa un valor oficial de BCRP.
+ * null si ninguna fuente dio un valor aceptable: queda lo guardado.
  */
 export async function refrescar(db: Db, o: { ahora: Date; hoy: string; f?: Fetch }): Promise<{ fuente: string; filas: number } | null> {
   const ultima = await ultimaTasa(db);
+  const referencia = ultima ? ultima.valor : null;
   const desde = restarDias(ultima ? ultima.fecha : o.hoy, ultima ? DIAS_SOLAPE : DIAS_HISTORIAL);
-  let puntos = await traerBcrp(desde, o.hoy, o.f);
-  let fuente = FUENTE_BCRP;
-  if (!puntos?.length) {
-    const v = await traerRespaldo(o.f);
-    if (v === null) return null;
-    puntos = [{ fecha: o.hoy, valor: v }];
-    fuente = FUENTE_RESPALDO;
+  let puntos = ((await traerBcrp(desde, o.hoy, o.f)) ?? []).filter((p) => !desviado(p.valor, referencia));
+  const obtenido_en = o.ahora.toISOString();
+  if (puntos.length) {
+    const filas = puntos.map((p) => ({ par: PAR_USD, fecha: p.fecha, valor: p.valor, fuente: FUENTE_BCRP, obtenido_en }));
+    const { error } = await db.from("fx_rates").upsert(filas, { onConflict: "par,fecha" });
+    return error ? null : { fuente: FUENTE_BCRP, filas: filas.length };
   }
-  const filas = puntos.map((p) => ({ par: PAR_USD, fecha: p.fecha, valor: p.valor, fuente, obtenido_en: o.ahora.toISOString() }));
-  const { error } = await db.from("fx_rates").upsert(filas, { onConflict: "par,fecha" });
-  return error ? null : { fuente, filas: filas.length };
+  const v = await traerRespaldo(o.f);
+  if (v === null || desviado(v, referencia)) return null;
+  puntos = [{ fecha: o.hoy, valor: v }];
+  const filas = puntos.map((p) => ({ par: PAR_USD, fecha: p.fecha, valor: p.valor, fuente: FUENTE_RESPALDO, obtenido_en }));
+  const { error } = await db.from("fx_rates").upsert(filas, { onConflict: "par,fecha", ignoreDuplicates: true });
+  return error ? null : { fuente: FUENTE_RESPALDO, filas: filas.length };
 }
 
 let ultimoIntento = 0;
@@ -241,9 +277,10 @@ export const reiniciarIntentos = () => { ultimoIntento = 0; };
  * Un intento fallido no se repite dentro de la misma instancia antes de 5 minutos (no se golpea a BCRP en cada pedido).
  */
 export async function tipoCambioVigente(db: Db, o: { ahora: Date; hoy: string; f?: Fetch }): Promise<{ tasa: Tasa | null; actualizado: boolean }> {
-  let tasa = await ultimaTasa(db);
+  const [guardada, consulta] = await Promise.all([ultimaTasa(db), ultimaConsulta(db)]);
+  let tasa = guardada;
   let actualizado = false;
-  if (hayQueRefrescar(tasa, o.ahora) && o.ahora.getTime() - ultimoIntento > INTERVALO_MIN_MS) {
+  if (hayQueRefrescar(guardada ? { ...guardada, obtenido_en: consulta ?? guardada.obtenido_en } : null, o.ahora) && o.ahora.getTime() - ultimoIntento > INTERVALO_MIN_MS) {
     ultimoIntento = o.ahora.getTime();
     if (await refrescar(db, o)) {
       tasa = await ultimaTasa(db);

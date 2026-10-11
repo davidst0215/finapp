@@ -38,7 +38,7 @@ export function RecurringPage() {
   const [accountId, setAccountId] = useState('');
   const [saving, setSaving] = useState(false);
   const addToast = useToastStore(s => s.addToast);
-  const { tc } = useTipoCambio();
+  const { tc, listo } = useTipoCambio();
 
   const fetchRecurrings = async () => {
     setLoading(true);
@@ -138,28 +138,45 @@ export function RecurringPage() {
       const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
       const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
 
-      await supabase.from('transactions')
+      const { error } = await supabase.from('transactions')
         .delete()
         .eq('recurring_id', r.recurring_id)
         .gte('transaction_date', monthStart)
         .lte('transaction_date', monthEnd + 'T23:59:59');
+      if (error) {
+        addToast('No pude desmarcar el pago. Inténtalo de nuevo.', 'warning');
+        return;
+      }
 
       addToast(`${r.description} desmarcado`);
     } else {
-      // Mark as paid: create transaction + advance date
-      await supabase.from('transactions').insert({
+      // Mark as paid: create transaction + advance date.
+      // La moneda del movimiento es la de su CUENTA (la base exige que coincidan), no la del recurrente.
+      const cuenta = accounts.find(a => a.account_id === r.account_id);
+      const { error } = await supabase.from('transactions').insert({
         transaction_type: r.transaction_type, amount: r.amount,
-        currency_code: r.currency_code, description: r.description,
+        currency_code: cuenta?.currency_code ?? r.currency_code, description: r.description,
         account_id: r.account_id, category_id: r.category_id,
         transaction_date: new Date().toISOString(), input_method: 'recurring',
         raw_voice_text: null, is_recurring: true, recurring_id: r.recurring_id,
         transfer_to_account_id: null, notes: null, tags: null,
       });
+      // Si el pago no se pudo registrar (p. ej. la base rechaza una moneda que no es la de la cuenta) NO se avanza la fecha:
+      // el recurrente sigue pendiente y no se anuncia un «pagado» falso.
+      if (error) {
+        addToast('No pude registrar el pago. Revisa la cuenta de este recurrente.', 'warning');
+        return;
+      }
 
       const nextDue = getNextDueDate(r.next_due_date, r.frequency);
-      await supabase.from('recurring_transactions')
+      const { error: errorFecha } = await supabase.from('recurring_transactions')
         .update({ next_due_date: nextDue })
         .eq('recurring_id', r.recurring_id);
+      if (errorFecha) {
+        addToast('Pago registrado, pero no pude avanzar la próxima fecha.', 'warning');
+        fetchRecurrings();
+        return;
+      }
 
       addToast(`${r.description} pagado`);
     }
@@ -177,7 +194,8 @@ export function RecurringPage() {
     tc,
   );
   const totalMonthly = mensual.soles;
-  const notaMensual = notaConversion(conversionDeTotal(mensual, tc?.fecha), diaLima(new Date()));
+  // Primera carga (todavía sin tipo de cambio ni lectura terminada): sin nota, para no decir «falta» cuando solo está llegando.
+  const notaMensual = !tc && !listo ? null : notaConversion(conversionDeTotal(mensual, tc?.fecha), diaLima(new Date()));
   const monedaForm = accounts.find(a => a.account_id === accountId)?.currency_code === 'USD' ? 'US$' : 'S/';
 
   const paidCount = recurrings.filter(r => r.isPaidThisMonth).length;

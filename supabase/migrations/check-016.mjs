@@ -5,7 +5,9 @@
 //   (c) que una moneda que no coincide con la cuenta se rechaza (y que lo rechazado no mueve ningún saldo),
 //   (d) un invariante con operaciones al azar: saldo − Σ efecto(movimientos) no cambia nunca,
 //   (e) los resúmenes en soles (fn_get_monthly_summary, fn_get_budget_status, fn_get_spending_by_category) con tipo de cambio por día de Lima,
-//   (f) permisos de fx_rates.
+//   (f) permisos de fx_rates y su CHECK de rango (2 a 6 soles por dólar),
+//   (g) la MISMA regla fecha→tasa, día de Lima y conversión redondeada en SQL, en _shared/fx.ts (agente/brief) y en la web (lib/fx.ts).
+// (g) importa los .ts directamente: pide Node >= 22.18 (o --experimental-strip-types).
 // No es una dependencia del repo: PGlite se carga desde PGLITE_DIR (carpeta del paquete @electric-sql/pglite).
 //   PGLITE_DIR=<...>/node_modules/@electric-sql/pglite node supabase/migrations/check-016.mjs
 import assert from "node:assert/strict";
@@ -319,12 +321,18 @@ assert.equal(Number(r.expenses_usd), 30);
 assert.equal(Number(r.income_usd), 100);
 assert.equal(r.top_category_name, "Comida", "la categoría más gastada se mide en soles (100+34=134 vs 35+34=69)");
 assert.equal(Number(r.top_category_amount), 134);
+// una categoría cuyo ÚNICO gasto es en una moneda sin tasa suma NULL: no puede ganar como «la mayor» (ORDER BY ... NULLS LAST)
+const soloEur = (await q(`INSERT INTO categories (user_id, category_name, category_type) VALUES ($1,'Solo euros','expense') RETURNING category_id`, [U2]))[0].category_id;
+await m2(EUR2, "expense", 80, "EUR", "2026-10-09T16:00:00Z", soloEur);
+r = await resumen(2026, 10);
+assert.equal(r.top_category_name, "Comida", "la categoría sin tasa (suma NULL) no queda como top");
+assert.equal(Number(r.top_category_amount), 134);
 // antes de la primera tasa conocida vale la primera conocida (no 1)
 await m2(D, "expense", 10, "USD", "2026-09-20T15:00:00Z", comida);
 assert.equal(Number((await resumen(2026, 9)).total_expenses), 34, "antes de la primera fecha conocida vale la primera (3.40)");
 
 const cats = await como("authenticated", U2, `SELECT category_name, total_amount, transaction_count, percentage FROM fn_get_spending_by_category('2026-10-01','2026-10-31')`);
-assert.deepEqual(cats.map((c) => [c.category_name, Number(c.total_amount), Number(c.transaction_count)]), [["Comida", 134, 3], ["Viajes", 69, 2]], "gastos por categoría en soles (el EUR sin tasa cuenta 1 movimiento pero suma 0)");
+assert.deepEqual(cats.map((c) => [c.category_name, Number(c.total_amount), Number(c.transaction_count)]), [["Comida", 134, 3], ["Viajes", 69, 2], ["Solo euros", 0, 1]], "gastos por categoría en soles (el EUR sin tasa cuenta 1 movimiento pero suma 0; una categoría solo con euros queda al final)");
 assert.equal(Number(cats[0].percentage), Math.round((134 / 203) * 1000) / 10);
 
 // presupuesto del mes en curso (usa CURRENT_DATE): US$ 100 hoy × la tasa de hoy (3.60) = 360
@@ -346,6 +354,48 @@ await como("service_role", null, `INSERT INTO fx_rates (par, fecha, valor, fuent
 assert.equal(Number((await como("authenticated", U2, `SELECT valor FROM fx_rates WHERE fecha = '2026-10-05'`))[0].valor), 3.51, "service_role hace upsert");
 await falla(() => como("service_role", null, `INSERT INTO fx_rates (par, fecha, valor, fuente) VALUES ('usd/pen','2026-10-09',3,'x')`), /check/i, "par mal formado");
 await falla(() => como("service_role", null, `INSERT INTO fx_rates (par, fecha, valor, fuente) VALUES ('USD/PEN','2026-10-09',0,'x')`), /check/i, "valor <= 0");
+await falla(() => como("service_role", null, `INSERT INTO fx_rates (par, fecha, valor, fuente) VALUES ('USD/PEN','2026-10-09',1.99,'x')`), /check/i, "menos de 2 soles por dólar es un dato roto");
+await falla(() => como("service_role", null, `INSERT INTO fx_rates (par, fecha, valor, fuente) VALUES ('USD/PEN','2026-10-09',6.01,'x')`), /check/i, "más de 6 soles por dólar es un dato roto");
+await como("service_role", null, `INSERT INTO fx_rates (par, fecha, valor, fuente) VALUES ('USD/PEN','2026-10-12',2,'borde'), ('USD/PEN','2026-10-13',6,'borde')`); // los bordes valen
+await como("service_role", null, `DELETE FROM fx_rates WHERE fuente = 'borde'`);
+await falla(() => como("authenticated", U2, `DELETE FROM fx_rates`), /permission denied/i, "authenticated no borra");
+assert.deepEqual(
+  (await q(`SELECT has_table_privilege('authenticated','fx_rates','SELECT') AS s, has_table_privilege('authenticated','fx_rates','INSERT') AS i, has_table_privilege('authenticated','fx_rates','TRUNCATE') AS t, has_table_privilege('anon','fx_rates','SELECT') AS a`))[0],
+  { s: true, i: false, t: false, a: false },
+  "authenticated solo SELECT; anon nada (como en la 007)",
+);
+
+// (g) la misma regla en tres sitios: fx_tasa()/fn_a_soles()/día de Lima en SQL, tasaDeFecha()/aSoles()/limaDateKey() en _shared (agente, brief)
+//     y tasaDeFecha()/aSoles()/diaLima() en la web. Un solo caso, tres respuestas que deben coincidir.
+let fxFn, fxWeb, tiempo;
+try {
+  const ts = (...p) => pathToFileURL(path.join(dir, "..", ...p)).href;
+  fxFn = await import(ts("functions", "_shared", "fx.ts"));
+  tiempo = await import(ts("functions", "_shared", "google", "time.ts"));
+  fxWeb = await import(pathToFileURL(path.join(dir, "..", "..", "apps", "web", "src", "lib", "fx.ts")).href);
+} catch (e) {
+  throw new Error(`No pude importar los .ts para comparar con SQL (hace falta Node >= 22.18 o --experimental-strip-types): ${e.message}`);
+}
+await como("service_role", null, `INSERT INTO fx_rates (par, fecha, valor, fuente) VALUES ('USD/PEN','2026-11-02',3.455,'prueba g') ON CONFLICT (par, fecha) DO UPDATE SET valor = 3.455`);
+const historial = (await q(`SELECT fecha::text AS fecha, valor::float8 AS valor FROM fx_rates WHERE par = 'USD/PEN'`)).map((r) => ({ fecha: r.fecha, valor: Number(r.valor) }));
+for (const f of ["2020-01-01", "2026-09-01", "2026-10-01", "2026-10-03", "2026-10-04", "2026-10-05", "2026-10-09", "2026-11-01", "2026-11-02", "2026-12-31", "2031-01-01"]) {
+  const sql = Number((await q(`SELECT fx_tasa('USD', $1::date) AS t`, [f]))[0].t);
+  assert.equal(fxFn.tasaDeFecha(historial, f), sql, `tasaDeFecha (_shared) = fx_tasa (SQL) en ${f}`);
+  assert.equal(fxWeb.tasaDeFecha(historial, f), sql, `tasaDeFecha (web) = fx_tasa (SQL) en ${f}`);
+}
+for (const t of ["2026-10-05T03:00:00Z", "2026-10-05T04:59:59Z", "2026-10-05T05:00:00Z", "2026-10-04T23:59:59-05:00", "2026-12-31T04:59:59Z", "2027-01-01T04:59:59Z", "2027-01-01T05:00:00Z", "2026-03-01T00:00:00Z"]) {
+  const sql = (await q(`SELECT (($1::timestamptz) AT TIME ZONE 'America/Lima')::date::text AS d`, [t]))[0].d;
+  assert.equal(fxWeb.diaLima(t), sql, `diaLima (web) = día de Lima (SQL) en ${t}`);
+  assert.equal(tiempo.limaDateKey(new Date(t)), sql, `limaDateKey (_shared) = día de Lima (SQL) en ${t}`);
+}
+for (const [monto, fecha] of [[1, "2026-11-02"], [2, "2026-11-02"], [0.1, "2026-11-02"], [0.01, "2026-11-02"], [10.01, "2026-11-03"], [33.33, "2026-11-02"], [7.77, "2026-10-04"], [1234.56, "2026-11-02"], [999999.99, "2026-10-09"]]) {
+  const sql = Number((await q(`SELECT fn_a_soles($1::numeric, 'USD', $2::date) AS s`, [monto, fecha]))[0].s);
+  const valor = fxFn.tasaDeFecha(historial, fecha);
+  assert.equal(fxFn.aSoles(monto, "USD", { valor, fecha }), sql, `aSoles (_shared) = fn_a_soles (SQL, redondeada a céntimos) para US$ ${monto} el ${fecha}`);
+  assert.equal(fxWeb.aSoles(monto, "USD", { valor }), sql, `aSoles (web) = fn_a_soles (SQL) para US$ ${monto} el ${fecha}`);
+}
+assert.equal(Number((await q(`SELECT fn_a_soles(10, 'PEN', '2026-10-05'::date) AS s`))[0].s), 10, "los soles no se tocan");
+assert.equal((await q(`SELECT fn_a_soles(10, 'EUR', '2026-10-05'::date) AS s`))[0].s, null, "sin tasa para esa moneda: NULL, nunca «vale lo mismo»");
 
 // 016 una vez más encima de todo: sigue siendo idempotente y no toca datos
 const snapshot = JSON.stringify(await q(`SELECT account_id, current_balance FROM accounts ORDER BY account_id`));
