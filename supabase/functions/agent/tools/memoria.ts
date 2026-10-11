@@ -3,9 +3,8 @@
 // "nova fondos" → novafondos); el handler lee esas fichas completas y hace UNA segunda llamada al modelo para redactar
 // una respuesta corta que cita la ficha. Si no eligió ninguna, cae a la búsqueda por palabras (Postgres full-text).
 import { type AgentContext, type AgentModule, type ToolResult, tool } from "../types.ts";
-import { assertOwner, cargarCatalogo, cargarIndiceProyectos, ensureIndexed, GitHubError, searchMemory, VaultError, vaultEnv } from "../../_shared/vault.ts";
+import { assertOwner, cargarCatalogo, carpetasDePendientes, ensureIndexed, GitHubError, searchMemory, VaultError, vaultEnv } from "../../_shared/vault.ts";
 import { type FichaCat, resolverFichas } from "../../_shared/vault/catalogo.ts";
-import { carpetasParaPendientes } from "../../_shared/vault/proyectos.ts";
 import { fuenteHablada } from "../../_shared/vault/search.ts";
 import { relojLima } from "../../_shared/vault/fechas.ts";
 
@@ -32,20 +31,21 @@ async function searchMemoryTool(args: Record<string, unknown>, ctx: AgentContext
     assertOwner(ctx.user.id, env);
     await ensureIndexed(ctx.supabase, ctx.user.id, env); // primera vez: trae el vault antes de buscar
     // Palabras clave, no un párrafo: un `query` desbocado no debe llegar a la búsqueda ni al modelo que redacta.
-    const q = str(args.query).replace(/\s+/g, " ").trim().slice(0, 160) || ctx.text.slice(0, 160);
+    const delModelo = str(args.query).replace(/\s+/g, " ").trim().slice(0, 160);
+    const q = delModelo || ctx.text.slice(0, 160); // sin palabras clave del modelo se busca con lo que dijo David… pero eso no se registra
     // Solo cuentan los slugs que existen en el catálogo; lo demás se descarta y, sin fichas válidas, se busca por palabras.
     const { validas, descartadas } = resolverFichas(args.fichas, data?.fichas ?? []);
     if (descartadas.length) console.log(JSON.stringify({ evt: "memoria_fichas_descartadas", n: descartadas.length }));
     // Las tareas reales de los proyectos de la pregunta y de las fichas elegidas son el estado más reciente; el modelo que
     // redacta responde a lo que David dijo (no solo a las palabras clave).
-    const indice = await cargarIndiceProyectos(ctx.supabase, ctx.user.id, env.config);
     const res = await searchMemory(ctx.supabase, ctx.user.id, {
       q, pregunta: ctx.text, cliente: str(args.cliente).trim() || undefined, answer: true, fichaPaths: validas.map((f) => f.path),
-      pendientes: carpetasParaPendientes(validas.map((f) => f.slug), q, indice), hoy: relojLima(ctx.limaNow).hoy, incluirPendientes: true,
+      pendientes: await carpetasDePendientes(ctx.supabase, ctx.user.id, env.config, validas.map((f) => f.slug), q), hoy: relojLima(ctx.limaNow).hoy, incluirPendientes: true,
     });
-    // Una línea por búsqueda, sin el texto de David (`query` son las palabras clave que eligió el modelo, acotadas a 60).
+    // Una línea por búsqueda, sin el texto de David: `query` son las palabras clave que eligió el modelo (acotadas a 60); si el modelo
+    // no las dio y se buscó con el dictado crudo, va vacía.
     console.log(JSON.stringify({
-      evt: "memoria", fichas: res.meta.fichas, hits: res.meta.hits, encontrado: res.meta.encontrado, query: q.slice(0, 60),
+      evt: "memoria", fichas: res.meta.fichas, hits: res.meta.hits, encontrado: res.meta.encontrado, redactada: res.meta.redactada, query: delModelo.slice(0, 60),
       pendientes: res.meta.pendientes, recortada: res.meta.recortada, segunda: res.meta.segunda, ampliada: res.meta.ampliada, llm: res.meta.llm, tok_in: res.meta.tok_in, tok_out: res.meta.tok_out,
     }));
 

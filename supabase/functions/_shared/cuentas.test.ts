@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  buscarCuenta, fraseCuentaCreada, fraseCuentas, mismoNombre, monedaDesdeTexto, monto, opcionesHabladas, tipoDesdeTexto, validarCuentaNueva,
+  buscarCuenta, fraseCuentaCreada, fraseCuentas, mismoNombre, monedaDesdeTexto, monto, numeroDictado, opcionesHabladas, tipoDesdeTexto, validarCuentaNueva,
   type CuentaMin,
 } from "./cuentas.ts";
 
@@ -139,6 +139,55 @@ test("buscarCuenta: sin coincidencia, vacía o con basura", () => {
   // dos tarjetas: «la tarjeta» es ambigua
   const dos = [cta("1", "Visa", "credit_card"), cta("2", "Master", "credit_card")];
   assert.equal(buscarCuenta("la tarjeta", dos).kind, "many");
+});
+
+test("buscarCuenta: el tipo sirve SOLO si todas las palabras son de tipo; una palabra de más es otra cuenta (se pregunta, no se carga a la única tarjeta)", () => {
+  const unaTarjeta = [cta("1", "BBVA Oro", "credit_card"), cta("2", "Interbank", "checking"), cta("3", "BCP Ahorro Plus", "savings"), cta("4", "Efectivo", "cash")];
+  // puros: sí
+  for (const q of ["la tarjeta", "mi tarjeta de crédito", "la tc", "tarjeta de credito"]) {
+    const r = buscarCuenta(q, unaTarjeta);
+    assert.equal(r.kind === "one" && r.cuenta.account_id, "1", q);
+  }
+  assert.equal(buscarCuenta("mis ahorros", [cta("1", "Mi caja", "savings"), cta("2", "Interbank")]).kind, "one");
+  // con una palabra que no es de tipo: no
+  for (const q of ["la tarjeta Falabella", "mastercard", "mi visa", "la visa de falabella", "ahorros de Scotiabank", "la tarjeta del BCP", "efectivo del viaje"]) {
+    assert.equal(buscarCuenta(q, unaTarjeta).kind, "none", q);
+  }
+  // por nombre sigue funcionando: «visa» es parte del nombre de esta
+  assert.equal(buscarCuenta("la visa", [cta("1", "Visa Oro", "credit_card"), cta("2", "Interbank")]).kind, "one");
+  // tipos mezclados en una misma frase no son un tipo
+  assert.equal(buscarCuenta("tarjeta de ahorros", unaTarjeta).kind, "none");
+  // dos de ese tipo puro: se pregunta
+  const dos = buscarCuenta("las tarjetas", [cta("1", "Visa", "credit_card"), cta("2", "Master", "credit_card")]);
+  assert.equal(dos.kind === "many" && dos.cuentas.length, 2);
+});
+
+test("tipoDesdeTexto: visa y mastercard son marcas, no tipos", () => {
+  assert.equal(tipoDesdeTexto("visa"), null);
+  assert.equal(tipoDesdeTexto("mastercard"), null);
+  assert.equal(validarCuentaNueva({ account_name: "X1", account_type: "visa" }, []).ok, false);
+});
+
+test("numeroDictado: la coma es de miles o es un decimal claro; nunca 1,5 → 15", () => {
+  const casos: [unknown, number | null][] = [
+    [500, 500], ["500", 500], ["500.25", 500.25], [" 500 ", 500], ["-120", -120],
+    ["1,500", 1500], ["12,345", 12345], ["1,234,567", 1234567], ["1,234.50", 1234.5], ["1,5", 1.5], ["12,50", 12.5], ["0,5", 0.5], ["-2,5", -2.5],
+    ["S/ 500", 500], ["US$ 1,250.5", 1250.5], ["$20", 20], ["1 500", 1500],
+    ["1,2345", null], ["1,5,0", null], ["1,234,5", null], ["12,3456", null], ["1.5.0", null], [",5", null], ["1,", null], ["5e3", null], ["abc", null], ["", null],
+    [Number.NaN, null], [Infinity, null], [null, null], [undefined, null], [{}, null],
+  ];
+  for (const [entrada, esperado] of casos) assert.equal(numeroDictado(entrada), esperado, JSON.stringify(entrada));
+});
+
+test("validarCuentaNueva: «1,5» de saldo es 1,5 (o se rechaza), jamás 15", () => {
+  const saldo = (initial_balance: unknown) => {
+    const v = validarCuentaNueva({ account_name: "Caja X", initial_balance }, []);
+    return v.ok ? v.cuenta.current_balance : null;
+  };
+  assert.equal(saldo("1,5"), 1.5);
+  assert.equal(saldo("1,500"), 1500);
+  assert.equal(saldo("1,2345"), null);
+  assert.equal(saldo("1,5,0"), null);
 });
 
 test("buscarCuenta: una cuenta cuyo nombre es solo relleno («Mi cuenta») sigue encontrándose", () => {

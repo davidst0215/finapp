@@ -4,12 +4,12 @@
 import { comentario, conComentario } from "../prompt.ts";
 import { type AgentContext, type AgentModule, type ToolResult, tool } from "../types.ts";
 import {
-  assertOwner, cargarIndiceProyectos, createTask, ensureIndexed, GitHubError, knownFolders, loadTaskRows, PartialMoveError, setTaskStatus,
+  assertOwner, createTask, ensureIndexed, GitHubError, knownFolders, loadTaskRows, PartialMoveError, resolverProyectoDicho, setTaskStatus,
   syncIndex, TaskNotFoundError, VaultError, vaultEnv,
 } from "../../_shared/vault.ts";
 import { fechaHablada, relojLima } from "../../_shared/vault/fechas.ts";
 import { findTask } from "../../_shared/vault/match.ts";
-import { destinoHablado, preguntaProyecto, type Resolucion, resolverProyecto } from "../../_shared/vault/proyectos.ts";
+import { destinoHablado, preguntaProyecto, type Resolucion } from "../../_shared/vault/proyectos.ts";
 import { corto, preguntaCual, resumenGeneral, resumenTareas, vozCual, vozTareas } from "../../_shared/vault/speech.ts";
 import { cleanText, isLevel, isStatus, type TaskStatus } from "../../_shared/vault/tasks.ts";
 import type { TaskRow } from "../../_shared/vault/types.ts";
@@ -22,7 +22,7 @@ const rules = `TAREAS (Norte, el vault de David):
 - "Recuérdame" no suena a la hora: el resumen de las 7:00 del día incluye la tarea. No prometas una alarma.
 - "pagué / gasté / compré" es finanzas, no tareas.
 - Fechas y horas son de Lima, como las dice David ("hoy", "mañana", "viernes", "+3") o AAAA-MM-DD si dice día y mes; no hagas cuentas de calendario.
-- Proyecto: sus palabras tal cual ("nova fondos", "tdv bolsa", "maqui perú"); el sistema las reconoce. Sin proyecto, vacío: va al cajón. Si el sistema pregunta cuál ("¿app o normativa?") y David responde, repite create_task con la tarea original (mira el historial) y el proyecto completo.
+- Proyecto: sus palabras tal cual ("nova fondos", "tdv bolsa", "maqui perú"); el sistema las reconoce. Sin proyecto, vacío: va al cajón. Si el sistema pregunta cuál ("¿app o normativa?") o confirma ("¿En Vera?") y David responde, repite create_task con la tarea original (mira el historial) y el proyecto completo.
 - Voz: una frase; el detalle va a la pantalla.`;
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
@@ -31,7 +31,10 @@ const hoyDe = (ctx: AgentContext) => relojLima(ctx.limaNow).hoy;
 
 /** Una línea por proyecto pedido, sin el texto de David: sirve para ver cuántas veces no se encuentra o queda ambiguo. */
 const logProyecto = (m: Resolucion) =>
-  console.log(JSON.stringify({ evt: "tareas", proyecto_resuelto: m.kind === "one", candidatos: m.kind === "one" ? 1 : m.kind === "many" ? m.opciones.length : 0 }));
+  console.log(JSON.stringify({
+    evt: "tareas", proyecto_resuelto: m.kind === "one", candidatos: m.kind === "one" ? 1 : m.kind === "many" ? m.opciones.length : 0,
+    aproximado: m.kind !== "none" && m.aproximado,
+  }));
 
 /** Errores de dominio → frase para decir en voz; lo inesperado se registra sin datos y se dice genérico. */
 function mensajeError(e: unknown): string {
@@ -89,7 +92,7 @@ const listTasks: Handler = async (args, ctx) => {
     message = resumenTareas("inbox", lista);
     voz = vozTareas("inbox", lista);
   } else if (filter === "project") {
-    const m = resolverProyecto(args.project, await cargarIndiceProyectos(db, userId, env.config));
+    const { r: m } = await resolverProyectoDicho(db, userId, env.config, args.project);
     logProyecto(m);
     if (m.kind === "none") return err(`No encontré un proyecto que se parezca a «${corto(str(args.project), 40)}».`);
     // Varios frentes del mismo proyecto ("maqui perú") se listan juntos; entre proyectos distintos se pregunta.
@@ -110,11 +113,12 @@ const listTasks: Handler = async (args, ctx) => {
 // --- create_task -----------------------------------------------------------------------------------
 const createTaskTool: Handler = async (args, ctx) => {
   const { env, db, userId, hoy } = acceso(ctx);
-  // El índice de proyectos solo se arma (y se lee del vault) si David nombró uno: sin proyecto la tarea va al cajón.
-  const ix = str(args.project).trim() ? await cargarIndiceProyectos(db, userId, env.config) : null;
-  const planeado = planearTarea(args, { hoy, minutos: relojLima(ctx.limaNow).minutos, dictado: ctx.text }, ix);
-  const dicho = "plan" in planeado ? planeado.plan.proyecto : planeado.proyecto;
-  if (dicho) logProyecto(dicho);
+  // El proyecto solo se busca si David nombró uno: sin proyecto la tarea va al cajón. (Con el índice ligero; el completo, si hace falta.)
+  const dicho = str(args.project).trim();
+  const resuelto = dicho ? (await resolverProyectoDicho(db, userId, env.config, dicho)).r : null;
+  const planeado = planearTarea(args, { hoy, minutos: relojLima(ctx.limaNow).minutos, dictado: ctx.text }, resuelto ? () => resuelto : null);
+  const pedido = "plan" in planeado ? planeado.plan.proyecto : planeado.proyecto;
+  if (pedido) logProyecto(pedido);
   if ("respuesta" in planeado) return planeado.respuesta;
   const { plan } = planeado;
 

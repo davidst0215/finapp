@@ -5,9 +5,12 @@ export const sinTildes = (s: string): string => s.normalize("NFD").replace(/[̀-
 /** Minúsculas, sin tildes y con todo lo que no sea letra o número convertido en un espacio: "Maqui+ CO" → "maqui co". */
 export const norm = (s: string): string => sinTildes(s).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
-/** Dos palabras coinciden si son iguales o una es prefijo de la otra (plurales: "costo"/"costos"), con 4 letras o más. */
+/**
+ * Dos palabras coinciden si son iguales o una es prefijo de la otra con 4 letras o más Y una diferencia de a lo sumo 2 letras:
+ * plurales ("costo"/"costos", "cobranza"/"cobranzas"). Un prefijo más largo ya es otra palabra: «veracruz» no es «vera».
+ */
 export const coincide = (a: string, b: string): boolean =>
-  a === b || (a.length >= 4 && b.length >= 4 && (a.startsWith(b) || b.startsWith(a)));
+  a === b || (a.length >= 4 && b.length >= 4 && Math.abs(a.length - b.length) <= 2 && (a.startsWith(b) || b.startsWith(a)));
 
 /**
  * Palabras de la consulta que ninguna palabra de la bolsa cubre. Dos palabras seguidas de la consulta cuentan juntas
@@ -19,8 +22,8 @@ export function sinCubrir(consulta: string[], bolsa: string[]): string[] {
     const t = consulta[i];
     if (bolsa.some((b) => coincide(t, b))) continue;
     const junta = i + 1 < consulta.length ? t + consulta[i + 1] : "";
-    // Unidas deben ser CASI iguales (plural a lo sumo): "mqs"+"colombia" no es «mqsco» aunque empiece igual.
-    if (junta && bolsa.some((b) => b === junta || (junta.length >= 6 && coincide(junta, b) && Math.abs(junta.length - b.length) <= 2))) {
+    // Unidas, además, deben medir lo mismo que la palabra de la bolsa (junta.length >= 6): "mqs"+"colombia" no es «mqsco».
+    if (junta && bolsa.some((b) => b === junta || (junta.length >= 6 && coincide(junta, b)))) {
       i++;
       continue;
     }

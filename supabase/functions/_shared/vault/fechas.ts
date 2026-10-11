@@ -1,6 +1,8 @@
 // Fechas del vault en hora de Lima. Todo recibe `hoy` (AAAA-MM-DD) en vez de leer el reloj: así es
 // determinista y se prueba sin mocks. El runtime de las edge functions corre en UTC; Lima es UTC-5 todo el año.
 
+import { limaParts } from "../google/time.ts";
+
 export const DIAS = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"] as const;
 export const MESES = [
   "enero", "febrero", "marzo", "abril", "mayo", "junio",
@@ -13,7 +15,7 @@ const MS_DIA = 86_400_000;
 
 /** Fecha de Lima (AAAA-MM-DD) para un instante real. */
 export function limaToday(now: Date = new Date()): string {
-  return new Date(now.getTime() - 5 * 3_600_000).toISOString().slice(0, 10);
+  return limaParts(now).dateKey;
 }
 
 /**
@@ -21,7 +23,9 @@ export function limaToday(now: Date = new Date()): string {
  * sus getters UTC son la hora de Lima. A las 22:30 en Lima (03:30 UTC del día siguiente) `hoy` sigue siendo el día de Lima.
  */
 export function relojLima(limaNow: Date): { hoy: string; minutos: number } {
-  return { hoy: limaNow.toISOString().slice(0, 10), minutos: limaNow.getUTCHours() * 60 + limaNow.getUTCMinutes() };
+  // limaParts espera el instante real: se deshace una vez el corrimiento de −5 h con que llega `limaNow`.
+  const p = limaParts(new Date(limaNow.getTime() + 5 * 3_600_000));
+  return { hoy: p.dateKey, minutos: p.minutes };
 }
 
 const toUtc = (iso: string): number => {

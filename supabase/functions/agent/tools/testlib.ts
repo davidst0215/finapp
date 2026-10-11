@@ -14,11 +14,19 @@ export type Row = Record<string, unknown>;
 /** Un Supabase en memoria: lee las tablas dadas (eq / in / like / order / range) y responde los rpc con funciones. */
 export function fakeDb(tablas: Record<string, Row[]>, rpcs: Record<string, (a: Record<string, unknown>) => Row[]> = {}) {
   const llamadas: { rpc: string; args: Record<string, unknown> }[] = [];
-  const builder = (rows: Row[]) => {
+  /** Cada `.select(cols)` que se hizo, para comprobar qué columnas se leyeron (p. ej. que no se bajó el `content` de las fichas). */
+  const lecturas: { table: string; cols: string }[] = [];
+  const builder = (rows: Row[], tabla: string) => {
     let data = rows;
+    let columnas: string[] | null = null; // como PostgREST: solo vuelven las columnas pedidas
+    const proyectar = (filas: Row[]) => (columnas ? filas.map((r) => Object.fromEntries(columnas!.map((c) => [c, r[c]]))) : filas);
     // deno-lint-ignore no-explicit-any
     const b: any = {
-      select: () => b,
+      select: (cols?: string) => {
+        lecturas.push({ table: tabla, cols: cols ?? "*" });
+        columnas = cols && cols.trim() !== "*" ? cols.split(",").map((c) => c.trim()) : null;
+        return b;
+      },
       eq: (c: string, v: unknown) => ((data = data.filter((r) => r[c] === v)), b),
       in: (c: string, vs: unknown[]) => ((data = data.filter((r) => vs.includes(r[c]))), b),
       like: (c: string, pat: string) => {
@@ -26,32 +34,43 @@ export function fakeDb(tablas: Record<string, Row[]>, rpcs: Record<string, (a: R
         data = data.filter((r) => re.test(String(r[c])));
         return b;
       },
-      order: () => b,
+      order: (c: string, o?: { ascending?: boolean }) => {
+        const dir = o?.ascending === false ? -1 : 1;
+        data = [...data].sort((x, y) => (String(x[c] ?? "") < String(y[c] ?? "") ? -dir : String(x[c] ?? "") > String(y[c] ?? "") ? dir : 0));
+        return b;
+      },
+      neq: (c: string, v: unknown) => ((data = data.filter((r) => r[c] !== v)), b),
+      gte: (c: string, v: string) => ((data = data.filter((r) => String(r[c]) >= v)), b),
+      lt: (c: string, v: string) => ((data = data.filter((r) => String(r[c]) < v)), b),
+      or: () => b,
+      limit: (n: number) => ((data = data.slice(0, n)), b),
       range: (from: number, to: number) => ((data = data.slice(from, to + 1)), b),
-      maybeSingle: async () => ({ data: data[0] ?? null, error: null }),
-      then: (ok: (v: unknown) => unknown, ko?: (e: unknown) => unknown) => Promise.resolve({ data, error: null }).then(ok, ko),
+      maybeSingle: async () => ({ data: proyectar(data)[0] ?? null, error: null }),
+      then: (ok: (v: unknown) => unknown, ko?: (e: unknown) => unknown) => Promise.resolve({ data: proyectar(data), error: null }).then(ok, ko),
     };
     return b;
   };
   const db = {
-    from: (t: string) => builder(tablas[t] ?? []),
+    from: (t: string) => builder(tablas[t] ?? [], t),
     rpc: (name: string, args: Record<string, unknown>) => {
       llamadas.push({ rpc: name, args });
       return Promise.resolve({ data: rpcs[name]?.(args) ?? [], error: null });
     },
   };
-  return { db, llamadas };
+  return { db, llamadas, lecturas };
 }
 
 export type Peticion = { messages: { role: string; content: string }[] };
 
-/** Modelo guionado: cada pedido consume una respuesta; guarda lo que recibió. Con `{status}` responde un error HTTP. */
-export function modeloGuionado(respuestas: (string | { status: number })[]) {
+/** Modelo guionado: cada pedido consume una respuesta; guarda lo que recibió. Con `{status}` responde un error HTTP; con `{texto, demoraMs}`, tarda. */
+export function modeloGuionado(respuestas: (string | { status: number } | { texto: string; demoraMs: number })[]) {
   const peticiones: Peticion[] = [];
   const original = globalThis.fetch;
   globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
     peticiones.push(JSON.parse(init?.body ?? "{}"));
-    const r = respuestas.shift() ?? "No lo encuentro en tus fichas.";
+    const siguiente = respuestas.shift() ?? "No lo encuentro en tus fichas.";
+    if (typeof siguiente === "object" && "demoraMs" in siguiente) await new Promise((ok) => setTimeout(ok, siguiente.demoraMs));
+    const r = typeof siguiente === "object" && "demoraMs" in siguiente ? siguiente.texto : siguiente;
     if (typeof r !== "string") return { ok: false, status: r.status, json: async () => ({}), text: async () => "" };
     const data = { choices: [{ message: { content: r } }], usage: { prompt_tokens: 1000, completion_tokens: 40 } };
     return { ok: true, status: 200, json: async () => data, text: async () => JSON.stringify(data) };

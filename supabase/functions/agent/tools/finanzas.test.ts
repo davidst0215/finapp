@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { finanzas } from "./finanzas.ts";
 import { prepararVoz, VOZ_MAX } from "../../_shared/voz.ts";
 import { loQueSeDice } from "../respuesta.ts";
+import { fakeDb as fakeDbLeer } from "./testlib.ts";
 import type { AgentContext } from "../types.ts";
 
 type Insert = { table: string; row: Record<string, unknown> };
@@ -126,15 +127,83 @@ test("create_transaction: cuenta desconocida avisa con las cuentas que sí hay",
   assert.equal(inserts.length, 0);
 });
 
-test("create_transaction: sin cuenta nombrada usa la primera de la moneda del movimiento", async () => {
+test("create_transaction: sin cuenta nombrada va a la primera (como siempre), sin cambiar la elección por la moneda", async () => {
   const { db, inserts } = fakeDb();
   await h.create_transaction({ amount: 20, transaction_type: "expense", description: "Netflix", currency_code: "USD" }, ctx(db), data());
-  assert.equal(inserts[0].row.account_id, "a2");
+  assert.equal(inserts[0].row.account_id, "a1");
+  assert.equal(inserts[0].row.currency_code, "USD", "la moneda es la que dijo");
   await h.create_transaction({ amount: 20, transaction_type: "expense", description: "Taxi" }, ctx(db), data());
   assert.equal(inserts[1].row.account_id, "a1");
-  // sin cuenta en esa moneda: la primera (comportamiento de siempre)
-  await h.create_transaction({ amount: 5, transaction_type: "expense", description: "Café", currency_code: "USD" }, ctx(db), data([acc("z", "Solo soles")]));
+  const r = await h.create_transaction({ amount: 5, transaction_type: "expense", description: "Café" }, ctx(db), data([acc("z", "Solo soles")]));
   assert.equal(inserts[2].row.account_id, "z");
+  assert.doesNotMatch(r.message, /\(/, "con una sola cuenta no hace falta decir cuál");
+});
+
+test("create_transaction: con varias cuentas y sin nombrar, el mensaje dice a cuál fue", async () => {
+  const { db } = fakeDb();
+  const r = await h.create_transaction({ amount: 20, transaction_type: "expense", description: "Taxi" }, ctx(db), data());
+  assert.equal(r.message, "Gasto de S/ 20.00 en Taxi (BCP Soles).");
+});
+
+test("loadContext ordena las cuentas por antigüedad: accounts[0] es siempre la más vieja", async () => {
+  const filas = [
+    { user_id: "u1", account_id: "b", account_name: "Nueva", account_type: "checking", currency_code: "PEN", current_balance: 0, is_active: true, created_at: "2026-02-01T00:00:00Z" },
+    { user_id: "u1", account_id: "a", account_name: "Vieja", account_type: "checking", currency_code: "PEN", current_balance: 0, is_active: true, created_at: "2026-01-01T00:00:00Z" },
+    { user_id: "u1", account_id: "c", account_name: "Misma hora, id mayor", account_type: "checking", currency_code: "PEN", current_balance: 0, is_active: true, created_at: "2026-02-01T00:00:00Z" },
+    { user_id: "otro", account_id: "x", account_name: "Ajena", account_type: "checking", currency_code: "PEN", current_balance: 0, is_active: true, created_at: "2025-01-01T00:00:00Z" },
+  ];
+  const { db } = fakeDbLeer({ accounts: filas });
+  const { data: d, prompt } = await finanzas.loadContext!(ctx(db));
+  assert.deepEqual(d.accounts.map((a) => a.account_id), ["a", "b", "c"]);
+  assert.match(prompt, /CUENTAS: Vieja \(cuenta corriente\): S\/ 0\.00, Nueva/);
+});
+
+test("create_transaction: una cuenta nombrada de otra moneda que el movimiento PREGUNTA y no inserta", async () => {
+  const { db, inserts } = fakeDb();
+  const r = await h.create_transaction({ amount: 20, transaction_type: "expense", description: "Netflix", currency_code: "USD", account: "mi Interbank" }, ctx(db), data());
+  assert.equal(r.action, "clarify");
+  assert.equal(r.message, "Interbank está en soles, no en dólares. ¿Con cuál: BCP Dólares?");
+  assert.ok(prepararVoz(loQueSeDice(r)).endsWith("?"));
+  const sinDolares = await h.create_transaction({ amount: 20, transaction_type: "expense", description: "X", currency_code: "USD", account: "interbank" }, ctx(db), data([acc("a3", "Interbank")]));
+  assert.equal(sinDolares.message, "Interbank está en soles, no en dólares. No tienes cuentas en dólares.");
+  const alReves = await h.create_transaction({ amount: 20, transaction_type: "expense", description: "X", currency_code: "PEN", account: "bcp dólares" }, ctx(db), data());
+  assert.equal(alReves.action, "clarify");
+  assert.match(alReves.message, /^BCP Dólares está en dólares, no en soles\./);
+  assert.equal(inserts.length, 0);
+});
+
+test("create_transaction: una cuenta nombrada sin moneda dicha usa la moneda de esa cuenta", async () => {
+  const { db, inserts } = fakeDb();
+  await h.create_transaction({ amount: 20, transaction_type: "expense", description: "Netflix", account: "bcp dólares" }, ctx(db), data());
+  assert.equal(inserts[0].row.account_id, "a2");
+  assert.equal(inserts[0].row.currency_code, "USD");
+  await h.create_transaction({ amount: 20, transaction_type: "expense", description: "Netflix", currency_code: "USD", account: "bcp dólares" }, ctx(db), data());
+  assert.equal(inserts[1].row.currency_code, "USD");
+  await h.create_transaction({ amount: 20, transaction_type: "expense", description: "Taxi", account: "interbank" }, ctx(db), data());
+  assert.equal(inserts[2].row.currency_code, "PEN");
+});
+
+test("create_transaction y transfer: «1,5» es 1,5 y «1,500» es 1500; una coma ambigua se rechaza (nunca 15)", async () => {
+  const { db, inserts } = fakeDb();
+  await h.create_transaction({ amount: "1,5", transaction_type: "expense", description: "Chicle" }, ctx(db), data());
+  await h.create_transaction({ amount: "1,500", transaction_type: "expense", description: "Alquiler" }, ctx(db), data());
+  assert.deepEqual(inserts.map((i) => i.row.amount), [1.5, 1500]);
+  const mal = await h.create_transaction({ amount: "1,2345", transaction_type: "expense", description: "X" }, ctx(db), data());
+  assert.equal(mal.action, "error");
+  const t = await h.transfer({ amount: "2,5", from_account: "interbank", to_account: "bcp soles" }, ctx(db), data());
+  assert.equal(t.message, "S/ 2.50 transferidos de Interbank a BCP Soles.");
+  assert.equal((await h.transfer({ amount: "2,5,5", from_account: "interbank", to_account: "bcp soles" }, ctx(db), data())).action, "error");
+});
+
+test("cuenta desconocida: «la tarjeta Falabella» con una sola tarjeta NO se carga a ella", async () => {
+  const { db, inserts } = fakeDb();
+  const cuentas = data([acc("t1", "BBVA Oro", "credit_card"), acc("a1", "Interbank")]);
+  const r = await h.create_transaction({ amount: 30, transaction_type: "expense", description: "Cena", account: "la tarjeta Falabella" }, ctx(db), cuentas);
+  assert.equal(r.action, "error");
+  assert.match(r.message, /No encontré una cuenta «la tarjeta Falabella»\. Tienes: BBVA Oro o Interbank\./);
+  assert.equal(inserts.length, 0);
+  await h.create_transaction({ amount: 30, transaction_type: "expense", description: "Cena", account: "la tarjeta" }, ctx(db), cuentas);
+  assert.equal(inserts[0].row.account_id, "t1");
 });
 
 test("create_transaction: sin cuentas, o con monto inválido, no inserta", async () => {

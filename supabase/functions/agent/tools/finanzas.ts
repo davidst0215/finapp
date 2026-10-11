@@ -1,4 +1,6 @@
-import { buscarCuenta, fraseCuentaCreada, fraseCuentas, monto, opcionesHabladas, TIPO_HABLADO, type TipoCuenta, validarCuentaNueva } from "../../_shared/cuentas.ts";
+import {
+  buscarCuenta, fraseCuentaCreada, fraseCuentas, MONEDA_HABLADA, monto, numeroDictado, opcionesHabladas, TIPO_HABLADO, type TipoCuenta, validarCuentaNueva,
+} from "../../_shared/cuentas.ts";
 import { comentario, conComentario } from "../prompt.ts";
 import { conDetalle } from "../respuesta.ts";
 import { type AgentContext, type AgentModule, type ToolResult, tool } from "../types.ts";
@@ -34,7 +36,10 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
   const semana = rangoSemana(limaNow);
 
   const [accountsRes, categoriesRes, goalsRes, summaryRes, prevSummaryRes, spendRes, prevSpendRes, budgetsRes, recentRes, recurringRes, paidRes, weekRes, last7Res] = await Promise.all([
-    supabase.from("accounts").select("account_id, account_name, current_balance, account_type, currency_code").eq("user_id", user.id).eq("is_active", true),
+    // Orden explícito y estable (la más antigua primero): sin `account`, el movimiento va a accounts[0], y ese orden no puede depender de cómo
+    // devuelva las filas la base.
+    supabase.from("accounts").select("account_id, account_name, current_balance, account_type, currency_code").eq("user_id", user.id).eq("is_active", true)
+      .order("created_at", { ascending: true }).order("account_id", { ascending: true }),
     supabase.from("categories").select("category_id, category_name, category_type").eq("is_active", true).or(`user_id.eq.${user.id},user_id.is.null`),
     supabase.from("savings_goals").select("goal_id, goal_name, target_amount, current_amount, target_date").eq("user_id", user.id).eq("is_completed", false),
     supabase.rpc("fn_get_monthly_summary", { p_year: year, p_month: month }),
@@ -165,8 +170,8 @@ const err = (message: string): ToolResult => ({ action: "error", message });
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 /** Monto dictado: número finito, positivo y razonable (la base exige amount > 0). */
 const montoValido = (v: unknown): number | null => {
-  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v.replace(/,/g, "")) : NaN;
-  return Number.isFinite(n) && n > 0 && n < 1e9 ? n : null;
+  const n = numeroDictado(v); // "1,5" es 1.5 y "1,500" es 1500; lo ambiguo se rechaza (ver numeroDictado)
+  return n !== null && n > 0 && n < 1e9 ? n : null;
 };
 
 /** La cuenta que David nombró ("la de BCP", "mi Interbank"); ambigua o desconocida → la frase para preguntar o avisar. */
@@ -242,12 +247,22 @@ export const finanzas: AgentModule<Data> = {
       if (amount === null) return err("No entendí el monto: dímelo en números y mayor que cero.");
       const type = str(args.transaction_type);
       const cat = categories.find((c) => c.category_name.toLowerCase() === str(args.category_name).toLowerCase() && c.category_type === type);
-      const currency = str(args.currency_code) || "PEN";
-      // Con una cuenta nombrada va a esa; si no, a la primera de la moneda del movimiento (y, si no hay, a la primera).
+      // Con una cuenta nombrada va a esa. Sin ella, a la primera (la más antigua), como siempre: no se cambia la elección en silencio.
       const nombrada = str(args.account).trim();
-      const elegida = nombrada ? cuentaNombrada(nombrada, accounts) : { cuenta: accounts.find((a) => a.currency_code === currency) ?? accounts[0] };
+      const elegida = nombrada ? cuentaNombrada(nombrada, accounts) : { cuenta: accounts[0] };
       if ("respuesta" in elegida) return elegida.respuesta;
       const account = elegida.cuenta;
+      // La moneda es la que dijo; si nombró una cuenta y no dijo moneda, la de esa cuenta. Si dijo una y la cuenta es de otra, se pregunta.
+      const dicha = str(args.currency_code).trim().toUpperCase();
+      const currency = dicha || (nombrada ? account.currency_code : "PEN");
+      if (nombrada && account.currency_code !== currency) {
+        const propias = accounts.filter((a) => a.currency_code === currency);
+        const habla = (c: string) => MONEDA_HABLADA[c === "USD" ? "USD" : "PEN"];
+        return {
+          action: "clarify",
+          message: `${account.account_name} está en ${habla(account.currency_code)}, no en ${habla(currency)}. ${propias.length ? `¿Con cuál: ${opcionesHabladas(propias)}?` : `No tienes cuentas en ${habla(currency)}.`}`,
+        };
+      }
       const { data: tx, error } = await supabase.from("transactions").insert({
         user_id: user.id, transaction_type: type, amount, currency_code: currency,
         description: args.description, account_id: account.account_id,
@@ -258,7 +273,7 @@ export const finanzas: AgentModule<Data> = {
       if (error) return err(error.message);
       const label = type === "income" ? "ingreso" : "gasto";
       const sym = currency === "USD" ? "US$" : "S/";
-      const enCuenta = nombrada ? ` (${account.account_name})` : "";
+      const enCuenta = nombrada || accounts.length > 1 ? ` (${account.account_name})` : ""; // con varias cuentas se dice a cuál fue
       return { action: "create_transaction", message: conComentario(`${label[0]!.toUpperCase()}${label.slice(1)} de ${sym} ${amount.toFixed(2)} en ${args.description}${enCuenta}.`, args), data: tx };
     },
     async create_account(args, { supabase, user }, { accounts }) {

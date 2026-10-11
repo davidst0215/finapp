@@ -65,12 +65,29 @@ test("«agrega pendiente en maqui colombia cobranzas: llamar a Gabriela»", () =
   assert.equal(p.due, null);
 });
 
-test("«maqui perú» sin frente es ambiguo; «tdv bolsa» y «lota visión» no", () => {
+test("«maqui perú» sin frente es ambiguo; «tdv bolsa» no", () => {
   const pe = respuesta({ text: "Algo", project: "Maqui Perú" });
   assert.equal(pe.action, "clarify");
   assert.match(pe.message, /^¿En qué frente de Maqui PE: aprobaciones o scoring\?$/);
   assert.equal(plan({ text: "X", project: "TDV bolsa" }).folder, "tdv-bolsa-de-costos");
-  assert.equal(plan({ text: "X", project: "lota visión" }).folder, "lota");
+});
+
+test("una coincidencia aproximada NO escribe: se confirma antes («lota visión» → ¿En Lota?)", () => {
+  const r = planearTarea({ text: "Probar la cámara", project: "lota visión" }, HOY, IX);
+  assert.ok("respuesta" in r);
+  if (!("respuesta" in r)) return;
+  assert.equal(r.respuesta.action, "clarify");
+  assert.equal(r.respuesta.message, "¿Lo anoto en Lota?");
+  assert.equal(r.respuesta.voz, "¿En Lota?");
+  assert.deepEqual([r.proyecto?.kind, r.proyecto?.kind === "one" && r.proyecto.aproximado], ["one", true]);
+  // al confirmar, la tarea se repite con el nombre completo y entonces sí se escribe
+  assert.equal(plan({ text: "Probar la cámara", project: "lota" }).folder, "lota");
+  // varias palabras desconocidas, o nombres que solo se parecen por el prefijo: no
+  const vera = construirIndice(EMPTY_CONFIG, ["vera", "veracruz-obra"], []);
+  assert.equal(plan({ text: "X", project: "vera" }, HOY, vera).folder, "vera");
+  assert.equal(plan({ text: "X", project: "veracruz obra" }, HOY, vera).folder, "veracruz-obra");
+  const r2 = planearTarea({ text: "X", project: "vera marketing" }, HOY, vera);
+  assert.ok("respuesta" in r2 && r2.respuesta.message === "¿Lo anoto en Vera?");
 });
 
 test("un proyecto que no existe deja la tarea en el cajón y lo dice (no se pierde)", () => {
@@ -140,6 +157,8 @@ test("«recuérdame»: no promete una alarma que no existe", () => {
   assert.equal(sinHora.recordatorio, " Te lo recordará el resumen de las 7:00 de ese día.");
   const hoyConHora = plan({ text: "X", due: "hoy", time: "18:00" }, { ...HOY, dictado: "avísame hoy a las 6" });
   assert.equal(hoyConHora.recordatorio, " Aún no te aviso a la hora exacta.");
+  // una tarea que espera a otra persona sale en «esperas» del resumen, no en las del día: no se promete
+  assert.equal(plan({ text: "Que Ana envíe el contrato", due: "mañana", with: "Ana" }, { ...HOY, dictado: "recuérdame que Ana envíe el contrato mañana" }).recordatorio, "");
   // sin la palabra, o sin fecha, no se dice nada
   assert.equal(plan({ text: "X", due: "mañana" }, { ...HOY, dictado: "anota mañana llamar a Ana" }).recordatorio, "");
   assert.equal(plan({ text: "X" }, { ...HOY, dictado: "recuérdame algo" }).recordatorio, "");

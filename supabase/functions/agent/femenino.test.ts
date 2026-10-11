@@ -20,6 +20,11 @@ const MASCULINO: [string, RegExp][] = [
   ["encantado", /\bencantado\b/i],
   ["dispuesto", /\bdispuesto\b/i],
   ["preparado", /\bpreparado\b/i],
+  ["contento", /\bcontento\b/i],
+  // «listo» suelto: como adjetivo sobre sí misma. «Listo, lo agregué» (interjección) y los identificadores de código no cuentan.
+  ["estoy/soy/quedo + masculino", /\b(?:estoy|estaré|quedo|me siento|ya estoy|soy)\s+(?:listo|contento|atento|seguro|encantado|dispuesto|preparado)\b/i],
+  ["un asistente", /\bun asistente\b/i],
+  ["el asistente", /\bel asistente\b/i],
 ];
 
 /** Quita los comentarios de línea y de bloque: ahí se explica el código y se puede decir «ya preparado» sin hablar de Wabid. */
@@ -32,6 +37,9 @@ function archivos(dir: string): string[] {
     .map((e) => join(e.parentPath, e.name))
     .filter((f) => /\.(ts|tsx|mjs|js)$/.test(f))
     .filter((f) => !/node_modules|[\\/]dist[\\/]/.test(f))
+    // ai-chat es FinBot, otra persona ("Eres un asistente financiero personal… Tu nombre es FinBot"): no es Wabid, así que su
+    // prompt no está sujeto a esta regla. Si se migra a Wabid, quitar esta línea.
+    .filter((f) => !/[\\/]ai-chat[\\/]/.test(f))
     .filter((f) => !/\.test\.|_test\.|store-contract|[\\/]tests?[\\/]/.test(f));
 }
 
@@ -71,7 +79,13 @@ test("los prompts que hablan en nombre de Wabid dicen que es la asistente", () =
 test("el barrido sí detecta una plantilla masculina (la prueba no es decorativa)", () => {
   const malo = sinComentarios('const saludo = "Estoy listo para lo que necesites"; // preparado\nconst b = `Atento a tu agenda`;');
   const halladas = MASCULINO.filter(([, re]) => re.test(malo)).map(([n]) => n);
-  assert.deepEqual(halladas, ["listo para", "estoy listo", "atento"]);
+  assert.deepEqual(halladas, ["listo para", "estoy listo", "atento", "estoy/soy/quedo + masculino"]);
+  const detecta = (txt: string) => MASCULINO.filter(([, re]) => re.test(txt)).map(([n]) => n);
+  assert.deepEqual(detecta("Soy un asistente y estoy contento."), ["contento", "estoy/soy/quedo + masculino", "un asistente"]);
+  assert.deepEqual(detecta("Eres el asistente de David"), ["el asistente"]);
+  assert.deepEqual(detecta("Me siento encantado"), ["encantado", "estoy/soy/quedo + masculino"]);
+  // lo permitido: interjección de confirmación, el femenino, identificadores de código y frases sobre cosas
+  assert.deepEqual(detecta("Listo, lo agregué. Estoy lista, segura y atenta. Borrador listo. const listo = () => 1; la asistente"), []);
   // y un comentario no cuenta
   assert.equal(MASCULINO.some(([, re]) => re.test(sinComentarios("// ya preparado\n/* encantado */"))), false);
 });

@@ -20,7 +20,9 @@ import {
 import {
   armarCatalogo, CatalogoCache, fragmentosDeFicha, fueRecortada, parametrosBusqueda, recortarFicha, topePorFicha, type Catalogo, type CatalogoRow,
 } from "./vault/catalogo.ts";
-import { construirIndice, fichaProy, type FichaProy, type Indice, type PendientesIn } from "./vault/proyectos.ts";
+import {
+  carpetasParaPendientes, construirIndice, fichaProy, type FichaProy, type Indice, type PendientesIn, type Resolucion, resolverProyecto,
+} from "./vault/proyectos.ts";
 import { rowsForFile } from "./vault/rows.ts";
 import {
   buildAnswerMessages, clienteChips, mensajeMemoria, parseAnswer, pickRelated, textoPendientes, toSources, type ClienteChip, type Hit,
@@ -379,6 +381,8 @@ export type SearchInput = {
   pendientes?: PendientesIn[];
   /** Hoy en Lima (AAAA-MM-DD), para fechar los pendientes. */
   hoy?: string;
+  /** Plazo TOTAL para redactar (primera y segunda respuesta juntas), en ms. Por defecto 12 000. */
+  plazoMs?: number;
   /** También busca por palabras entre los docs de pendientes (aparte: no desplaza fichas ni notas). Solo el agente lo pide. */
   incluirPendientes?: boolean;
 };
@@ -388,6 +392,8 @@ export type MemoriaMeta = {
   hits: number;
   pendientes: string[];
   encontrado: boolean;
+  /** El modelo redactó una respuesta (false: no estaba configurado, falló o se acabó el plazo y se dicen solo las fichas). */
+  redactada: boolean;
   /** Se pidió una segunda respuesta porque la primera dijo «No lo encuentro» y había algo nuevo que mostrar. */
   segunda: boolean;
   /** Cuántas fichas o notas más (de la búsqueda por palabras) entraron en esa segunda respuesta. */
@@ -438,20 +444,32 @@ export async function cargarCatalogo(db: SupabaseClient, userId: string): Promis
 }
 
 // --- Proyectos hablados ------------------------------------------------------------------------------
+// Los alias salen de las carpetas y de las fichas. Hay dos niveles, para no leer ~400 KB de fichas en cada arranque en frío:
+//   ligero    cliente y ficha madre de cada ficha (49 filas chicas): alcanza para «tdv bolsa», «novafondos», «vera»…
+//   completo  además las carpetas y prefijos que cada ficha nombra («Vault: 20-projects/mqsco-*»): hace falta para «maqui colombia».
+// Ambos se guardan por instancia mientras no cambie vault_sync.tree_sha (igual que el catálogo). El completo solo se lee cuando el
+// ligero no resuelve (ver resolverProyectoDicho) y, una vez leído, lo reutilizan las siguientes peticiones.
+type NivelAlias = "ligero" | "completo";
 const aliasCache = new Map<string, { sha: string; at: number; fichas: FichaProy[] }>();
 const ALIAS_TTL_MS = 10 * 60_000;
+const claveAlias = (userId: string, nivel: NivelAlias) => `${userId}|${nivel}`;
 
-/** De cada ficha, solo lo que sirve para reconocer proyectos (cliente, madre y carpetas que nombra). Se guarda hasta que cambie el vault. */
-async function fichasParaAlias(db: SupabaseClient, userId: string): Promise<FichaProy[]> {
-  const sha = (await getSyncState(db, userId))?.tree_sha ?? null;
-  const hit = aliasCache.get(userId);
-  if (sha && hit && hit.sha === sha && Date.now() - hit.at < ALIAS_TTL_MS) return hit.fichas;
+function fichasEnCache(userId: string, sha: string | null, nivel: NivelAlias): FichaProy[] | null {
+  const hit = aliasCache.get(claveAlias(userId, nivel));
+  return sha && hit && hit.sha === sha && Date.now() - hit.at < ALIAS_TTL_MS ? hit.fichas : null;
+}
+
+async function fichasParaAlias(db: SupabaseClient, userId: string, sha: string | null, nivel: NivelAlias): Promise<FichaProy[]> {
+  const guardadas = fichasEnCache(userId, sha, nivel);
+  if (guardadas) return guardadas;
   try {
-    const rows = await selectAll<{ path: string; cliente: string | null; padre: string | null; content: string | null }>((from, to) =>
-      db.from("vault_docs").select("path, cliente, padre, content").eq("user_id", userId).eq("kind", "ficha").order("path").range(from, to)
-    );
+    type Fila = { path: string; cliente: string | null; padre: string | null; content?: string | null };
+    // (cada select lleva su lista literal: supabase-js tipa las filas a partir del texto)
+    const rows = nivel === "completo"
+      ? await selectAll<Fila>((from, to) => db.from("vault_docs").select("path, cliente, padre, content").eq("user_id", userId).eq("kind", "ficha").order("path").range(from, to))
+      : await selectAll<Fila>((from, to) => db.from("vault_docs").select("path, cliente, padre").eq("user_id", userId).eq("kind", "ficha").order("path").range(from, to));
     const fichas = rows.map((r) => fichaProy({ slug: slugOf(r.path), cliente: r.cliente, padre: r.padre, content: r.content }));
-    if (sha) aliasCache.set(userId, { sha, at: Date.now(), fichas });
+    if (sha) aliasCache.set(claveAlias(userId, nivel), { sha, at: Date.now(), fichas });
     return fichas;
   } catch (e) {
     // Sin fichas los alias salen solo de las carpetas y de la configuración: peor, pero no se cae.
@@ -460,10 +478,36 @@ async function fichasParaAlias(db: SupabaseClient, userId: string): Promise<Fich
   }
 }
 
-/** Carpetas del vault + configuración de Norte + fichas → cómo reconocer un proyecto por su nombre hablado (ver vault/proyectos.ts). */
-export async function cargarIndiceProyectos(db: SupabaseClient, userId: string, cfg: Config): Promise<Indice> {
-  const [carpetas, fichas] = await Promise.all([knownFolders(db, userId), fichasParaAlias(db, userId)]);
+/**
+ * Carpetas del vault + configuración de Norte + fichas → cómo reconocer un proyecto por su nombre hablado (ver vault/proyectos.ts).
+ * `nivel`: "ligero" (por defecto), "completo", o "lo_que_haya" (el completo si ya está en la instancia; si no, el ligero).
+ */
+export async function cargarIndiceProyectos(
+  db: SupabaseClient, userId: string, cfg: Config, nivel: NivelAlias | "lo_que_haya" = "ligero",
+): Promise<Indice> {
+  const sha = (await getSyncState(db, userId))?.tree_sha ?? null;
+  const elegido: NivelAlias = nivel === "lo_que_haya" ? (fichasEnCache(userId, sha, "completo") ? "completo" : "ligero") : nivel;
+  const [carpetas, fichas] = await Promise.all([knownFolders(db, userId), fichasParaAlias(db, userId, sha, elegido)]);
   return construirIndice(cfg, carpetas, fichas);
+}
+
+/**
+ * Resuelve lo que dijo David con el índice ligero y, solo si no queda claro (nada, o una coincidencia aproximada), con el completo.
+ * Devuelve también el índice usado (sus destinos son los que hay que decir).
+ */
+export async function resolverProyectoDicho(db: SupabaseClient, userId: string, cfg: Config, dicho: unknown): Promise<{ r: Resolucion; ix: Indice }> {
+  const ligero = await cargarIndiceProyectos(db, userId, cfg, "lo_que_haya");
+  const r = resolverProyecto(dicho, ligero);
+  if (r.kind !== "none" && !r.aproximado) return { r, ix: ligero };
+  const completo = await cargarIndiceProyectos(db, userId, cfg, "completo");
+  return { r: resolverProyecto(dicho, completo), ix: completo };
+}
+
+/** Carpetas de las que traer los pendientes para una pregunta de memoria; el índice completo solo si el que haya no da ninguna. */
+export async function carpetasDePendientes(db: SupabaseClient, userId: string, cfg: Config, slugsFichas: string[], consulta: string): Promise<PendientesIn[]> {
+  const primero = carpetasParaPendientes(slugsFichas, consulta, await cargarIndiceProyectos(db, userId, cfg, "lo_que_haya"));
+  if (primero.length) return primero;
+  return carpetasParaPendientes(slugsFichas, consulta, await cargarIndiceProyectos(db, userId, cfg, "completo"));
 }
 
 type FichaDoc = { path: string; title: string; cliente: string | null; proyecto: string | null; padre: string | null; tags: string[] | null; links: string[] | null; content: string | null };
@@ -478,6 +522,8 @@ async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 }
 
 const MAX_PENDIENTES = 3;
+const PLAZO_REDACTAR_MS = 12_000;
+const MIN_SEGUNDA_MS = 3_000;
 const tituloPendientes = (t: string) => t.replace(/^Pendientes\s*[—–-]\s*/i, "").trim();
 
 /** Tareas reales (no subtareas) de las carpetas dadas, agrupadas por carpeta. */
@@ -516,7 +562,7 @@ export async function searchMemory(db: SupabaseClient, userId: string, input: Se
   const wantAnswer = input.answer === true;
   const limit = Number.isInteger(input.limit) ? Math.min(Math.max(input.limit as number, 1), 12) : 8;
   const hoy = isIsoDate(input.hoy) ? input.hoy : limaToday();
-  const meta: MemoriaMeta = { fichas: [], hits: 0, pendientes: [], encontrado: false, segunda: false, ampliada: 0, recortada: false, llm: 0, tok_in: 0, tok_out: 0 };
+  const meta: MemoriaMeta = { fichas: [], hits: 0, pendientes: [], encontrado: false, redactada: false, segunda: false, ampliada: 0, recortada: false, llm: 0, tok_in: 0, tok_out: 0 };
 
   // Una sola lectura liviana (≈100 filas) sirve para los chips, el conteo y resolver los relacionados.
   const catalogP = selectAll<{ path: string; title: string; cliente: string | null; proyecto: string | null; padre: string | null; kind: string }>(
@@ -615,8 +661,12 @@ export async function searchMemory(db: SupabaseClient, userId: string, input: Se
     if (!llmConfigured()) {
       answerError = "El modelo no está configurado.";
     } else {
+      // Un solo plazo para todo: lo que gasta la primera respuesta se le resta a la segunda (antes eran 12 s + 12 s).
+      const plazo = Number.isFinite(input.plazoMs) && (input.plazoMs as number) > 0 ? (input.plazoMs as number) : PLAZO_REDACTAR_MS;
+      const hasta = Date.now() + plazo;
+      const restante = () => hasta - Date.now();
       const redactar = async (cuales: Hit[], material: Record<string, string>, fragmentos: boolean): Promise<ParsedAnswer> => {
-        const res = await withTimeout(llmFetch({ messages: buildAnswerMessages(pregunta, cuales, material, { fragmentos }), temperature: 0.1, max_tokens: 260 }), 12_000);
+        const res = await withTimeout(llmFetch({ messages: buildAnswerMessages(pregunta, cuales, material, { fragmentos }), temperature: 0.1, max_tokens: 260 }), Math.max(restante(), 1));
         if (!res.ok) throw new Error(`modelo ${res.status}`);
         const data = await res.json();
         meta.llm++;
@@ -629,11 +679,13 @@ export async function searchMemory(db: SupabaseClient, userId: string, input: Se
       let respaldadoPor = fuentes; // las fuentes numeradas de la respuesta que se queda
       try {
         let parsed = await redactar(fuentes, completos, false);
+        meta.redactada = true;
         // «No lo encuentro»: segunda oportunidad con lo que la primera no vio, y solo si hay algo nuevo que mostrar:
         //  · las partes de las fichas que se leyeron recortadas y mencionan las palabras de la pregunta;
         //  · otras fichas o notas que la búsqueda por palabras encuentra (la IA pudo elegir la ficha equivocada del catálogo).
         // Una llamada más al modelo, únicamente cuando la primera falló.
-        if (!parsed.found) {
+        // Solo si queda tiempo para que valga la pena (una respuesta tarda ~2 s): con el plazo casi agotado se queda la primera.
+        if (!parsed.found && restante() >= Math.min(MIN_SEGUNDA_MS, plazo / 3)) {
           const fuentes2: Hit[] = [];
           const material2: Record<string, string> = {};
           for (const d of recortadas) {
@@ -644,7 +696,7 @@ export async function searchMemory(db: SupabaseClient, userId: string, input: Se
               fuentes2.push(h);
             }
           }
-          const extra = q && fichaHits.length ? await ampliarBusqueda(db, q, cliente, new Set(hits.map((h) => h.path))) : [];
+          const extra = q && fichaHits.length ? await withTimeout(ampliarBusqueda(db, q, cliente, new Set(hits.map((h) => h.path))), Math.max(Math.min(restante() / 3, 3000), 1)).catch(() => []) : [];
           meta.ampliada = extra.length;
           if (fuentes2.length || extra.length) {
             for (const h of pendHits) {

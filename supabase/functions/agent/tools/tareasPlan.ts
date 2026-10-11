@@ -43,7 +43,7 @@ const clarify = (message: string, voz?: string, proyecto: Resolucion | null = nu
 export function planearTarea(
   args: Record<string, unknown>,
   ctx: { hoy: string; minutos: number; dictado: string },
-  ix: Indice | null,
+  ix: Indice | ((dicho: string) => Resolucion) | null,
 ): { plan: PlanTarea } | { respuesta: ToolResult; proyecto: Resolucion | null } {
   const text = str(args.text).trim();
   if (!text) return { respuesta: { action: "error", message: "No entendí qué tarea anotar." }, proyecto: null };
@@ -55,8 +55,12 @@ export function planearTarea(
   let proyecto: Resolucion | null = null;
   const dicho = str(args.project).trim();
   if (dicho) {
-    proyecto = ix ? resolverProyecto(dicho, ix) : { kind: "none" };
-    if (proyecto.kind === "one") {
+    proyecto = typeof ix === "function" ? ix(dicho) : ix ? resolverProyecto(dicho, ix) : { kind: "none" };
+    if (proyecto.kind === "one" && proyecto.aproximado) {
+      // Escribir en el proyecto equivocado deja la tarea donde nadie la busca: una coincidencia a medias se confirma antes (leer sí puede ser aproximado).
+      const nombre = destinoHablado(proyecto.destino);
+      return clarify(`¿Lo anoto en ${nombre}?`, `¿En ${nombre}?`, proyecto);
+    } else if (proyecto.kind === "one") {
       folder = proyecto.destino.folder;
       donde = destinoHablado(proyecto.destino);
     } else if (proyecto.kind === "many") {
@@ -90,8 +94,9 @@ export function planearTarea(
   const note = [hora ? `Hora: ${hora}` : "", extra].filter(Boolean).join(". ") || null;
 
   // Todavía no hay avisos programados a una hora: el resumen de las 7:00 incluye lo que vence ese día. No se promete otra cosa.
+  // (Una tarea con `with` espera a otra persona: el resumen la cuenta en «esperas», no en las del día.)
   let recordatorio = "";
-  if (due && /recu[eé]rd|av[ií]sa/i.test(ctx.dictado)) {
+  if (due && !str(args.with).trim() && /recu[eé]rd|av[ií]sa/i.test(ctx.dictado)) {
     if (due > ctx.hoy) recordatorio = ` Te lo recordará el resumen de las 7:00 de ese día${hora ? "; aún no te aviso a la hora exacta" : ""}.`;
     else if (hora) recordatorio = " Aún no te aviso a la hora exacta.";
   }

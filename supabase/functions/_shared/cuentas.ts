@@ -3,7 +3,7 @@
 //
 // Esquema (001_initial_schema.sql): accounts(account_name ≤100, account_type, currency_code → currencies, current_balance,
 // is_active). Los tipos y la moneda salen de ahí; la web (Accounts.tsx) crea cuentas con el mismo juego de campos.
-import { cubre, norm } from "./texto.ts";
+import { coincide, cubre, norm } from "./texto.ts";
 import { paraVoz, VOZ_MAX } from "./voz.ts";
 
 export type TipoCuenta = "checking" | "savings" | "credit_card" | "cash" | "investment" | "loan" | "other";
@@ -30,7 +30,7 @@ export const MAX_SALDO = 1_000_000_000; // 18 dígitos caben, pero más de mil m
 
 // Lo que el modelo (o David) puede decir para un tipo. El esquema de la tool ya manda el código inglés; esto cubre el resto.
 const SINONIMOS_TIPO: [TipoCuenta, string[]][] = [
-  ["credit_card", ["credit card", "tarjeta", "tarjeta de credito", "credito", "tc", "visa", "mastercard"]],
+  ["credit_card", ["credit card", "tarjeta", "tarjeta de credito", "credito", "tc"]],
   ["savings", ["savings", "ahorro", "ahorros", "cuenta de ahorros", "cuenta de ahorro"]],
   ["cash", ["cash", "efectivo", "billetera", "caja"]],
   ["investment", ["investment", "inversion", "inversiones", "broker"]],
@@ -63,6 +63,18 @@ export function monedaDesdeTexto(v: unknown): Moneda | null {
 const RELLENO = new Set(["de", "del", "la", "el", "los", "las", "mi", "mis", "me", "en", "cuenta", "cuentas", "con", "a", "al", "y", "un", "una", "por", "es", "ese", "esa"]);
 export const palabrasCuenta = (s: string): string[] => norm(s).split(" ").filter((t) => t && !RELLENO.has(t));
 
+// Cada palabra que dice un tipo ("tarjeta", "credito", "ahorros", "efectivo"…) y de qué tipo es.
+const PALABRAS_TIPO = new Map<string, TipoCuenta>(
+  SINONIMOS_TIPO.flatMap(([tipo, frases]) => frases.flatMap((f) => f.split(" ")).filter((w) => !RELLENO.has(w)).map((w) => [w, tipo] as const)),
+);
+
+/** El tipo que nombra la consulta SOLO si todas sus palabras son de tipo: "la tarjeta" sí; "la tarjeta Falabella" no. */
+function tipoPuro(q: string[]): TipoCuenta | null {
+  const deTipo = (w: string): TipoCuenta | null => PALABRAS_TIPO.get(w) ?? [...PALABRAS_TIPO].find(([k]) => coincide(w, k))?.[1] ?? null; // plurales: "tarjetas"
+  const tipos = new Set(q.map(deTipo));
+  return tipos.size === 1 && !tipos.has(null) ? [...tipos][0] : null;
+}
+
 /** Mismas palabras (sin relleno), en cualquier orden: "Cuenta Interbank" y "interbank" son la misma cuenta. */
 export function mismoNombre(a: string, b: string): boolean {
   const x = palabrasCuenta(a);
@@ -81,7 +93,8 @@ export type Busqueda<T extends CuentaMin = CuentaMin> =
 /**
  * Cuenta que David nombró, con tolerancia: tildes, mayúsculas, plurales y relleno ("la de BCP"). Todas las palabras de lo
  * dicho deben estar en el nombre. Si dos cuentas coinciden gana la de nombre exacto; si no, se devuelven para preguntar.
- * Sin coincidencia por nombre, "la tarjeta" o "efectivo" se resuelve por tipo cuando solo hay una de ese tipo.
+ * Sin coincidencia por nombre, "la tarjeta" o "efectivo" se resuelve por tipo cuando solo hay una de ese tipo, y SOLO si todas
+ * las palabras de lo dicho son de tipo.
  */
 export function buscarCuenta<T extends CuentaMin>(consulta: unknown, cuentas: T[]): Busqueda<T> {
   const texto = typeof consulta === "string" ? consulta : "";
@@ -100,7 +113,9 @@ export function buscarCuenta<T extends CuentaMin>(consulta: unknown, cuentas: T[
     return exactas.length === 1 ? { kind: "one", cuenta: exactas[0] } : { kind: "many", cuentas: aciertos };
   }
 
-  const tipo = tipoDesdeTexto(q.join(" ")) ?? q.map(tipoDesdeTexto).find(Boolean) ?? null;
+  // Sin coincidencia por nombre, solo vale el tipo "puro" ("la tarjeta", "el efectivo"). Si sobra una palabra ("la tarjeta Falabella",
+  // "ahorros de Scotiabank") es una cuenta que no tengo: no se carga a la única tarjeta o a la única de ahorros; se pregunta.
+  const tipo = tipoPuro(q);
   if (tipo) {
     const delTipo = cuentas.filter((c) => c.account_type === tipo);
     if (delTipo.length === 1) return { kind: "one", cuenta: delTipo[0] };
@@ -111,6 +126,21 @@ export function buscarCuenta<T extends CuentaMin>(consulta: unknown, cuentas: T[
 
 export type CuentaNueva = { account_name: string; account_type: TipoCuenta; currency_code: Moneda; current_balance: number };
 export type ValidacionCuenta = { ok: true; cuenta: CuentaNueva } | { ok: false; error: string; duplicada?: CuentaMin; pregunta?: boolean };
+
+/**
+ * Número dictado como texto o cifra. La coma solo se acepta como separador de miles ("1,500" → 1500, "1,234,567.5") o como
+ * decimal claro de 1 o 2 cifras ("1,5" → 1.5, "12,50" → 12.5). Cualquier otra cosa ("1,2345", "1,5,0", "1e3", "abc") es null:
+ * nunca se adivina (1,5 jamás es 15). Con signo menos opcional y un prefijo de moneda ("S/ 500", "US$ 20", "$").
+ */
+export function numeroDictado(v: unknown): number | null {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v !== "string") return null;
+  const t = v.trim().replace(/^(-?)\s*(?:S\/|US\$|\$)\s*/i, "$1").replace(/\s+/g, "");
+  if (/^-?\d+(\.\d+)?$/.test(t)) return Number(t);
+  if (/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(t)) return Number(t.replace(/,/g, ""));
+  if (/^-?\d+,\d{1,2}$/.test(t)) return Number(t.replace(",", "."));
+  return null;
+}
 
 /** Redondea a céntimos sin errores de coma flotante (500.1 + 0.2). */
 export const aCentimos = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -143,8 +173,8 @@ export function validarCuentaNueva(args: Record<string, unknown>, existentes: Cu
   let saldo = 0;
   const bruto = args.initial_balance;
   if (bruto !== undefined && bruto !== null && bruto !== "") {
-    const n = typeof bruto === "number" ? bruto : typeof bruto === "string" ? Number(bruto.replace(/[,\s]/g, "")) : NaN;
-    if (!Number.isFinite(n)) return { ok: false, error: "No entendí el saldo inicial. Dímelo en números, por ejemplo quinientos soles." };
+    const n = numeroDictado(bruto);
+    if (n === null) return { ok: false, error: "No entendí el saldo inicial. Dímelo en números, por ejemplo quinientos soles." };
     if (Math.abs(n) > MAX_SALDO) return { ok: false, error: "Ese saldo inicial es demasiado grande; repítelo." };
     // En una tarjeta el saldo es lo que se debe (la web lo resta del patrimonio): un negativo no tiene sentido ahí.
     if (n < 0 && tipo === "credit_card") return { ok: false, error: "En una tarjeta el saldo es lo que debes, sin signo. Repítelo." };
