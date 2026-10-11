@@ -61,11 +61,13 @@ export function parseModelJson<T = Record<string, unknown>>(text: string): T {
   }
 }
 
-export function llmFetch(body: Record<string, unknown>): Promise<Response> {
+/** `signal` corta el pedido Y la lectura del cuerpo: OpenRouter manda los headers de inmediato y el cuerpo cuando el modelo termina. */
+export function llmFetch(body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
   return fetch(LLM_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: llmAuth(), "X-Title": "Wabid" },
     body: JSON.stringify({ ...LLM_BODY, ...body }),
+    signal,
   });
 }
 

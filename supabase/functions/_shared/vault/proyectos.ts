@@ -58,6 +58,8 @@ export type Destino = FolderInfo & {
   grupo: string;
   /** Cómo se dice el grupo ("Maqui CO", "Novafondos"). */
   grupoEtiqueta: string;
+  /** La etiqueta del grupo es buena: viene de la configuración, de las fichas o es una carpeta suelta. false = salió del prefijo crudo ("Mqsco"). */
+  etiquetaFicha: boolean;
   /** Palabras que lo reconocen: las suyas y las que aportan las fichas. */
   palabras: string[];
   /** Solo las suyas (carpeta, proyecto, frente): desempatan frente a las que vienen de las fichas. */
@@ -125,11 +127,12 @@ export function construirIndice(cfg: Config, carpetas: string[], fichas: FichaPr
   const base = todos.map((d): Destino => {
     const propias = unicos([...tokens(d.folder), ...tokens(d.project), ...(d.frente ? tokens(d.frente) : [])]);
     const delFichas = (fichasDe.get(d.folder) ?? []).flatMap(identidad);
-    return { ...d, grupo: grupoDe(d), grupoEtiqueta: d.project, palabras: unicos([...propias, ...delFichas]), propias };
+    return { ...d, grupo: grupoDe(d), grupoEtiqueta: d.project, etiquetaFicha: true, palabras: unicos([...propias, ...delFichas]), propias };
   });
 
   // Etiqueta del grupo: la de la configuración; si no, el cliente de las fichas ("Maqui CO") y, si no hay, el prefijo.
   const etiquetas = new Map<string, string>();
+  const conCliente = new Set<string>(); // grupos cuya etiqueta salió del cliente de una ficha
   for (const d of base) {
     if (d.scope === "cajon" || etiquetas.has(d.grupo)) continue;
     if (d.scope === "trabajo") {
@@ -139,8 +142,14 @@ export function construirIndice(cfg: Config, carpetas: string[], fichas: FichaPr
     const clientes = base.filter((x) => x.grupo === d.grupo).flatMap((x) => (fichasDe.get(x.folder) ?? []).map((f) => sinPersonal(f.cliente)).filter(Boolean) as string[]);
     const frecuente = [...clientes.reduce((m, c) => m.set(c, (m.get(c) ?? 0) + 1), new Map<string, number>())].sort((a, b) => b[1] - a[1])[0]?.[0];
     etiquetas.set(d.grupo, frecuente ?? pretty(d.grupo));
+    if (frecuente) conCliente.add(d.grupo);
   }
-  const destinos = base.map((d) => ({ ...d, grupoEtiqueta: d.scope === "cajon" ? INBOX_LABEL : (etiquetas.get(d.grupo) ?? d.project) }));
+  const destinos = base.map((d) => ({
+    ...d,
+    grupoEtiqueta: d.scope === "cajon" ? INBOX_LABEL : (etiquetas.get(d.grupo) ?? d.project),
+    // una carpeta suelta (grupo = ella misma) o de la configuración se dice bien sola; un grupo de prefijo necesita el cliente de una ficha
+    etiquetaFicha: d.scope === "trabajo" || d.scope === "cajon" || d.grupo === d.folder || conCliente.has(d.grupo),
+  }));
   const inbox = destinos[destinos.length - 1];
   return { destinos: destinos.filter((d) => d.scope !== "cajon"), inbox, porFicha };
 }

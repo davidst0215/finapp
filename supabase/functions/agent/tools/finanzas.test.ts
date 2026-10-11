@@ -129,14 +129,38 @@ test("create_transaction: cuenta desconocida avisa con las cuentas que sí hay",
 
 test("create_transaction: sin cuenta nombrada va a la primera (como siempre), sin cambiar la elección por la moneda", async () => {
   const { db, inserts } = fakeDb();
-  await h.create_transaction({ amount: 20, transaction_type: "expense", description: "Netflix", currency_code: "USD" }, ctx(db), data());
-  assert.equal(inserts[0].row.account_id, "a1");
-  assert.equal(inserts[0].row.currency_code, "USD", "la moneda es la que dijo");
   await h.create_transaction({ amount: 20, transaction_type: "expense", description: "Taxi" }, ctx(db), data());
-  assert.equal(inserts[1].row.account_id, "a1");
+  assert.equal(inserts[0].row.account_id, "a1");
+  assert.equal(inserts[0].row.currency_code, "PEN");
+  await h.create_transaction({ amount: 20, transaction_type: "expense", description: "Netflix", currency_code: "PEN" }, ctx(db), data());
+  assert.equal(inserts[1].row.account_id, "a1", "la moneda dicha coincide con la de accounts[0]");
   const r = await h.create_transaction({ amount: 5, transaction_type: "expense", description: "Café" }, ctx(db), data([acc("z", "Solo soles")]));
   assert.equal(inserts[2].row.account_id, "z");
   assert.doesNotMatch(r.message, /\(/, "con una sola cuenta no hace falta decir cuál");
+});
+
+test("create_transaction SIN cuenta nombrada: si la moneda dicha difiere de la de accounts[0], pregunta igual que con cuenta nombrada", async () => {
+  const { db, inserts } = fakeDb();
+  const r = await h.create_transaction({ amount: 20, transaction_type: "expense", description: "Netflix", currency_code: "USD" }, ctx(db), data());
+  assert.equal(r.action, "clarify");
+  assert.equal(r.message, "Dijiste dólares, pero BCP Soles es en soles. ¿Con cuál: BCP Dólares?");
+  const sinDolares = await h.create_transaction({ amount: 20, transaction_type: "expense", description: "X", currency_code: "USD" }, ctx(db), data([acc("a3", "Interbank")]));
+  assert.equal(sinDolares.message, "Dijiste dólares, pero Interbank es en soles. No tienes cuentas en dólares.");
+  const alReves = await h.create_transaction({ amount: 20, transaction_type: "expense", description: "X", currency_code: "PEN" }, ctx(db), data([acc("d1", "BCP Dólares", "savings", "USD"), acc("a3", "Interbank")]));
+  assert.equal(alReves.message, "Dijiste soles, pero BCP Dólares es en dólares. ¿Con cuál: Interbank?");
+  assert.equal(inserts.length, 0);
+  // sin decir moneda no pregunta (se queda en accounts[0], como siempre)
+  await h.create_transaction({ amount: 20, transaction_type: "expense", description: "Taxi" }, ctx(db), data());
+  assert.equal(inserts.length, 1);
+});
+
+test("currency_code solo se pasa si David dijo la moneda: la descripción y las reglas lo dicen", () => {
+  const def = finanzas.definitions.find((d) => d.function.name === "create_transaction")!;
+  const desc = (def.function.parameters as { properties: { currency_code: { description: string } } }).properties.currency_code.description;
+  assert.match(desc, /Solo si David dijo la moneda/);
+  assert.match(desc, /vacío si no la dijo/);
+  assert.doesNotMatch(desc, /por defecto/);
+  assert.match(finanzas.rules ?? "", /currency_code solo si David dijo la moneda; vacío si no/);
 });
 
 test("create_transaction: con varias cuentas y sin nombrar, el mensaje dice a cuál fue", async () => {
@@ -168,7 +192,7 @@ test("create_transaction: una cuenta nombrada de otra moneda que el movimiento P
   assert.equal(sinDolares.message, "Interbank está en soles, no en dólares. No tienes cuentas en dólares.");
   const alReves = await h.create_transaction({ amount: 20, transaction_type: "expense", description: "X", currency_code: "PEN", account: "bcp dólares" }, ctx(db), data());
   assert.equal(alReves.action, "clarify");
-  assert.match(alReves.message, /^BCP Dólares está en dólares, no en soles\./);
+  assert.match(alReves.message, /^BCP Dólares está en dólares, no en soles\./); // con cuenta nombrada: dice que ESA cuenta es de otra moneda
   assert.equal(inserts.length, 0);
 });
 

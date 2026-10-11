@@ -179,6 +179,60 @@ test("numeroDictado: la coma es de miles o es un decimal claro; nunca 1,5 → 15
   for (const [entrada, esperado] of casos) assert.equal(numeroDictado(entrada), esperado, JSON.stringify(entrada));
 });
 
+test("numeroDictado: «1.500» y «2.000» (punto + 3 decimales) son ambiguos → null, no 1,5 ni 2", () => {
+  for (const t of ["1.500", "2.000", "US$ 1.500", "S/ 2.000", "-1.500", "10.500", "100.500", "999.999"]) assert.equal(numeroDictado(t), null, t);
+  // los que no son ambiguos siguen leyéndose
+  const claros: [string, number][] = [["1.50", 1.5], ["1.5", 1.5], ["2.0", 2], ["1.5000", 1.5], ["0.500", 0.5], ["1500.250", 1500.25], ["1,500.250", 1500.25], ["500", 500], ["1500", 1500]];
+  for (const [t, n] of claros) assert.equal(numeroDictado(t), n, t);
+  // y en un saldo se pide repetirlo en vez de guardar 2
+  const v = validarCuentaNueva({ account_name: "Caja X", initial_balance: "2.000" }, []);
+  assert.equal(v.ok, false);
+});
+
+test("numeroDictado: «0,500» NO es 500 (el primer grupo de miles no empieza en 0)", () => {
+  for (const t of ["0,500", "00,500", "01,500", "0,500,000", "-0,500"]) assert.equal(numeroDictado(t), null, t);
+  assert.equal(numeroDictado("0,5"), 0.5);
+  assert.equal(numeroDictado("0,50"), 0.5);
+  assert.equal(numeroDictado("1,500"), 1500);
+  assert.equal(numeroDictado("999,999"), 999999);
+  assert.equal(numeroDictado("12,345,678"), 12345678);
+  assert.equal(validarCuentaNueva({ account_name: "Caja Y", initial_balance: "0,500" }, []).ok, false);
+});
+
+test("buscarCuenta: abreviaturas («scotia» → Scotiabank, «inter» → Interbank) solo si el resultado es único", () => {
+  const cs = [cta("1", "Scotiabank Soles"), cta("2", "Scotiabank Dólares", "savings", "USD"), cta("3", "Interbank"), cta("4", "BCP")];
+  assert.equal(buscarCuenta("inter", cs).kind === "one" && (buscarCuenta("inter", cs) as { cuenta: CuentaMin }).cuenta.account_id, "3");
+  assert.equal(buscarCuenta("la de inter", cs).kind, "one");
+  // dos Scotiabank: se pregunta
+  const scotia = buscarCuenta("scotia", cs);
+  assert.equal(scotia.kind, "many");
+  assert.deepEqual(scotia.kind === "many" ? scotia.cuentas.map((c) => c.account_id) : [], ["1", "2"]);
+  // con otra palabra del nombre queda única
+  const soles = buscarCuenta("scotia soles", cs);
+  assert.equal(soles.kind === "one" && soles.cuenta.account_id, "1");
+  // «inter» ambiguo si hay dos
+  assert.equal(buscarCuenta("inter", [...cs, cta("5", "Intercorp")]).kind, "many");
+  // demasiado corto o sin relación: nada
+  assert.equal(buscarCuenta("in", cs).kind, "none");
+  assert.equal(buscarCuenta("sco", [cta("1", "Scotiabank")]).kind, "one"); // 3 letras alcanzan si es única
+  assert.equal(buscarCuenta("xyz", cs).kind, "none");
+  // el nombre exacto sigue ganando a la abreviatura: «bcp» no es prefijo de nada más
+  assert.equal(buscarCuenta("bcp", cs).kind === "one" && (buscarCuenta("bcp", cs) as { cuenta: CuentaMin }).cuenta.account_id, "4");
+  // lo de tipo con una palabra de más sigue sin cargarse a una cuenta ajena
+  assert.equal(buscarCuenta("ahorros de scotiabank", [cta("1", "BBVA Oro", "savings")]).kind, "none");
+  assert.equal(buscarCuenta("la tarjeta falabella", [cta("1", "BBVA Oro", "credit_card")]).kind, "none");
+});
+
+test("tipoDesdeTexto: «otro/otra» ya no son un tipo (solo el código other)", () => {
+  assert.equal(tipoDesdeTexto("otro"), null);
+  assert.equal(tipoDesdeTexto("otra"), null);
+  assert.equal(tipoDesdeTexto("other"), "other");
+  assert.equal(validarCuentaNueva({ account_name: "Rara", account_type: "otra" }, []).ok, false);
+  assert.equal(validarCuentaNueva({ account_name: "Rara", account_type: "other" }, []).ok, true);
+  // y «otra» como palabra suelta no resuelve a la única cuenta de tipo other
+  assert.equal(buscarCuenta("la otra", [cta("1", "Cuenta rara", "other"), cta("2", "BCP")]).kind, "none");
+});
+
 test("validarCuentaNueva: «1,5» de saldo es 1,5 (o se rechaza), jamás 15", () => {
   const saldo = (initial_balance: unknown) => {
     const v = validarCuentaNueva({ account_name: "Caja X", initial_balance }, []);

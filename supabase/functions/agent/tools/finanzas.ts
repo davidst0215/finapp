@@ -21,7 +21,7 @@ const rules = `FINANZAS:
 - "pon 500 en comida" = presupuesto. "Netflix 45 mensual" = recurrente. "ahorrar 5000 para viaje" = meta.
 - "no fueron 60" o "cámbialo a 60" = editar el último.
 - Cuentas: "crea / abre una cuenta (tarjeta, ahorros, efectivo…)" = create_account; "qué cuentas tengo", "mis saldos" = list_accounts (dinero de David, no el crédito de IA). Pregunta solo si falta el nombre: tipo, moneda y saldo inicial son opcionales, nunca los preguntes.
-- Si nombra una cuenta al registrar un movimiento ("pagué 30 con la de BCP") pásala en account; en transfer, las palabras de cada cuenta.
+- Si nombra una cuenta al registrar un movimiento ("pagué 30 con la de BCP") pásala en account; en transfer, las palabras de cada cuenta. currency_code solo si David dijo la moneda; vacío si no (con una cuenta nombrada se usa la suya).
 - Voz: una frase. En consultas (analyze_finances) di en answer solo la cifra pedida, redonda y sin céntimos; el desglose va en el campo detalle (pantalla).`;
 
 async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: Data }> {
@@ -192,7 +192,7 @@ export const finanzas: AgentModule<Data> = {
       transaction_type: { type: "string", enum: ["income", "expense"] },
       description: { type: "string", description: "Descripción corta" },
       category_name: { type: "string", description: "Categoría: Alimentación, Transporte, Entretenimiento, Compras, Salud, Educación, Servicios, Vivienda, Ropa, Tecnología, Suscripciones, Mascotas, Regalos, Otros gastos, Sueldo, Freelance, Negocio, Inversiones, Trading, Otros ingresos" },
-      currency_code: { type: "string", enum: ["PEN", "USD"], description: "PEN por defecto, USD si dice dólares" },
+      currency_code: { type: "string", enum: ["PEN", "USD"], description: "Solo si David dijo la moneda (soles = PEN, dólares = USD); vacío si no la dijo" },
       notes: { type: "string", description: "Detalle adicional si el usuario da información extra (lugar, con quién, etc.)" },
       account: { type: "string", description: "Cuenta con las palabras de David ('la de BCP', 'mi Interbank'), solo si la nombró; vacío si no" },
       comentario,
@@ -255,12 +255,16 @@ export const finanzas: AgentModule<Data> = {
       // La moneda es la que dijo; si nombró una cuenta y no dijo moneda, la de esa cuenta. Si dijo una y la cuenta es de otra, se pregunta.
       const dicha = str(args.currency_code).trim().toUpperCase();
       const currency = dicha || (nombrada ? account.currency_code : "PEN");
-      if (nombrada && account.currency_code !== currency) {
+      // Con o sin cuenta nombrada: si la moneda DICHA no es la de la cuenta que recibiría el movimiento, se pregunta.
+      if (dicha && account.currency_code !== currency) {
         const propias = accounts.filter((a) => a.currency_code === currency);
         const habla = (c: string) => MONEDA_HABLADA[c === "USD" ? "USD" : "PEN"];
+        const opciones = propias.length ? `¿Con cuál: ${opcionesHabladas(propias)}?` : `No tienes cuentas en ${habla(currency)}.`;
         return {
           action: "clarify",
-          message: `${account.account_name} está en ${habla(account.currency_code)}, no en ${habla(currency)}. ${propias.length ? `¿Con cuál: ${opcionesHabladas(propias)}?` : `No tienes cuentas en ${habla(currency)}.`}`,
+          message: nombrada
+            ? `${account.account_name} está en ${habla(account.currency_code)}, no en ${habla(currency)}. ${opciones}`
+            : `Dijiste ${habla(currency)}, pero ${account.account_name} es en ${habla(account.currency_code)}. ${opciones}`,
         };
       }
       const { data: tx, error } = await supabase.from("transactions").insert({

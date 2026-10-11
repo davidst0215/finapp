@@ -397,3 +397,70 @@ test("memoria: con el índice ligero resuelve los pendientes de una ficha hija s
     log.restaurar();
   }
 });
+
+test("el plazo cubre el CUERPO: OpenRouter manda los headers ya y el cuerpo al final (json() lento)", async () => {
+  const buscarCon = async (respuestas: Parameters<typeof modeloGuionado>[0], plazoMs: number) => {
+    const { db } = fakeDb(VAULT, { vault_search: (a) => (a.p_kinds === null ? [{ ...EXTRA }] : []) });
+    const modelo = modeloGuionado(respuestas);
+    const log = capturarLog();
+    const t0 = performance.now();
+    try {
+      const r = await searchMemory(db as never, OWNER, { q: "cámara", pregunta: "¿cuándo se compró la cámara?", answer: true, fichaPaths: [FICHA_PATH], plazoMs });
+      return { r, ms: performance.now() - t0, senales: modelo.senales };
+    } finally {
+      modelo.restaurar();
+      log.restaurar();
+    }
+  };
+
+  // a) la primera: headers inmediatos, cuerpo a los 2 s, plazo de 0,6 s → sin respuesta redactada, a tiempo, y la conexión se corta
+  const a = await buscarCon([{ texto: "Tarde.\nUSADAS: 1", demoraJsonMs: 2000 }], 600);
+  assert.equal(a.r.answer, null);
+  assert.equal(a.r.meta.redactada, false);
+  assert.ok(a.r.sources.length > 0, "sin respuesta redactada se dicen las fuentes");
+  assert.ok(a.ms < 1300, `${Math.round(a.ms)} ms: el plazo manda aunque el cuerpo no llegue`);
+  assert.ok(a.senales[0] instanceof AbortSignal && a.senales[0].aborted, "al vencer el plazo se abortó el pedido (cierra también la lectura del cuerpo)");
+
+  // b) la segunda llega con el cuerpo lento: se queda con la primera, dentro del plazo total
+  const b = await buscarCon([{ texto: "No lo encuentro en tus fichas.", demoraJsonMs: 100 }, { texto: "Se compró en agosto.\nUSADAS: 2", demoraJsonMs: 2000 }], 900);
+  assert.equal(b.r.meta.segunda, true);
+  assert.equal(b.r.meta.encontrado, false);
+  assert.match(String(b.r.answer), /No lo encuentro/);
+  assert.ok(b.ms < 1500, `${Math.round(b.ms)} ms`);
+  assert.equal(b.senales.length, 2);
+  assert.equal(b.senales[1]!.aborted, true);
+
+  // c) el cuerpo llega a tiempo: no se aborta nada
+  const c = await buscarCon([{ texto: "Se compró en agosto.\nUSADAS: 1", demoraJsonMs: 50 }], 2000);
+  assert.match(String(c.r.answer), /Se compró en agosto/);
+  assert.equal(c.senales[0]!.aborted, false);
+});
+
+test("memoria: una ficha elegida sin carpetas en el índice ligero (o una etiqueta cruda) escala al completo y dice «Maqui CO cobranzas»", async () => {
+  const leeContenido = (ls: { table: string; cols: string }[]) => ls.filter((l) => l.table === "vault_docs" && l.cols === "path, cliente, padre, content").length;
+  const vault = {
+    vault_sync: [{ user_id: OWNER, tree_sha: "sha-memoria-etiqueta", synced_at: "2026-10-11T00:00:00Z", docs: 5, tasks: 5 }],
+    vault_docs: [
+      doc("60-wiki/proyectos/maqui-colombia.md", "ficha", "Maqui Colombia (hub)", { cliente: "Maqui CO", proyecto: "maqui-colombia", content: "# MC\n\n## Qué es\nHub.\nVault 20-projects/mqsco-*/pendientes.md" }),
+      doc("60-wiki/proyectos/maqui-colombia-cobranzas-gestion.md", "ficha", "maqui-gestion", { cliente: "Maqui CO", proyecto: "maqui-colombia-cobranzas-gestion", padre: "maqui-colombia", content: "# G\n\n## Qué es\nLa herramienta de cobranza.\nVault: mqsco-cobranzas." }),
+      doc("20-projects/mqsco-cobranzas/pendientes.md", "pendientes", "Pendientes — Cobranzas"),
+      doc("20-projects/mqsco-herramientas/pendientes.md", "pendientes", "Pendientes — Herramientas"),
+    ],
+    vault_tasks: [tarea("20-projects/mqsco-cobranzas/pendientes.md", "mqsco-cobranzas", 2, "Llamar a Gabriela", { due: "2026-10-14" })],
+  };
+  const catalogo = [{ slug: "maqui-colombia-cobranzas-gestion", path: "60-wiki/proyectos/maqui-colombia-cobranzas-gestion.md", title: "maqui-gestion", cliente: "Maqui CO" }];
+  const { db, lecturas } = fakeDb(vault, { vault_search: () => [] });
+  const modelo = modeloGuionado(["Hay una llamada pendiente.\nUSADAS: 2"]);
+  const log = capturarLog();
+  try {
+    await buscar(db, "¿cómo va la cobranza de maqui?", { fichas: ["maqui-colombia-cobranzas-gestion"], query: "cobranza" }, catalogo);
+    assert.equal(leeContenido(lecturas), 1, "el índice ligero no sabe qué carpetas nombra la ficha: se leyó el completo");
+    const usuario = modelo.peticiones[0].messages[1].content;
+    assert.match(usuario, /Pendientes de Maqui CO cobranzas \(tareas reales/);
+    assert.doesNotMatch(usuario, /Mqsco/);
+    assert.deepEqual(log.eventos().find((e) => e.evt === "memoria")!.pendientes, ["mqsco-cobranzas"]);
+  } finally {
+    modelo.restaurar();
+    log.restaurar();
+  }
+});

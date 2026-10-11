@@ -227,3 +227,26 @@ test("índice de proyectos en dos pasos: «tdv bolsa» no baja el contenido de l
     log.restaurar();
   }
 });
+
+test("la confirmación dice «Maqui CO cobranzas», nunca «Mqsco cobranzas»: con el índice ligero la etiqueta saldría cruda y se escala al completo", async () => {
+  const leeContenido = (ls: { table: string; cols: string }[]) => ls.filter((l) => l.table === "vault_docs" && l.cols.includes("content")).length;
+  const { db, lecturas } = fakeDb(VAULT("sha-etiqueta"));
+  const gh = githubFalso();
+  const log = capturarLog();
+  try {
+    const r = await tareas.handlers.create_task({ text: "Llamar a Gabriela", project: "mqsco cobranzas" }, ctx(db, "anota llamar a Gabriela en mqsco cobranzas"), undefined);
+    assert.equal(r.voz, "Anotado en Maqui CO cobranzas.");
+    assert.match(r.message, /en Maqui CO cobranzas\./);
+    assert.equal(leeContenido(lecturas), 1);
+    // una carpeta suelta o de un grupo con cliente en el ligero se dice bien sin leer más
+    const { db: db2, lecturas: l2 } = fakeDb(VAULT("sha-etiqueta-2"));
+    const sola = await tareas.handlers.create_task({ text: "Algo", project: "lota" }, ctx(db2, "x"), undefined);
+    assert.equal(sola.voz, "Anotado en Lota.");
+    const tdv = await tareas.handlers.create_task({ text: "Algo", project: "tdv bolsa" }, ctx(db2, "x"), undefined);
+    assert.equal(tdv.voz, "Anotado en TDV bolsa de costos.");
+    assert.equal(leeContenido(l2), 0, "etiquetas buenas con el índice ligero: no se baja nada");
+  } finally {
+    gh.restaurar();
+    log.restaurar();
+  }
+});

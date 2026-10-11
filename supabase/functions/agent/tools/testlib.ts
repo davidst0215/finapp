@@ -63,19 +63,24 @@ export function fakeDb(tablas: Record<string, Row[]>, rpcs: Record<string, (a: R
 export type Peticion = { messages: { role: string; content: string }[] };
 
 /** Modelo guionado: cada pedido consume una respuesta; guarda lo que recibió. Con `{status}` responde un error HTTP; con `{texto, demoraMs}`, tarda. */
-export function modeloGuionado(respuestas: (string | { status: number } | { texto: string; demoraMs: number })[]) {
+export function modeloGuionado(respuestas: (string | { status: number } | { texto: string; demoraMs: number } | { texto: string; demoraJsonMs: number })[]) {
   const peticiones: Peticion[] = [];
+  const senales: (AbortSignal | undefined)[] = []; // la señal con que se hizo cada pedido (para comprobar que el plazo corta la conexión)
   const original = globalThis.fetch;
-  globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
+  globalThis.fetch = (async (_url: unknown, init?: { body?: string; signal?: AbortSignal }) => {
     peticiones.push(JSON.parse(init?.body ?? "{}"));
+    senales.push(init?.signal);
     const siguiente = respuestas.shift() ?? "No lo encuentro en tus fichas.";
     if (typeof siguiente === "object" && "demoraMs" in siguiente) await new Promise((ok) => setTimeout(ok, siguiente.demoraMs));
-    const r = typeof siguiente === "object" && "demoraMs" in siguiente ? siguiente.texto : siguiente;
+    const lento = typeof siguiente === "object" && "demoraJsonMs" in siguiente ? siguiente.demoraJsonMs : 0;
+    const r = typeof siguiente === "object" && "texto" in siguiente ? siguiente.texto : siguiente;
     if (typeof r !== "string") return { ok: false, status: r.status, json: async () => ({}), text: async () => "" };
     const data = { choices: [{ message: { content: r } }], usage: { prompt_tokens: 1000, completion_tokens: 40 } };
-    return { ok: true, status: 200, json: async () => data, text: async () => JSON.stringify(data) };
+    // los headers llegan ya; el cuerpo, cuando el modelo termina
+    const cuerpo = async <T,>(v: T): Promise<T> => (lento ? await new Promise<T>((ok) => setTimeout(() => ok(v), lento)) : v);
+    return { ok: true, status: 200, json: () => cuerpo(data), text: () => cuerpo(JSON.stringify(data)) };
   }) as typeof fetch;
-  return { peticiones, restaurar: () => { globalThis.fetch = original; } };
+  return { peticiones, senales, restaurar: () => { globalThis.fetch = original; } };
 }
 
 /** GitHub falso: lee los archivos dados (ruta → texto) y apunta lo que se escribiría. Nada sale a la red. */

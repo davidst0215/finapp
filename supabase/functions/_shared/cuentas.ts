@@ -36,7 +36,6 @@ const SINONIMOS_TIPO: [TipoCuenta, string[]][] = [
   ["investment", ["investment", "inversion", "inversiones", "broker"]],
   ["loan", ["loan", "prestamo", "deuda"]],
   ["checking", ["checking", "corriente", "cuenta corriente", "bancaria", "cuenta bancaria", "banco", "debito", "sueldo"]],
-  ["other", ["other", "otro", "otra"]],
 ];
 
 /** "ahorros" → savings; null si no se parece a ningún tipo. */
@@ -115,6 +114,15 @@ export function buscarCuenta<T extends CuentaMin>(consulta: unknown, cuentas: T[
 
   // Sin coincidencia por nombre, solo vale el tipo "puro" ("la tarjeta", "el efectivo"). Si sobra una palabra ("la tarjeta Falabella",
   // "ahorros de Scotiabank") es una cuenta que no tengo: no se carga a la única tarjeta o a la única de ahorros; se pregunta.
+  // Abreviaturas ("scotia" → Scotiabank, "inter" → Interbank): cada palabra dicha (3+ letras) es el comienzo de una palabra del nombre.
+  // Solo se aceptan si el resultado es único; si no, se pregunta. (coincide() no lo permite a propósito: ver texto.ts.)
+  const abreviadas = cuentas.filter((c) => {
+    const bolsa = palabrasCuenta(c.account_name);
+    return q.every((t) => t.length >= 3 && bolsa.some((b) => b.startsWith(t)));
+  });
+  if (abreviadas.length === 1) return { kind: "one", cuenta: abreviadas[0] };
+  if (abreviadas.length > 1) return { kind: "many", cuentas: abreviadas };
+
   const tipo = tipoPuro(q);
   if (tipo) {
     const delTipo = cuentas.filter((c) => c.account_type === tipo);
@@ -129,15 +137,19 @@ export type ValidacionCuenta = { ok: true; cuenta: CuentaNueva } | { ok: false; 
 
 /**
  * Número dictado como texto o cifra. La coma solo se acepta como separador de miles ("1,500" → 1500, "1,234,567.5") o como
- * decimal claro de 1 o 2 cifras ("1,5" → 1.5, "12,50" → 12.5). Cualquier otra cosa ("1,2345", "1,5,0", "1e3", "abc") es null:
- * nunca se adivina (1,5 jamás es 15). Con signo menos opcional y un prefijo de moneda ("S/ 500", "US$ 20", "$").
+ * decimal claro de 1 o 2 cifras ("1,5" → 1.5, "12,50" → 12.5). Un punto con exactamente 3 decimales ("1.500", "US$ 2.000") es
+ * ambiguo. Cualquier otra cosa ("1,2345", "1,5,0", "0,500", "1e3", "abc") es null: nunca se adivina (1,5 jamás es 15). Con signo menos opcional y un prefijo de moneda ("S/ 500", "US$ 20", "$").
  */
 export function numeroDictado(v: unknown): number | null {
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
   if (typeof v !== "string") return null;
   const t = v.trim().replace(/^(-?)\s*(?:S\/|US\$|\$)\s*/i, "$1").replace(/\s+/g, "");
+  // "1.500" o "2.000": con punto y exactamente 3 decimales puede ser 1,5 o mil quinientos (en español el punto separa miles).
+  // No se adivina: null y se pide repetirlo. «0.500» sí es 0,5 (un grupo de miles no puede ir tras un 0) y «1500.250» también.
+  if (/^-?[1-9]\d{0,2}\.\d{3}$/.test(t)) return null;
   if (/^-?\d+(\.\d+)?$/.test(t)) return Number(t);
-  if (/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(t)) return Number(t.replace(/,/g, ""));
+  // El primer grupo de miles no empieza en 0: «0,500» no es 500.
+  if (/^-?[1-9]\d{0,2}(,\d{3})+(\.\d+)?$/.test(t)) return Number(t.replace(/,/g, ""));
   if (/^-?\d+,\d{1,2}$/.test(t)) return Number(t.replace(",", "."));
   return null;
 }

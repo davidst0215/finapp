@@ -21,7 +21,7 @@ import {
   armarCatalogo, CatalogoCache, fragmentosDeFicha, fueRecortada, parametrosBusqueda, recortarFicha, topePorFicha, type Catalogo, type CatalogoRow,
 } from "./vault/catalogo.ts";
 import {
-  carpetasParaPendientes, construirIndice, fichaProy, type FichaProy, type Indice, type PendientesIn, type Resolucion, resolverProyecto,
+  carpetasDeFicha, carpetasParaPendientes, construirIndice, fichaProy, type FichaProy, type Indice, type PendientesIn, type Resolucion, resolverProyecto,
 } from "./vault/proyectos.ts";
 import { rowsForFile } from "./vault/rows.ts";
 import {
@@ -492,21 +492,28 @@ export async function cargarIndiceProyectos(
 }
 
 /**
- * Resuelve lo que dijo David con el índice ligero y, solo si no queda claro (nada, o una coincidencia aproximada), con el completo.
- * Devuelve también el índice usado (sus destinos son los que hay que decir).
+ * Resuelve lo que dijo David con el índice ligero y, solo si no queda claro (nada, una coincidencia aproximada, o un proyecto cuya
+ * etiqueta saldría cruda: «Mqsco cobranzas» en vez de «Maqui CO cobranzas»), con el completo. Devuelve también el índice usado
+ * (sus destinos son los que hay que decir).
  */
 export async function resolverProyectoDicho(db: SupabaseClient, userId: string, cfg: Config, dicho: unknown): Promise<{ r: Resolucion; ix: Indice }> {
   const ligero = await cargarIndiceProyectos(db, userId, cfg, "lo_que_haya");
   const r = resolverProyecto(dicho, ligero);
-  if (r.kind !== "none" && !r.aproximado) return { r, ix: ligero };
+  const destinos = r.kind === "one" ? [r.destino] : r.kind === "many" ? r.opciones : [];
+  if (r.kind !== "none" && !r.aproximado && destinos.every((d) => d.etiquetaFicha)) return { r, ix: ligero };
   const completo = await cargarIndiceProyectos(db, userId, cfg, "completo");
   return { r: resolverProyecto(dicho, completo), ix: completo };
 }
 
-/** Carpetas de las que traer los pendientes para una pregunta de memoria; el índice completo solo si el que haya no da ninguna. */
+/**
+ * Carpetas de las que traer los pendientes para una pregunta de memoria. Con el índice que haya; el completo si ese no da ninguna,
+ * si alguna ficha elegida no tiene carpetas en él (solo el completo sabe qué carpetas nombra), o si alguna etiqueta saldría cruda.
+ */
 export async function carpetasDePendientes(db: SupabaseClient, userId: string, cfg: Config, slugsFichas: string[], consulta: string): Promise<PendientesIn[]> {
-  const primero = carpetasParaPendientes(slugsFichas, consulta, await cargarIndiceProyectos(db, userId, cfg, "lo_que_haya"));
-  if (primero.length) return primero;
+  const ix = await cargarIndiceProyectos(db, userId, cfg, "lo_que_haya");
+  const primero = carpetasParaPendientes(slugsFichas, consulta, ix);
+  const buenas = primero.every((c) => ix.destinos.find((d) => d.folder === c.carpeta)?.etiquetaFicha);
+  if (primero.length && buenas && slugsFichas.every((s) => carpetasDeFicha(ix, s).length > 0)) return primero;
   return carpetasParaPendientes(slugsFichas, consulta, await cargarIndiceProyectos(db, userId, cfg, "completo"));
 }
 
@@ -665,10 +672,24 @@ export async function searchMemory(db: SupabaseClient, userId: string, input: Se
       const plazo = Number.isFinite(input.plazoMs) && (input.plazoMs as number) > 0 ? (input.plazoMs as number) : PLAZO_REDACTAR_MS;
       const hasta = Date.now() + plazo;
       const restante = () => hasta - Date.now();
+      // El plazo cubre el pedido Y la lectura del cuerpo (OpenRouter manda los headers de inmediato y el cuerpo cuando el modelo
+      // termina): el temporizador envuelve todo, y además corta la conexión para no dejarla colgada.
       const redactar = async (cuales: Hit[], material: Record<string, string>, fragmentos: boolean): Promise<ParsedAnswer> => {
-        const res = await withTimeout(llmFetch({ messages: buildAnswerMessages(pregunta, cuales, material, { fragmentos }), temperature: 0.1, max_tokens: 260 }), Math.max(restante(), 1));
-        if (!res.ok) throw new Error(`modelo ${res.status}`);
-        const data = await res.json();
+        const ms = Math.max(restante(), 1);
+        const corte = new AbortController();
+        const pedido = (async () => {
+          const res = await llmFetch({ messages: buildAnswerMessages(pregunta, cuales, material, { fragmentos }), temperature: 0.1, max_tokens: 260 }, corte.signal);
+          if (!res.ok) throw new Error(`modelo ${res.status}`);
+          return await res.json();
+        })();
+        pedido.catch(() => {}); // si el plazo ganó, el pedido que quedó atrás puede fallar sin ruido
+        let data;
+        try {
+          data = await withTimeout(pedido, ms);
+        } catch (e) {
+          corte.abort();
+          throw e;
+        }
         meta.llm++;
         meta.tok_in += Number(data?.usage?.prompt_tokens) || 0;
         meta.tok_out += Number(data?.usage?.completion_tokens) || 0;
