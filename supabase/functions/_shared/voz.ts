@@ -185,6 +185,9 @@ export function prepararVoz(texto: string, max: number = VOZ_MAX): string {
   return acotarVoz(paraVoz(texto), max);
 }
 
+/** La primera frase que, ya dicha en palabras, cabe en el tope de voz (VOZ_MAX): un monto cortado a medias es peor que no decirlo. */
+export const queCabe = (candidatas: string[]): string => candidatas.find((c) => paraVoz(c).length <= VOZ_MAX) ?? candidatas[candidatas.length - 1];
+
 /**
  * Recorta un título o nombre para decirlo: siempre en el último espacio, sin puntos suspensivos (la voz los lee raro) ni
  * palabras colgantes. A mitad de palabra solo si no hay ningún espacio donde cortar.

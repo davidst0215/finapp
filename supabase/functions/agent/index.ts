@@ -108,7 +108,10 @@ Deno.serve(async (req: Request) => {
       global: { headers: { Authorization: `Bearer ${token}` } },
     });
     // Lima es UTC-5 todo el año; el runtime corre en UTC, así que los getters locales quedan en hora de Lima.
-    const ctx: AgentContext = { supabase, user: { id: sub } as User, text, limaNow: new Date(Date.now() - 5 * 60 * 60 * 1000) };
+    const anteriores = Array.isArray(history)
+      ? history.slice(-8).filter((h: { role?: string }) => h?.role !== "assistant").map((h: { content?: unknown }) => String(h?.content ?? "").slice(0, 500))
+      : [];
+    const ctx: AgentContext = { supabase, user: { id: sub } as User, text, limaNow: new Date(Date.now() - 5 * 60 * 60 * 1000), anteriores };
 
     const [user, contexts] = await Promise.all([
       t.medir("auth", supabase.auth.getUser(token).then((r) => r.data.user)),

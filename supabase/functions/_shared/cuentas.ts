@@ -4,8 +4,8 @@
 // Esquema (001_initial_schema.sql): accounts(account_name ≤100, account_type, currency_code → currencies, current_balance,
 // is_active). Los tipos y la moneda salen de ahí; la web (Accounts.tsx) crea cuentas con el mismo juego de campos.
 import { type Cambio, patrimonio, redondear, textoTc } from "./fx.ts";
-import { coincide, cubre, norm } from "./texto.ts";
-import { paraVoz, VOZ_MAX } from "./voz.ts";
+import { coincide, cubre, limpiarEspacios, norm } from "./texto.ts";
+import { queCabe } from "./voz.ts";
 
 export type TipoCuenta = "checking" | "savings" | "credit_card" | "cash" | "investment" | "loan" | "other";
 export const TIPOS: TipoCuenta[] = ["checking", "savings", "credit_card", "cash", "investment", "loan", "other"];
@@ -164,7 +164,7 @@ export const aCentimos = (n: number): number => Math.round((n + Number.EPSILON) 
  * soles, saldo cero). `existentes` son las cuentas activas: un nombre repetido no se crea.
  */
 export function validarCuentaNueva(args: Record<string, unknown>, existentes: CuentaMin[]): ValidacionCuenta {
-  const nombre = (typeof args.account_name === "string" ? args.account_name : "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+  const nombre = limpiarEspacios(typeof args.account_name === "string" ? args.account_name : "");
   if (!nombre) return { ok: false, error: "¿Cómo se llama la cuenta?", pregunta: true };
   if (nombre.length > MAX_NOMBRE) return { ok: false, error: `El nombre es muy largo: máximo ${MAX_NOMBRE} letras.` };
   if (!/[\p{L}\p{N}]/u.test(nombre)) return { ok: false, error: "El nombre de la cuenta necesita letras o números." };
@@ -209,9 +209,6 @@ export function monto(n: number, moneda: string | null | undefined): string {
 }
 
 const nombreCorto = (s: string, max = 30) => (s.length <= max ? s : s.slice(0, max).replace(/\s+\S*$/, ""));
-
-/** La primera frase que, ya dicha en palabras, cabe en el tope de voz: un monto cortado a medias es peor que no decirlo. */
-const queCabe = (candidatas: string[]): string => candidatas.find((c) => paraVoz(c).length <= VOZ_MAX) ?? candidatas[candidatas.length - 1];
 
 /** Pantalla: la cuenta y su saldo inicial. Voz: lo mismo en una frase (con el saldo redondeado o sin él si no cabe). */
 export function fraseCuentaCreada(c: CuentaNueva): { message: string; voz: string } {

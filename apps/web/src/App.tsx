@@ -24,6 +24,7 @@ import { ClaudeCodePage } from '@/routes/modulos/ClaudeCodePage';
 import { BriefPage } from '@/routes/modulos/BriefPage';
 import { ReciboPage } from '@/routes/modulos/ReciboPage';
 import { AvisosPage } from '@/routes/modulos/AvisosPage';
+import { ContactosPage } from '@/routes/modulos/ContactosPage';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading, initialized } = useAuthStore();
@@ -79,6 +80,7 @@ export default function App() {
           <Route path="/brief" element={<BriefPage />} />
           <Route path="/recibo" element={<ReciboPage />} />
           <Route path="/avisos" element={<AvisosPage />} />
+          <Route path="/contactos" element={<ContactosPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

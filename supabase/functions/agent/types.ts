@@ -8,13 +8,29 @@ export type ToolDefinition = {
 // `message` es lo que se ve (el detalle completo). `voz`, si viene, es lo que se dice en voz alta: una frase corta con el dato
 // principal, porque ElevenLabs cobra por carácter. Sin `voz` se dice `message`. Siempre pasa por el tope VOZ_MAX.
 // Opcional a propósito: un cliente viejo ignora `voz` y sigue funcionando con `message`.
-export type ToolResult = { action: string; message: string; voz?: string; data?: unknown };
+export type ToolResult = { action: string; message: string; voz?: string; data?: unknown; accion?: AccionCliente };
+
+// Lo que la app ofrece como botón grande tras la respuesta ("Abrir WhatsApp", "Llamar"): el navegador exige un toque de David
+// para abrir otra app, así que Wabid no abre nada sola. Lleva el teléfono, por eso viaja SOLO aquí y nunca en `message` ni en
+// `voz`: la app devuelve `message` al modelo como historial en el turno siguiente.
+// `url` es https://api.whatsapp.com/send?… (whatsapp) o tel:+… (llamar, numero). En "numero", `urlWhatsapp` es el segundo botón.
+export type AccionCliente = {
+  tipo: "whatsapp" | "llamar" | "numero";
+  contacto: string;
+  relacion?: string;
+  numero: string; // para leerlo en la tarjeta: "+51 999 888 777"
+  url: string;
+  urlWhatsapp?: string;
+  texto?: string; // el mensaje redactado (whatsapp)
+};
 
 export type AgentContext = {
   supabase: SupabaseClient; // cliente con el JWT del usuario: aplica RLS
   user: User;
   text: string; // lo que dijo o escribió David
   limaNow: Date; // getters locales = hora de Lima (el runtime corre en UTC)
+  // Lo que David dijo en los turnos anteriores (solo sus mensajes, hasta 8): para contrastar un dato que el modelo repite, como un teléfono.
+  anteriores?: string[];
 };
 
 // Cada módulo de Wabid aporta su contexto, sus reglas y sus tools.

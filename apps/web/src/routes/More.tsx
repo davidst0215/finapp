@@ -4,7 +4,7 @@ import { readTheme, setTheme, type ThemeMode } from '@/lib/theme';
 import { guardarEscucharAlAbrir, leerEscucharAlAbrir } from '@/lib/conversacion';
 import { Switch } from '@/components/claude/Switch';
 import { SaldoIA } from '@/components/saldo/SaldoIA';
-import { LogOut, Sun, Moon, SunMoon, Wallet, Target, PiggyBank, CreditCard, Bell, BellRing, ChevronRight, CalendarDays, BarChart3, Video, Mail, Search, Terminal, MessageSquare } from 'lucide-react';
+import { LogOut, Sun, Moon, SunMoon, Wallet, Target, PiggyBank, CreditCard, Bell, BellRing, ChevronRight, CalendarDays, BarChart3, Video, Mail, Search, Terminal, MessageSquare, BookUser } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { UserAvatar } from '@/components/ui/UserAvatar';
 import { GlassCard } from '@/components/ui/GlassCard';
@@ -39,6 +39,7 @@ export function MorePage() {
             { to: '/reuniones', icon: Video, label: 'Reuniones', desc: 'Fathom y lo que esperas de otros' },
             { to: '/correo', icon: Mail, label: 'Correo', desc: 'Importantes y borradores para aprobar' },
             { to: '/buscar', icon: Search, label: 'Buscar en proyectos', desc: 'Pregunta con la fuente citada' },
+            { to: '/contactos', icon: BookUser, label: 'Contactos', desc: 'Para WhatsApp y llamadas por voz' },
             { to: '/claude', icon: Terminal, label: 'Claude Code', desc: 'Tus sesiones como chats' },
             { to: '/ai-chat', icon: MessageSquare, label: 'Chat con Wabid', desc: 'Conversación por texto' },
             { to: '/avisos', icon: BellRing, label: 'Avisos', desc: 'Notificaciones en este celular y bandeja' },

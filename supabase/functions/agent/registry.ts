@@ -1,6 +1,7 @@
 import { agenda } from "./tools/agenda.ts";
 import { avisos } from "./tools/avisos.ts";
 import { brief } from "./tools/brief.ts";
+import { contactos } from "./tools/contactos.ts";
 import { correo } from "./tools/correo.ts";
 import { finanzas } from "./tools/finanzas.ts";
 import { reuniones } from "./tools/reuniones.ts";
@@ -44,5 +45,6 @@ export const MODULES: AgentModule<any>[] = [
   hechos, // después de memoria: su bloque `estable` va tras el catálogo de fichas y no rompe su prefijo cacheado
   internet,
   saldo,
+  contactos,
   avisos,
 ];
