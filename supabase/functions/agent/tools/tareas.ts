@@ -14,15 +14,17 @@ import { corto, preguntaCual, resumenGeneral, resumenTareas, vozCual, vozTareas 
 import { cleanText, isLevel, isStatus, type TaskStatus } from "../../_shared/vault/tasks.ts";
 import type { TaskRow } from "../../_shared/vault/types.ts";
 import { buildTasksView, isOpen, toViewTask, type ViewTask } from "../../_shared/vault/view.ts";
-import { planearTarea } from "./tareasPlan.ts";
+import { cancelarAvisosDeTarea, crearAvisoDeTarea } from "./avisos.ts";
+import { fraseAvisoTarea, planDeTarea } from "./avisosPlan.ts";
+import { type PlanTarea, planearTarea } from "./tareasPlan.ts";
 
 const rules = `TAREAS (Norte, el vault de David):
-- Tarea = algo por hacer. "agrega / anota / apunta / agéndame / recuérdame …" → create_task. "ya terminé / completé X", "marca X como hecha", "reabre X", "X está en curso" → update_task. "qué tengo pendiente / vencidas / para hoy / en el cajón / de <proyecto>" → list_tasks.
-- "agéndame revisar X el jueves", "pendiente para mañana a las 5", "recuérdame X el lunes" → create_task con due y, si dio hora, time en 24 h ("a las 5" de la tarde = 17:00). Calendario (calendar_create_event) solo si dice "en mi calendario" o es una reunión o cita.
-- "Recuérdame" no suena a la hora: el resumen de las 7:00 del día incluye la tarea. No prometas una alarma.
+- Tarea = algo por hacer. "agrega / anota / apunta / agéndame …" → create_task. "ya terminé / completé X", "marca X como hecha", "reabre X", "X está en curso" → update_task. "qué tengo pendiente / vencidas / para hoy / en el cajón / de <proyecto>" → list_tasks.
+- "agéndame revisar X el jueves", "pendiente para mañana a las 5" → create_task con due y, si dio hora, time en 24 h ("a las 5" de la tarde = 17:00). Calendario (calendar_create_event) solo si dice "en mi calendario" o es una reunión o cita.
+- "Recuérdame / avísame" solo, sin pedir anotarlo, es create_reminder (otro módulo). Si dice "anótalo y recuérdame", create_task: además programa el aviso a la hora que dio (solo el día: 9:00); no lo repitas. La hora de "y recuérdame a las 5" va en time (17:00), aunque la tarea no tenga hora.
 - "pagué / gasté / compré" es finanzas, no tareas.
 - Fechas y horas son de Lima, como las dice David ("hoy", "mañana", "viernes", "+3") o AAAA-MM-DD si dice día y mes; no hagas cuentas de calendario.
-- Proyecto: sus palabras tal cual ("nova fondos", "tdv bolsa", "maqui perú"); el sistema las reconoce. Sin proyecto, vacío: va al cajón. Si el sistema pregunta cuál ("¿app o normativa?") o confirma ("¿En Vera?") y David responde, repite create_task con la tarea original (mira el historial) y el proyecto completo.
+- Proyecto: sus palabras tal cual ("nova fondos", "tdv bolsa", "maqui perú"); el sistema las reconoce. Sin proyecto, vacío: va al cajón. Si el sistema pregunta cuál ("¿app o normativa?") o confirma ("¿En Vera?") y David responde, repite create_task con la tarea original (mira el historial) y el proyecto completo. Si pregunta la hora ("¿A qué hora te aviso?"), repite create_task con la hora en time.
 - Voz: una frase; el detalle va a la pantalla.`;
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
@@ -132,14 +134,28 @@ const createTaskTool: Handler = async (args, ctx) => {
   }, hoy);
   const guardado = r.task?.text ?? cleanText(plan.text); // lo realmente guardado (sin # de tags ni emojis de metadata)
   const cuando = r.due ? ` para ${fechaHablada(r.due, hoy)}${plan.hora ? ` a ${plan.horaHablada}` : ""}` : "";
+  const recordatorio = await programarAviso(plan, r.task, guardado, ctx);
   // Pantalla: con el texto de la tarea. Voz: sin repetirlo (David acaba de decirlo), solo dónde quedó y para cuándo.
   return {
     action: "create_task",
-    message: conComentario(`Anoté «${corto(guardado, 60)}» en ${plan.donde}${cuando}.${plan.aviso}${plan.recordatorio}`, args),
-    voz: conComentario(`Anotado en ${plan.donde}${cuando}.${plan.avisoVoz}`, args),
+    message: conComentario(`Anoté «${corto(guardado, 60)}» en ${plan.donde}${cuando}.${plan.aviso}${recordatorio.message}`, args),
+    voz: conComentario(`Anotado en ${plan.donde}${cuando}.${plan.avisoVoz}${recordatorio.voz}`, args),
     data: r.task,
   };
 };
+
+/**
+ * «Recuérdame…» sobre una tarea: además de escribirla en Norte se programa el aviso push a esa hora (migración 017), ligado a la
+ * tarea para poder cancelarlo cuando se complete. La tarea ya está escrita: un fallo del aviso se dice, no la deshace.
+ */
+async function programarAviso(plan: PlanTarea, task: ViewTask | null, texto: string, ctx: AgentContext): Promise<{ message: string; voz: string }> {
+  if (!plan.pidioAviso) return { message: "", voz: "" };
+  if (!plan.recordar) return { message: " Sin fecha no puedo avisarte; dime cuándo.", voz: " Dime cuándo y te aviso." };
+  const p = planDeTarea(texto, plan.recordar, new Date(ctx.limaNow.getTime() + 5 * 3_600_000));
+  if ("pasado" in p) return { message: " Esa hora ya pasó, así que no hay aviso.", voz: " Esa hora ya pasó." };
+  const estado = await crearAvisoDeTarea(ctx.supabase, ctx.user.id, p.plan, task ? { path: task.path, line: task.line, texto: task.text } : null, plan.donde);
+  return fraseAvisoTarea(p.plan, estado);
+}
 
 // --- update_task -----------------------------------------------------------------------------------
 const VERBO: Record<TaskStatus, (t: string, cambio: boolean) => string> = {
@@ -176,6 +192,8 @@ const updateTask: Handler = async (args, ctx) => {
     const row = found.match.row;
     try {
       const r = await setTaskStatus(db, userId, env, { path: row.path, line: row.line, raw: row.raw, status }, hoy);
+      // Una tarea terminada ya no necesita su recordatorio (si lo tenía): no suena después de haberla hecho.
+      if (status === "completed") await cancelarAvisosDeTarea(db, userId, { path: row.path, line: row.line, texto: row.text });
       // La voz nombra la tarea (corta): el emparejamiento es aproximado y oírla confirma que se tocó la correcta.
       return {
         action: "update_task",

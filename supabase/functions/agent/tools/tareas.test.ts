@@ -4,6 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { capturarLog, doc, fakeDb, githubFalso, OWNER, tarea } from "./testlib.ts";
+import { conAvisos, fakeAvisos } from "./avisosTestlib.ts";
 import { prepararVoz, VOZ_MAX } from "../../_shared/voz.ts";
 import { loQueSeDice } from "../respuesta.ts";
 
@@ -111,14 +112,166 @@ test("un proyecto que no se encuentra deja la tarea en el cajón, lo dice y lo r
   }
 });
 
-test("«recuérdame…»: la pantalla aclara qué avisará (el resumen de las 7:00) en vez de prometer una alarma", async () => {
-  const { db } = fakeDb(VAULT());
+// --- «recuérdame…» sobre una tarea: además de escribirla, programa el aviso push (migración 017) -----------------------------------
+const conAviso = (filas: Record<string, unknown>[] = [], opciones: Parameters<typeof fakeAvisos>[1] = {}) => {
+  const avisos = fakeAvisos(filas, opciones);
+  return { db: conAvisos(fakeDb(VAULT()).db, avisos), avisos };
+};
+
+test("«recuérdame mañana a las 5 llamar a Ana»: anota la tarea Y programa el aviso de mañana 17:00 de Lima, ligado a la tarea", async () => {
+  const { db, avisos } = conAviso();
   const gh = githubFalso();
   const log = capturarLog();
   try {
     const r = await tareas.handlers.create_task({ text: "Llamar a Ana", due: "mañana", time: "17:00" }, ctx(db, "recuérdame mañana a las cinco llamar a Ana"), undefined);
-    assert.match(r.message, /Te lo recordará el resumen de las 7:00 de ese día; aún no te aviso a la hora exacta\.$/);
-    assert.doesNotMatch(r.voz ?? "", /recordar/, "la voz no promete nada");
+    assert.equal(r.message, "Anoté «Llamar a Ana» en el cajón para mañana a las cinco de la tarde. Te aviso a esa hora.");
+    assert.equal(r.voz, "Anotado en el cajón para mañana a las cinco de la tarde. Te aviso.");
+    assert.ok(prepararVoz(loQueSeDice(r)).length <= VOZ_MAX);
+    assert.equal(gh.escrituras.length, 1, "la tarea se escribió en Norte");
+    assert.equal(avisos.filas.length, 1);
+    const a = avisos.filas[0]!;
+    assert.deepEqual([a.origen, a.titulo, a.cuando, a.url, a.user_id], ["tarea", "Llamar a Ana", "2026-10-12T22:00:00.000Z", "/tareas", OWNER]);
+    assert.equal(a.tarea_path, "20-projects/cajon-desastre/pendientes.md");
+    assert.equal(typeof a.tarea_line, "number");
+    assert.equal(a.tarea_texto, "Llamar a Ana");
+    assert.match(String(a.cuerpo), /^Tu pendiente en el cajón\. /);
+  } finally {
+    gh.restaurar();
+    log.restaurar();
+  }
+});
+
+test("«recuérdame el viernes…» sin hora: la tarea es del viernes y el aviso sale a las 9:00 (y lo dice)", async () => {
+  const { db, avisos } = conAviso();
+  const gh = githubFalso();
+  const log = capturarLog();
+  try {
+    const r = await tareas.handlers.create_task({ text: "Llamar a Ana", due: "viernes" }, ctx(db, "recuérdame el viernes llamar a Ana"), undefined);
+    assert.equal(avisos.filas[0]!.cuando, "2026-10-16T14:00:00.000Z");
+    assert.match(r.message, /para el viernes 16 de octubre\. Te aviso a las nueve de la mañana\.$/);
+    assert.match(r.voz ?? "", /Te aviso a las nueve de la mañana\.$/);
+    assert.ok(prepararVoz(loQueSeDice(r)).length <= VOZ_MAX);
+  } finally {
+    gh.restaurar();
+    log.restaurar();
+  }
+});
+
+test("«recuérdame» sin cuándo, con la hora ya pasada, sin la palabra o con «avisar a Ana» en la tarea: no hay aviso, y se dice cuando hacía falta", async () => {
+  const gh = githubFalso();
+  const log = capturarLog();
+  try {
+    const caso = async (args: Record<string, unknown>, dictado: string) => {
+      const { db, avisos } = conAviso();
+      const r = await tareas.handlers.create_task(args, ctx(db, dictado), undefined);
+      assert.equal(r.action, "create_task");
+      assert.equal(avisos.filas.length, 0, dictado);
+      return r;
+    };
+    const sinFecha = await caso({ text: "Comprar leche" }, "recuérdame comprar leche");
+    assert.match(sinFecha.message, / Sin fecha no puedo avisarte; dime cuándo\.$/);
+    assert.equal(sinFecha.voz, "Anotado en el cajón. Dime cuándo y te aviso.");
+    const pasada = await caso({ text: "Llamar a Ana", due: "hoy", time: "09:00" }, "avísame hoy a las 9 que llame a Ana");
+    assert.match(pasada.message, / Esa hora ya pasó, así que no hay aviso\.$/);
+    const sinPedirlo = await caso({ text: "Llamar a Ana", due: "mañana", time: "17:00" }, "anota llamar a Ana mañana a las 5");
+    assert.doesNotMatch(sinPedirlo.message, /aviso/i);
+    const avisarEnElTexto = await caso({ text: "Avisar a Ana del cambio", due: "mañana" }, "agrega avisar a Ana del cambio para mañana");
+    assert.doesNotMatch(avisarEnElTexto.message, /Te aviso|Sin fecha/);
+  } finally {
+    gh.restaurar();
+    log.restaurar();
+  }
+});
+
+test("«recuérdame que Ana envíe el contrato»: una tarea que espera a otra persona también avisa; repetir el pedido no duplica el aviso", async () => {
+  const { db, avisos } = conAviso();
+  const gh = githubFalso();
+  const log = capturarLog();
+  try {
+    const args = { text: "Que Ana envíe el contrato", due: "mañana", time: "10:00", with: "Ana" };
+    await tareas.handlers.create_task(args, ctx(db, "recuérdame mañana a las 10 que Ana envíe el contrato"), undefined);
+    assert.equal(avisos.filas.length, 1);
+    const otra = await tareas.handlers.create_task(args, ctx(db, "recuérdame mañana a las 10 que Ana envíe el contrato"), undefined);
+    assert.equal(avisos.filas.length, 1, "mismo texto y hora: un solo aviso");
+    assert.match(otra.message, /Te aviso a esa hora\.$/);
+  } finally {
+    gh.restaurar();
+    log.restaurar();
+  }
+});
+
+test("«…y recuérdame a las 5» sin que llegue time: pregunta la hora y NO escribe la tarea ni programa nada (no cae en las 9:00)", async () => {
+  const gh = githubFalso();
+  const log = capturarLog();
+  try {
+    const casos: [string, Record<string, unknown>][] = [
+      ["agéndame llamar a Ana mañana y recuérdame a las 5", { text: "Llamar a Ana", due: "mañana" }],
+      ["recuérdame mañana a la una llamar a Ana", { text: "Llamar a Ana", due: "mañana" }],
+      ["recuérdame el viernes a las 5 y media llamar a Ana", { text: "Llamar a Ana", due: "viernes" }],
+    ];
+    for (const [dictado, args] of casos) {
+      const { db, avisos } = conAviso();
+      const r = await tareas.handlers.create_task(args, ctx(db, dictado), undefined);
+      assert.equal(r.action, "clarify", dictado);
+      assert.equal(r.message, "¿A qué hora te aviso? Dímela como las cinco de la tarde.");
+      assert.equal(r.voz, "¿A qué hora te aviso?");
+      assert.equal(avisos.filas.length, 0, `${dictado}: ningún aviso`);
+    }
+    assert.equal(gh.escrituras.length, 0, "ninguna tarea escrita en Norte");
+    // al responder la hora, el modelo repite create_task con time y ahora sí: tarea + aviso a las 17:00
+    const { db, avisos } = conAviso();
+    const r = await tareas.handlers.create_task({ text: "Llamar a Ana", due: "mañana", time: "17:00" }, ctx(db, "agéndame llamar a Ana mañana y recuérdame a las 5"), undefined);
+    assert.equal(r.action, "create_task");
+    assert.equal(avisos.filas[0]!.cuando, "2026-10-12T22:00:00.000Z");
+    assert.equal(gh.escrituras.length, 1);
+  } finally {
+    gh.restaurar();
+    log.restaurar();
+  }
+});
+
+test("si el aviso no se puede guardar, la tarea ya escrita queda y se dice (no se deshace)", async () => {
+  const { db, avisos } = conAviso([], { errorEn: "insert" });
+  const gh = githubFalso();
+  const log = capturarLog();
+  try {
+    const r = await tareas.handlers.create_task({ text: "Llamar a Ana", due: "mañana", time: "17:00" }, ctx(db, "recuérdame mañana a las 5 llamar a Ana"), undefined);
+    assert.equal(r.action, "create_task");
+    assert.equal(gh.escrituras.length, 1);
+    assert.equal(avisos.filas.length, 0);
+    assert.match(r.message, / No pude programar el aviso\.$/);
+    assert.equal(r.voz, "Anotado en el cajón para mañana a las cinco de la tarde. No pude programar el aviso.");
+  } finally {
+    gh.restaurar();
+    log.restaurar();
+  }
+});
+
+test("completar la tarea cancela su recordatorio pendiente; reabrirla o cambiarla de estado no toca nada", async () => {
+  const RUTA = "20-projects/lota/pendientes.md";
+  const aviso = { aviso_id: "av-1", user_id: OWNER, origen: "tarea", titulo: "Probar la cámara", cuando: "2026-10-12T22:00:00.000Z", estado: "pendiente", tarea_path: RUTA, tarea_line: 2, tarea_texto: "Probar la cámara" };
+  const gh = githubFalso({ [RUTA]: "# Pendientes\n\n- [ ] Probar la cámara\n" });
+  const log = capturarLog();
+  try {
+    const { db: enCurso, avisos: a1 } = conAviso([{ ...aviso }]);
+    const curso = await tareas.handlers.update_task({ search: "probar la cámara", status: "in-progress" }, ctx(enCurso, "la cámara está en curso"), undefined);
+    assert.equal(curso.action, "update_task");
+    assert.equal(a1.filas[0]!.estado, "pendiente", "en curso: el recordatorio sigue");
+
+    const { db, avisos } = conAviso([{ ...aviso }]);
+    const r = await tareas.handlers.update_task({ search: "probar la cámara" }, ctx(db, "ya probé la cámara"), undefined);
+    assert.equal(r.action, "update_task");
+    assert.match(r.message, /^Completé «Probar la cámara»\./);
+    assert.deepEqual(avisos.filas.map((f) => f.estado), ["cancelado"]);
+    // si cancelar falla, completar la tarea no se rompe
+    const { db: roto } = conAviso([{ ...aviso }], { errorEn: "update" });
+    const gh2 = githubFalso({ [RUTA]: "# Pendientes\n\n- [ ] Probar la cámara\n" });
+    try {
+      const ok = await tareas.handlers.update_task({ search: "probar la cámara" }, ctx(roto, "ya probé la cámara"), undefined);
+      assert.equal(ok.action, "update_task");
+    } finally {
+      gh2.restaurar();
+    }
   } finally {
     gh.restaurar();
     log.restaurar();
@@ -164,11 +317,14 @@ test("list_tasks con proyectos distintos que comparten un frente pregunta entre 
   }
 });
 
-test("las reglas de tareas explican agendar, recordar y la diferencia con el calendario", () => {
+test("las reglas de tareas explican agendar, la diferencia con el calendario y que «recuérdame» solo es otro módulo", () => {
   const rules = tareas.rules ?? "";
   assert.match(rules, /agéndame revisar X el jueves/);
   assert.match(rules, /en mi calendario/);
-  assert.match(rules, /No prometas una alarma/);
+  assert.match(rules, /create_reminder/);
+  assert.match(rules, /anótalo y recuérdame/);
+  assert.doesNotMatch(rules, /No prometas una alarma/, "ya hay alarma real");
+  assert.doesNotMatch(rules, /agéndame \/ recuérdame/, "«recuérdame» ya no manda a create_task");
   assert.match(rules, /¿app o normativa\?/);
   const crear = tareas.definitions.find((d) => d.function.name === "create_task")!;
   assert.ok("time" in (crear.function.parameters as { properties: object }).properties);

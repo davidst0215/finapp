@@ -11,6 +11,7 @@
 //   search       { q, cliente?, answer?, limit? }       → { q, answer, answerError, sources, related, clientes, indexed }
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
+import { cancelarAvisosDeTarea, moverAvisosDeTarea } from "../_shared/avisosTarea.ts";
 import { adminClient, json, limaNow, preflight, requireUser } from "../_shared/http.ts";
 import {
   assertOwner, createTask, GitHubError, moveTask, PartialMoveError, searchMemory, setTaskStatus, syncIndex, TaskNotFoundError,
@@ -94,10 +95,18 @@ Deno.serve(async (req: Request) => {
       }
       case "task.status": {
         const r = await setTaskStatus(db, userId, env, { path: body.path, line: body.line, raw: body.raw, status: body.status }, hoy);
+        // Una tarea hecha desde la web ya no necesita su recordatorio (migración 017): no debe sonar después. Nunca lanza.
+        if (body.status === "completed" && r.task && typeof body.path === "string" && Number.isInteger(body.line)) {
+          await cancelarAvisosDeTarea(db, userId, { path: body.path, line: body.line as number, texto: r.task.text });
+        }
         return json({ ok: true, task: r.task, changed: r.changed });
       }
       case "task.move": {
         const r = await moveTask(db, userId, env, { path: body.path, line: body.line, raw: body.raw, folder: body.folder }, hoy);
+        // Sus recordatorios pendientes siguen a la tarea a su nueva ruta y línea. Nunca lanza.
+        if (r.task && typeof body.path === "string" && Number.isInteger(body.line)) {
+          await moverAvisosDeTarea(db, { path: body.path, line: body.line as number, texto: r.task.text }, { path: r.task.path, line: r.task.line });
+        }
         return json({ ok: true, task: r.task });
       }
       case "search":

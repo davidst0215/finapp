@@ -3,7 +3,7 @@
 // domingo 2026-10-11 (Lima); el servidor corre en UTC y recibe `limaNow` ya corrido −5 h.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { planearTarea, type PlanTarea } from "./tareasPlan.ts";
+import { HORA_EN_TEXTO, PIDE_AVISO, planearTarea, type PlanTarea } from "./tareasPlan.ts";
 import { relojLima } from "../../_shared/vault/fechas.ts";
 import { construirIndice, fichaProy, type Indice } from "../../_shared/vault/proyectos.ts";
 import { EMPTY_CONFIG } from "../../_shared/vault/taxonomy.ts";
@@ -150,16 +150,67 @@ test("fecha u hora que no se entienden: pregunta, no adivina", () => {
   assert.equal(respuesta({}).action, "error");
 });
 
-test("«recuérdame»: no promete una alarma que no existe", () => {
+test("«recuérdame / avísame»: el plan trae cuándo suena el aviso (día y hora de Lima; solo el día = 9:00)", () => {
   const futuro = plan({ text: "Llamar a Ana", due: "mañana", time: "17:00" }, { ...HOY, dictado: "recuérdame mañana a las 5 llamar a Ana" });
-  assert.equal(futuro.recordatorio, " Te lo recordará el resumen de las 7:00 de ese día; aún no te aviso a la hora exacta.");
+  assert.equal(futuro.pidioAviso, true);
+  assert.deepEqual(futuro.recordar, { fecha: "2026-10-12", hora: "17:00", porDefecto: false });
   const sinHora = plan({ text: "Llamar a Ana", due: "viernes" }, { ...HOY, dictado: "Recuérdame llamar a Ana el viernes" });
-  assert.equal(sinHora.recordatorio, " Te lo recordará el resumen de las 7:00 de ese día.");
+  assert.deepEqual(sinHora.recordar, { fecha: "2026-10-16", hora: "09:00", porDefecto: true });
+  // con hora y sin fecha: hoy, o mañana si esa hora ya pasó (la misma regla de la tarea)
   const hoyConHora = plan({ text: "X", due: "hoy", time: "18:00" }, { ...HOY, dictado: "avísame hoy a las 6" });
-  assert.equal(hoyConHora.recordatorio, " Aún no te aviso a la hora exacta.");
-  // una tarea que espera a otra persona sale en «esperas» del resumen, no en las del día: no se promete
-  assert.equal(plan({ text: "Que Ana envíe el contrato", due: "mañana", with: "Ana" }, { ...HOY, dictado: "recuérdame que Ana envíe el contrato mañana" }).recordatorio, "");
-  // sin la palabra, o sin fecha, no se dice nada
-  assert.equal(plan({ text: "X", due: "mañana" }, { ...HOY, dictado: "anota mañana llamar a Ana" }).recordatorio, "");
-  assert.equal(plan({ text: "X" }, { ...HOY, dictado: "recuérdame algo" }).recordatorio, "");
+  assert.deepEqual(hoyConHora.recordar, { fecha: "2026-10-11", hora: "18:00", porDefecto: false });
+  assert.deepEqual(plan({ text: "X", time: "18:00" }, { ...HOY, dictado: "recuérdame a las 6" }).recordar, { fecha: "2026-10-11", hora: "18:00", porDefecto: false });
+  assert.equal(plan({ text: "X", time: "08:00" }, { ...HOY, dictado: "recuérdame a las 8" }).recordar?.fecha, "2026-10-12");
+  // una tarea que espera a otra persona también avisa: ahora el aviso es real y no depende del resumen de las 7:00
+  assert.equal(plan({ text: "Que Ana envíe el contrato", due: "mañana", with: "Ana" }, { ...HOY, dictado: "recuérdame que Ana envíe el contrato mañana" }).recordar?.fecha, "2026-10-12");
+  // sin la palabra no hay aviso; con la palabra pero sin fecha lo pidió y falta el cuándo
+  const sinPalabra = plan({ text: "X", due: "mañana" }, { ...HOY, dictado: "anota mañana llamar a Ana" });
+  assert.deepEqual([sinPalabra.pidioAviso, sinPalabra.recordar], [false, null]);
+  const sinFecha = plan({ text: "X" }, { ...HOY, dictado: "recuérdame algo" });
+  assert.deepEqual([sinFecha.pidioAviso, sinFecha.recordar], [true, null]);
+});
+
+test("solo las formas dirigidas a Wabid piden un aviso; «avisar a Ana» dentro de una tarea no", () => {
+  for (const si of ["recuérdame llamar a Ana", "Recuerdame llamar a Ana", "recuérdalo mañana", "avísame mañana a las 5", "Avisame cuando sea el viernes", "agrega la tarea y recuérdamelo el lunes"]) {
+    assert.equal(PIDE_AVISO.test(si), true, si);
+  }
+  for (const no of ["agrega avisar a Ana del cambio", "anota que Ana me avise cuando termine", "pendiente: recordar la contraseña", "agéndame el recuerdo del viaje", "dile a Ana que me avise"]) {
+    assert.equal(PIDE_AVISO.test(no), false, no);
+  }
+});
+
+test("«recuérdame a las N» sin time: NO cae en las 9:00, vuelve a preguntar la hora (a las N, a la una, a las N y media)", () => {
+  const casos: { caso: string; dictado: string; due: string }[] = [
+    { caso: "a las N", dictado: "agéndame llamar a Ana mañana y recuérdame a las 5", due: "mañana" },
+    { caso: "a la una", dictado: "recuérdame mañana a la una llamar a Ana", due: "mañana" },
+    { caso: "a las N y media", dictado: "recuérdame el viernes a las 5 y media llamar a Ana", due: "viernes" },
+  ];
+  for (const { caso, dictado, due } of casos) {
+    const r = respuesta({ text: "Llamar a Ana", due }, { ...HOY, dictado });
+    assert.equal(r.action, "clarify", caso);
+    assert.equal(r.message, "¿A qué hora te aviso? Dímela como las cinco de la tarde.", caso);
+    assert.equal(r.voz, "¿A qué hora te aviso?", caso);
+    assert.ok(prepararVoz(r.voz ?? "").length <= VOZ_MAX && prepararVoz(r.voz ?? "").endsWith("?"), caso);
+  }
+  // sin día ni hora pasados, pero con la hora en el dictado, también pregunta (si no, quedaría «sin fecha» y se perdería la hora dicha)
+  assert.equal(respuesta({ text: "Llamar a Ana" }, { ...HOY, dictado: "recuérdame a las 5 llamar a Ana" }).action, "clarify");
+  // palabras y números: «a las cinco», «a las 10:30», «a las 5pm»
+  for (const si of ["a las 5", "a las cinco de la tarde", "a las 10:30", "a las 5pm", "a las doce", "a la una", "A LAS 9", "a la 1"]) assert.equal(HORA_EN_TEXTO.test(si), true, si);
+  for (const no of ["a las afueras", "a la mañana siguiente", "para las 5", "llamar a Ana", "a las mil maravillas", "a lasagna"]) assert.equal(HORA_EN_TEXTO.test(no), false, no);
+});
+
+test("lo anterior solo ocurre si falta la hora Y se pidió aviso: con time, sin mencionar hora o sin «recuérdame» sigue el camino de siempre", () => {
+  // la hora llegó en time: se programa a esa hora
+  const conHora = plan({ text: "Llamar a Ana", due: "mañana", time: "17:00" }, { ...HOY, dictado: "agéndame llamar a Ana mañana y recuérdame a las 5" });
+  assert.deepEqual(conHora.recordar, { fecha: "2026-10-12", hora: "17:00", porDefecto: false });
+  // sin hora en el dictado: las 9:00 por defecto (David no dijo otra)
+  assert.deepEqual(
+    plan({ text: "Llamar a Ana", due: "viernes" }, { ...HOY, dictado: "recuérdame el viernes llamar a Ana" }).recordar,
+    { fecha: "2026-10-16", hora: "09:00", porDefecto: true },
+  );
+  // la hora en el texto pero sin pedir aviso: la tarea se anota como siempre (sin hora y sin preguntar)
+  const sinAviso = plan({ text: "Llamar a Ana", due: "mañana" }, { ...HOY, dictado: "agéndame llamar a Ana mañana a las 5" });
+  assert.deepEqual([sinAviso.pidioAviso, sinAviso.recordar], [false, null]);
+  // «avisar a Ana a las 5» dentro del texto de una tarea no es un pedido de aviso
+  assert.equal(plan({ text: "Avisar a Ana", due: "mañana" }, { ...HOY, dictado: "agrega avisar a Ana a las 5 mañana" }).pidioAviso, false);
 });
