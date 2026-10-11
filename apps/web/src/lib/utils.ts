@@ -6,6 +6,12 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function formatCurrency(amount: number, currency = 'PEN'): string {
+  // El dólar siempre «US$ 500.00»: según el navegador Intl lo escribe «USD 500.00» o «US$ 500.00», y la misma cifra no puede verse de
+  // dos maneras en una pantalla (ni distinta de lo que dice Wabid).
+  if (currency === 'USD') {
+    const n = new Intl.NumberFormat('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Math.abs(amount));
+    return `${amount < 0 ? '-' : ''}US$ ${n}`;
+  }
   return new Intl.NumberFormat('es-PE', {
     style: 'currency',
     currency,

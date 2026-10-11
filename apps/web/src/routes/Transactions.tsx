@@ -10,12 +10,15 @@ import type { TransactionType } from '@/types/database';
 import { cn } from '@/lib/utils';
 import { Spinner } from '@/components/ui/Spinner';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { diaLima, totalEnSoles, type Monto } from '@/lib/fx';
+import { useTipoCambio } from '@/stores/fxStore';
 
 type FilterType = 'all' | TransactionType;
 
 export function TransactionsPage() {
   const { transactions, fetchTransactions, deleteTransaction, loadingTransactions } = useAppStore();
   const addToast = useToastStore(s => s.addToast);
+  const { tc, historial } = useTipoCambio();
   const [filter, setFilter] = useState<FilterType>('all');
   const [search, setSearch] = useState('');
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -125,18 +128,22 @@ export function TransactionsPage() {
           {Object.entries(grouped)
             .sort(([a], [b]) => b.localeCompare(a))
             .map(([dateKey, txs]) => {
-              const dayTotal = txs.reduce((sum, tx) => {
-                if (tx.transaction_type === 'income') return sum + tx.amount;
-                if (tx.transaction_type === 'expense') return sum - tx.amount;
-                return sum;
-              }, 0);
+              // Total del día en soles: los movimientos en dólares se convierten con el tipo de su día ("≈" cuando hay alguno).
+              const signed = txs.flatMap((tx): Monto[] =>
+                tx.transaction_type === 'transfer'
+                  ? []
+                  : [{ monto: tx.transaction_type === 'income' ? tx.amount : -tx.amount, moneda: tx.currency_code, fecha: diaLima(tx.transaction_date) }],
+              );
+              const dia = totalEnSoles(signed, tc, historial);
+              const dayTotal = dia.soles;
+              const aprox = txs.some(tx => tx.transaction_type !== 'transfer' && tx.currency_code !== 'PEN');
 
               return (
                 <div key={dateKey}>
                   <div className="flex items-center justify-between mb-2 px-1">
                     <p className="text-xs text-slate-500 font-medium uppercase">{formatDateShort(dateKey)}</p>
                     <p className={cn('text-xs font-medium', dayTotal >= 0 ? 'text-income' : 'text-expense')}>
-                      {dayTotal >= 0 ? '+' : ''}{formatCurrency(dayTotal)}
+                      {aprox && '≈ '}{dayTotal >= 0 ? '+' : ''}{formatCurrency(dayTotal)}
                     </p>
                   </div>
                   <div className="space-y-1.5">

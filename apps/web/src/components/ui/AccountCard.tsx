@@ -22,10 +22,14 @@ interface AccountCardProps {
   name: string;
   balance: number;
   type: string;
+  /** Moneda de la cuenta: el saldo se muestra siempre en ella (US$ 500.00, no S/ 500.00). */
+  currency?: string;
+  /** «≈ S/ 1,725.00 (TC 3.45)»: lo que vale en soles una cuenta en dólares. Sin él (soles, o sin tipo de cambio) no se pinta. */
+  equivalent?: string | null;
   className?: string;
 }
 
-export function AccountCard({ name, balance, type, className = '' }: AccountCardProps) {
+export function AccountCard({ name, balance, type, currency = 'PEN', equivalent = null, className = '' }: AccountCardProps) {
   const cardRef = useRef<HTMLDivElement>(null);
 
   // Touch/mouse tilt
@@ -86,8 +90,9 @@ export function AccountCard({ name, balance, type, className = '' }: AccountCard
           {/* Bottom: name + balance */}
           <div>
             <p className={`text-xl font-bold ${isDebt ? 'text-expense' : 'text-slate-100'}`}>
-              {formatCurrency(balance)}
+              {formatCurrency(balance, currency)}
             </p>
+            {equivalent && <p className="text-sm text-slate-400 leading-snug">{equivalent}</p>}
             <p className="text-xs text-slate-400 mt-0.5 uppercase tracking-wider">{name}</p>
           </div>
         </div>

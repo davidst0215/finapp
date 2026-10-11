@@ -2,15 +2,36 @@
 // no inventa montos, no promete "revisar" y le ahorra tokens (latencia) a la llamada.
 // `resumenRecurrentes` es lo que se ve (hasta 5 pagos con su fecha); `vozRecurrentes` es lo que se dice: el total, el primero y "y N más".
 
+import { aSoles, type Cambio } from "../../_shared/fx.ts";
 import { cortoVoz } from "../../_shared/voz.ts";
 
-export type Recurrente = { recurring_id: string; description: string; amount: number; frequency: string; next_due_date: string };
+// `currency_code`: moneda del pago (PEN si falta). `original`: cuando un pago en dólares ya se pasó a soles (`amount` en soles), cómo era antes («US$ 15.00»).
+export type Recurrente = {
+  recurring_id: string; description: string; amount: number; frequency: string; next_due_date: string;
+  currency_code?: string | null; original?: string;
+};
 export type FiltroRecurrentes = "all" | "pending" | "paid";
 
 const MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
 const MAX_EN_PANTALLA = 5;
 
 const soles = (n: number) => `S/ ${Number(n).toFixed(2)}`;
+const esUsd = (r: Recurrente) => r.currency_code === "USD";
+// Lo que se ve de un pago: en soles, con el original en dólares si se convirtió; un pago en dólares SIN convertir se muestra en dólares.
+const importe = (r: Recurrente) => `${esUsd(r) ? "US$" : "S/"} ${Number(r.amount).toFixed(2)}${r.original ? ` (${r.original})` : ""}`;
+
+/**
+ * Los pagos en dólares pasan a soles con el tipo de cambio (el original queda en `original`) para que los totales sumen soles con soles.
+ * Sin tipo de cambio (o en otra moneda) el pago queda como está, en su moneda, y los totales no lo cuentan como soles.
+ */
+export function recurrentesEnSoles(lista: Recurrente[], tc: Cambio): Recurrente[] {
+  return lista.map((r) => {
+    const m = (r.currency_code ?? "PEN").toUpperCase();
+    if (m === "PEN") return r;
+    const enSoles = aSoles(Number(r.amount), m, tc);
+    return enSoles === null ? r : { ...r, amount: enSoles, currency_code: "PEN", original: `${m === "USD" ? "US$" : m} ${Number(r.amount).toFixed(2)}` };
+  });
+}
 
 // "AAAA-MM-DD" → "el 15 de octubre" / "el primero de noviembre".
 export function fechaHablada(iso: string): string {
@@ -27,12 +48,15 @@ function enumerar(partes: string[]): string {
 
 // Para la voz. Un pago concreto lleva su monto exacto ("S/ 26", "S/ 45.90"); un total se redondea y, solo si de verdad se
 // redondeó, se dice «unos» ("unos S/ 452" para 452.25; "S/ 78" es exacto).
-const monto = (n: number) => (Number.isInteger(Math.round(Number(n) * 100) / 100) ? `S/ ${Math.round(Number(n))}` : `S/ ${Number(n).toFixed(2)}`);
+const monto = (n: number, usd = false) => {
+  const sim = usd ? "US$" : "S/";
+  return Number.isInteger(Math.round(Number(n) * 100) / 100) ? `${sim} ${Math.round(Number(n))}` : `${sim} ${Number(n).toFixed(2)}`;
+};
 const aprox = (n: number) => {
   const r = Math.round(Number(n));
   return Math.abs(Number(n) - r) < 0.005 ? `S/ ${r}` : `unos S/ ${r}`;
 };
-const totalVoz = (rs: Recurrente[], suma: number) => (rs.length === 1 ? monto(rs[0]!.amount) : aprox(suma));
+const totalVoz = (rs: Recurrente[], suma: number) => (rs.length === 1 ? monto(rs[0]!.amount, esUsd(rs[0]!)) : aprox(suma));
 
 /** Lo que cuenta este mes: pagados, pendientes (vencen este mes o ya vencieron, sin pago) y el total de una lista. */
 function estadoDelMes(lista: Recurrente[], pagados: Set<string>, hoy: string) {
@@ -41,7 +65,8 @@ function estadoDelMes(lista: Recurrente[], pagados: Set<string>, hoy: string) {
   const pendientes = lista
     .filter((r) => !pagados.has(r.recurring_id) && r.next_due_date.slice(0, 10) <= finDeMes)
     .sort((a, b) => a.next_due_date.localeCompare(b.next_due_date));
-  const suma = (rs: Recurrente[]) => rs.reduce((s, r) => s + Number(r.amount), 0);
+  // Un pago en dólares que no se pudo convertir no es soles: no entra en la suma.
+  const suma = (rs: Recurrente[]) => rs.reduce((s, r) => s + (esUsd(r) ? 0 : Number(r.amount)), 0);
   return { pagadosMes, pendientes, suma };
 }
 
@@ -55,7 +80,7 @@ export function resumenRecurrentes(lista: Recurrente[], pagados: Set<string>, ho
   const { pagadosMes, pendientes, suma } = estadoDelMes(lista, pagados, hoy);
   const total = (rs: Recurrente[]) => soles(suma(rs));
   const pendiente = (r: Recurrente) =>
-    `${r.description} ${soles(r.amount)} ${r.next_due_date.slice(0, 10) < hoy ? `vencido desde ${fechaHablada(r.next_due_date)}` : fechaHablada(r.next_due_date)}`;
+    `${r.description} ${importe(r)} ${r.next_due_date.slice(0, 10) < hoy ? `vencido desde ${fechaHablada(r.next_due_date)}` : fechaHablada(r.next_due_date)}`;
 
   if (filtro === "paid") {
     if (pagadosMes.length === 0) return "Todavía no registras pagos fijos este mes.";
@@ -78,7 +103,7 @@ export function resumenRecurrentes(lista: Recurrente[], pagados: Set<string>, ho
 export function vozRecurrentes(lista: Recurrente[], pagados: Set<string>, hoy: string, filtro: FiltroRecurrentes): string {
   if (lista.length === 0) return resumenRecurrentes(lista, pagados, hoy, filtro); // ya es corto
   const { pagadosMes, pendientes, suma } = estadoDelMes(lista, pagados, hoy);
-  const primero = (r: Recurrente) => `${cortoVoz(r.description, 24)} ${monto(r.amount)}${r.next_due_date.slice(0, 10) < hoy ? ", vencido" : ""}`;
+  const primero = (r: Recurrente) => `${cortoVoz(r.description, 24)} ${monto(r.amount, esUsd(r))}${r.next_due_date.slice(0, 10) < hoy ? ", vencido" : ""}`;
   const faltan = pendientes.length === 0
     ? ""
     : pendientes.length === 1

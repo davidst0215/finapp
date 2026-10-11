@@ -1,5 +1,6 @@
 // Lógica pura del brief de las 7:00 (sin globals de Deno: las pruebas corren en Node).
 // Las secciones las arma el código con datos exactos; el modelo solo redacta el texto hablado a partir de ellas.
+import { aSoles, type Cambio, type Punto, tasaDeFecha } from "../_shared/fx.ts";
 import { addDays, DIAS, limaDateKey, MESES } from "../_shared/google/time.ts";
 import { acotarVoz } from "../_shared/voz.ts";
 
@@ -70,6 +71,35 @@ export function ventanaMes(fecha: string): { desde: string; hasta: string; mes: 
 }
 
 export const soles = (n: number) => `S/ ${Number(n).toFixed(2)}`;
+
+export type GastoCrudo = { amount: number | string; currency_code?: string | null; transaction_date: string };
+
+/**
+ * Lo gastado, en soles: los soles tal cual y los dólares × el tipo de cambio de SU día (día de Lima, igual que fn_a_soles en la base).
+ * Lo que no se puede convertir (dólares sin ningún tipo de cambio guardado, u otra moneda) queda fuera: nunca se suma como soles.
+ */
+export function sumarEnSoles(filas: GastoCrudo[], historial: Punto[]): number {
+  let total = 0;
+  for (const f of filas) {
+    const monto = Number(f.amount);
+    if ((f.currency_code ?? "PEN") === "PEN") {
+      total += monto;
+      continue;
+    }
+    const valor = tasaDeFecha(historial, limaDateKey(new Date(f.transaction_date)));
+    const enSoles = valor === null ? null : aSoles(monto, f.currency_code, { valor, fecha: "" });
+    if (enSoles !== null) total += enSoles;
+  }
+  return Math.round(total * 100) / 100;
+}
+
+/** Los pagos próximos en soles (los de dólares con el último tipo de cambio). Sin tipo de cambio el pago queda con su monto en dólares y se marca «(en dólares)». */
+export function pagosEnSoles(recurrentes: (RecurrenteCrudo & { currency_code?: string | null })[], tc: Cambio): RecurrenteCrudo[] {
+  return recurrentes.map(({ currency_code, ...r }) => {
+    const enSoles = (currency_code ?? "PEN") === "PEN" ? Number(r.amount) : aSoles(Number(r.amount), currency_code, tc);
+    return enSoles === null ? { ...r, description: `${r.description} (en dólares)`, amount: Number(r.amount) } : { ...r, amount: enSoles };
+  });
+}
 
 /** "09:30" -> "9:30" */
 export const horaCorta = (hm: string) => hm.replace(/^0/, "");

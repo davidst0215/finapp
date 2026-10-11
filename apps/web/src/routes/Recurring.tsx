@@ -8,6 +8,9 @@ import { formatCurrency, formatDate, localDateKey } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import { GlassCard } from '@/components/ui/GlassCard';
 import { Spinner } from '@/components/ui/Spinner';
+import { NotaCambio } from '@/components/ui/NotaCambio';
+import { conversionDeTotal, diaLima, notaConversion, totalEnSoles } from '@/lib/fx';
+import { useTipoCambio } from '@/stores/fxStore';
 import type { RecurringTransaction, Frequency, TransactionType } from '@/types/database';
 
 const frequencyLabels: Record<Frequency, string> = {
@@ -35,6 +38,7 @@ export function RecurringPage() {
   const [accountId, setAccountId] = useState('');
   const [saving, setSaving] = useState(false);
   const addToast = useToastStore(s => s.addToast);
+  const { tc } = useTipoCambio();
 
   const fetchRecurrings = async () => {
     setLoading(true);
@@ -76,7 +80,8 @@ export function RecurringPage() {
   }, [fetchAccounts, fetchCategories]);
 
   useEffect(() => {
-    if (accounts.length > 0 && !accountId) setAccountId(accounts[0]!.account_id);
+    // La primera cuenta en soles: el monto se escribe en soles salvo que se elija una cuenta en dólares.
+    if (accounts.length > 0 && !accountId) setAccountId((accounts.find(a => a.currency_code === 'PEN') ?? accounts[0])!.account_id);
   }, [accounts, accountId]);
 
   const filteredCategories = categories.filter(c => c.category_type === type);
@@ -85,6 +90,7 @@ export function RecurringPage() {
     if (!description || !amount || !accountId) return;
     setSaving(true);
 
+    const cuenta = accounts.find(a => a.account_id === accountId);
     const day = parseInt(dayOfMonth) || 1;
     const now = new Date();
     let nextDue = new Date(now.getFullYear(), now.getMonth(), day);
@@ -93,7 +99,7 @@ export function RecurringPage() {
     await supabase.from('recurring_transactions').insert({
       description, amount: parseFloat(amount), transaction_type: type,
       frequency, day_of_month: day, account_id: accountId,
-      category_id: categoryId || null, currency_code: 'PEN',
+      category_id: categoryId || null, currency_code: cuenta?.currency_code ?? 'PEN', // la moneda del pago es la de su cuenta: la base exige que coincidan
       start_date: localDateKey(new Date()),
       next_due_date: nextDue.toISOString().slice(0, 10),
       is_active: true, auto_register: false,
@@ -143,7 +149,7 @@ export function RecurringPage() {
       // Mark as paid: create transaction + advance date
       await supabase.from('transactions').insert({
         transaction_type: r.transaction_type, amount: r.amount,
-        currency_code: 'PEN', description: r.description,
+        currency_code: r.currency_code, description: r.description,
         account_id: r.account_id, category_id: r.category_id,
         transaction_date: new Date().toISOString(), input_method: 'recurring',
         raw_voice_text: null, is_recurring: true, recurring_id: r.recurring_id,
@@ -165,9 +171,14 @@ export function RecurringPage() {
     setDescription(''); setAmount(''); setCategoryId(''); setShowForm(false);
   };
 
-  const totalMonthly = recurrings
-    .filter(r => r.frequency === 'monthly')
-    .reduce((s, r) => r.transaction_type === 'expense' ? s + r.amount : s - r.amount, 0);
+  // Gasto fijo mensual en soles: los pagos en dólares se convierten con el tipo de cambio vigente.
+  const mensual = totalEnSoles(
+    recurrings.filter(r => r.frequency === 'monthly').map(r => ({ monto: r.transaction_type === 'expense' ? r.amount : -r.amount, moneda: r.currency_code })),
+    tc,
+  );
+  const totalMonthly = mensual.soles;
+  const notaMensual = notaConversion(conversionDeTotal(mensual, tc?.fecha), diaLima(new Date()));
+  const monedaForm = accounts.find(a => a.account_id === accountId)?.currency_code === 'USD' ? 'US$' : 'S/';
 
   const paidCount = recurrings.filter(r => r.isPaidThisMonth).length;
   const pendingCount = recurrings.length - paidCount;
@@ -195,6 +206,7 @@ export function RecurringPage() {
         <div className="card text-center">
           <p className="text-slate-400 text-xs mb-1">Gasto fijo mensual</p>
           <p className="text-2xl font-bold text-expense">{formatCurrency(totalMonthly)}</p>
+          <NotaCambio texto={notaMensual} className="mt-1" />
           <div className="flex items-center justify-center gap-4 mt-2">
             <span className="text-xs text-primary-400">{paidCount} pagados</span>
             <span className="text-[10px] text-slate-600">·</span>
@@ -210,13 +222,18 @@ export function RecurringPage() {
           <input type="text" value={description} onChange={e => setDescription(e.target.value)} placeholder="Nombre (ej: Netflix, Alquiler)" className="input" />
           <div className="flex gap-2">
             <div className="relative flex-1">
-              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500">S/</span>
-              <input type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" className="input pl-10" inputMode="decimal" />
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500">{monedaForm}</span>
+              <input type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" className={cn('input', monedaForm === 'US$' ? 'pl-14' : 'pl-10')} inputMode="decimal" />
             </div>
             <select value={frequency} onChange={e => setFrequency(e.target.value as Frequency)} className="input w-28">
               {Object.entries(frequencyLabels).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>
           </div>
+          {accounts.length > 1 && (
+            <select value={accountId} onChange={e => setAccountId(e.target.value)} className="input" aria-label="Cuenta del pago">
+              {accounts.map(a => <option key={a.account_id} value={a.account_id}>{a.account_name}{a.currency_code !== 'PEN' ? ` · ${a.currency_code}` : ''}</option>)}
+            </select>
+          )}
           <div className="flex gap-2">
             <input type="number" value={dayOfMonth} onChange={e => setDayOfMonth(e.target.value)} placeholder="Día" className="input w-20" min={1} max={31} />
             <p className="text-xs text-slate-500 self-center">del mes</p>
@@ -310,7 +327,7 @@ export function RecurringPage() {
                       r.isPaidThisMonth ? 'text-slate-500' :
                       r.transaction_type === 'expense' ? 'text-expense' : 'text-income'
                     )}>
-                      {formatCurrency(r.amount)}
+                      {formatCurrency(r.amount, r.currency_code)}
                     </p>
                     <button onClick={() => handleDelete(r.recurring_id)}
                       className="text-slate-700 opacity-0 group-hover:opacity-100 transition-opacity p-1">

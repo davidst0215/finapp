@@ -25,7 +25,7 @@ FORMATO DE RESPUESTA (JSON):
 
 REGLAS:
 - score: 1-3 malo, 4-6 regular, 7-8 bueno, 9-10 excelente
-- Moneda: Soles (S/)
+- Moneda: Soles (S/). Todos los montos ya están en soles (los dólares, convertidos con el tipo de cambio de cada día); income_usd y expenses_usd dicen cuánto de eso fue en dólares (US$). Nunca los sumes otra vez
 - Compara mes actual vs anterior
 - Detecta tendencias, gastos inusuales, oportunidades de ahorro
 - Responde SOLO con JSON válido`;
