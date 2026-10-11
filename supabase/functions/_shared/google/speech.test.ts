@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mapEvent, type CalEvent, type RawEvent } from "./events.ts";
 import type { MailItem } from "./mail.ts";
+import { prepararVoz } from "../voz.ts";
 import { diaHablado, horaHablada, remitenteCorto, resumenAgenda, resumenCorreo, vozAgenda, vozCorreo } from "./speech.ts";
 
 const LUNES_8AM = new Date("2026-10-05T13:00:00Z"); // lunes 5 de octubre de 2026, 08:00 en Lima
@@ -160,6 +161,25 @@ describe("lo que se dice de la agenda y el correo (la pantalla conserva el detal
     const dia = "2027-01-15";
     const todoElDia = { ...evEn(dia, "a", "Feriado nacional del Perú", "00:00"), all_day: true, start_hm: "", end_hm: "" };
     assert.equal(vozAgenda([todoElDia], dia, LUNES_8AM), "El viernes 15 de enero de 2027 tienes 1 evento: todo el día, Feriado nacional del Perú.");
+  });
+
+  it("agenda: un monto en el título crece al hablarse y no empuja fuera el «y N más»", () => {
+    const hoy = "2026-10-05";
+    const tres = [
+      evEn(hoy, "a", "Pagar S/ 1,500 al dueño del local", "09:00"), // crudo mide 33 y cabe; hablado mide 45 y no
+      evEn(hoy, "b", "Almuerzo", "13:00"),
+      evEn(hoy, "c", "Gimnasio", "19:00"),
+    ];
+    const v = vozAgenda(tres, hoy, LUNES_8AM);
+    assert.ok(v.length <= 96 && v.endsWith("; y 2 más."), `${v.length}: ${v}`);
+    assert.equal(prepararVoz(v), v); // ya convertido: al hablarse no crece ni pierde nada
+    assert.match(v, /Pagar mil quinientos soles al dueño; y 2 más\.$/); // el monto va completo, con su unidad
+    // Con la fecha lejana (año) y hora con minutos el monto sigue sin romper el presupuesto.
+    const dia = "2027-01-15";
+    const lejos = [evEn(dia, "a", "Pagar S/ 1,500 de alquiler del local", "08:45"), evEn(dia, "b", "Cena", "20:00")];
+    const w = vozAgenda(lejos, dia, LUNES_8AM);
+    assert.ok(w.length <= 96 && w.endsWith("; y 1 más."), `${w.length}: ${w}`);
+    assert.equal(prepararVoz(w), w);
   });
 
   it("agenda: vacía, y título largo cortado en palabra", () => {

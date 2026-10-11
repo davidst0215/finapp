@@ -1,6 +1,8 @@
 // Voz de Wabid en ElevenLabs, compartida por /tts y por el agente (que la manda junto con su respuesta).
-// ElevenLabs cobra por carácter: quien llama prepara el texto con `prepararVoz` (montos en palabras + tope VOZ_MAX)
-// y manda exactamente eso, así lo que se cuenta en los logs (`voz_chars`) es lo que se cobra.
+// ElevenLabs cobra por carácter: quien llama prepara el texto con `prepararVoz` (montos en palabras + tope VOZ_MAX) para
+// poder registrar `voz_chars`. `pedirVoz` lo vuelve a preparar por seguridad: es idempotente, así ningún llamador puede
+// mandar más de VOZ_MAX caracteres ni sin convertir los montos, y lo que se cuenta en los logs es lo que se cobra.
+import { prepararVoz } from "./voz.ts";
 
 const API_KEY = Deno.env.get("ELEVENLABS_API_KEY");
 const VOICE_ID = Deno.env.get("ELEVENLABS_VOICE_ID");
@@ -17,11 +19,11 @@ export const vozModelo = (): string => Deno.env.get("ELEVENLABS_MODEL")?.trim() 
 
 export const vozConfigurada = () => Boolean(API_KEY && VOICE_ID);
 
-/** MP3 en streaming: ElevenLabs manda los primeros fragmentos apenas los genera. `hablado` va tal cual, ya preparado. */
+/** MP3 en streaming: ElevenLabs manda los primeros fragmentos apenas los genera. `hablado` ya viene de `prepararVoz`. */
 export function pedirVoz(hablado: string): Promise<Response> {
   return fetch(`https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream?output_format=mp3_44100_128`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "xi-api-key": API_KEY ?? "" },
-    body: JSON.stringify({ text: hablado, model_id: vozModelo(), voice_settings: { speed: SPEED } }),
+    body: JSON.stringify({ text: prepararVoz(hablado), model_id: vozModelo(), voice_settings: { speed: SPEED } }),
   });
 }

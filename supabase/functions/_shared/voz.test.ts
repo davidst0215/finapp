@@ -1,8 +1,11 @@
 // node --experimental-strip-types --test supabase/functions/_shared/voz.test.ts
 // Tope de voz: ElevenLabs cobra por carácter, así que lo que se manda nunca pasa de VOZ_MAX y nunca se corta a mitad de palabra.
-// Los mismos casos están en apps/web/src/lib/vozTexto.test.mjs (el cliente tiene una copia de acotarVoz).
+// Es el ÚNICO recorte: el cliente solo limpia el markdown y manda hasta 600 caracteres a /tts (ver apps/web/src/lib/vozTexto.test.mjs).
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { acotarVoz, cortoVoz, finesDeOracion, paraVoz, prepararVoz, VOZ_MAX } from "./voz.ts";
 
 /** El resultado es un prefijo del original (más, quizá, un punto de cierre) y no parte ninguna palabra. */
@@ -184,6 +187,10 @@ describe("cortoVoz: siempre en el último espacio", () => {
     assert.equal(cortoVoz("Reunión semanal Daniel Rojas", 22), "Reunión semanal Daniel");
     assert.equal(cortoVoz("Reunión semanal con Daniel", 19), "Reunión semanal"); // «con» colgante
   });
+  it("un número en palabras no se queda sin su unidad: se corta antes del monto", () => {
+    assert.equal(cortoVoz(paraVoz("Cobrar S/ 2,350 al cliente moroso"), 30), "Cobrar");
+    assert.equal(cortoVoz(paraVoz("Cobrar S/ 2,350 al cliente moroso"), 42), "Cobrar dos mil trescientos cincuenta soles");
+  });
   it("a mitad de palabra solo si no hay ningún espacio", () => {
     assert.equal(cortoVoz("Planificación", 10), "Planificac");
   });
@@ -197,5 +204,76 @@ describe("paraVoz: emojis y enlaces", () => {
   it("deja ©, ® y ™ que sí se escriben en una frase", () => assert.equal(paraVoz("Marca® y Co© listas"), "Marca® y Co© listas"));
   it("un enlace markdown se dice por su texto", () => {
     assert.equal(paraVoz("Mira [el informe](https://x.y/z?a=1) de S/ 45 y ![foto](a.png) fin"), "Mira el informe de cuarenta y cinco soles y foto fin");
+  });
+});
+
+describe("acotarVoz: si el corte borra un «pero no», no afirma lo contrario", () => {
+  const saldo = "Tu saldo alcanza para todos los pagos fijos de este mes, pero no para los gastos variables que vienen después de eso";
+  const palabrasDe = (t: string) => new Set(t.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean));
+
+  it("con max de 56 a 76 conserva la negación (acorta la cláusula afirmativa si hace falta)", () => {
+    const original = palabrasDe(saldo);
+    for (let max = 56; max <= 76; max++) {
+      const r = acotarVoz(saldo, max);
+      assert.ok(r.length <= max, `${max}: ${r.length} ${r}`);
+      assert.ok(r.endsWith(", pero no."), `${max}: afirma sin su «pero no»: ${r}`);
+      assert.ok(r.startsWith("Tu saldo alcanza para todos los pagos fijos"), `${max}: ${r}`);
+      for (const w of palabrasDe(r)) assert.ok(original.has(w), `${max}: «${w}» no estaba en el original`);
+    }
+  });
+
+  it("con espacio suficiente dice la cláusula entera; con 65 conserva «de este mes»", () => {
+    assert.equal(acotarVoz(saldo, 65), "Tu saldo alcanza para todos los pagos fijos de este mes, pero no.");
+    assert.equal(acotarVoz(saldo, 56), "Tu saldo alcanza para todos los pagos fijos, pero no.");
+    assert.equal(acotarVoz(saldo, 100), "Tu saldo alcanza para todos los pagos fijos de este mes, pero no para los gastos variables.");
+  });
+
+  it("«y no» también: no deja el «y»", () => {
+    const y = saldo.replace(", pero no", " y no");
+    for (let max = 56; max <= 74; max++) {
+      const r = acotarVoz(y, max);
+      assert.ok(r.length <= max && r.endsWith(" y no."), `${max}: ${r}`);
+    }
+  });
+
+  it("prefiere cortar antes de la cláusula afirmativa si el límite anterior deja una frase de verdad", () => {
+    const t = "Hoy tienes comité, la reunión de cobranzas con todo el equipo comercial y financiero empieza a las nueve, pero no hay sala libre hoy";
+    const max = t.indexOf("pero no") + "pero no".length + 2; // la ventana termina justo en «pero no»
+    assert.equal(acotarVoz(t, max), "Hoy tienes comité.");
+  });
+
+  it("si el conector no trae «no» (un «pero» solo) no inventa nada: cierra como siempre", () => {
+    const t = "Tu saldo alcanza para todos los pagos fijos de este mes, pero la fecha de corte de la tarjeta cambió este año";
+    const r = acotarVoz(t, 62);
+    assert.ok(r.length <= 62 && !/pero\.$/.test(r), r);
+    esCorteLimpio(t, r);
+  });
+});
+
+describe("prepararVoz es idempotente (pedirVoz lo aplica de nuevo)", () => {
+  const muestras = [
+    "Esta semana gastaste S/ 312, casi todo en comida.",
+    "Gastaste S/ 450.50 en comida y S/ 120.00 en taxi, además de S/ 80.25 en cine esta semana. Vas al 85% del presupuesto.",
+    "Tu saldo alcanza para todos los pagos fijos de este mes, pero no para los gastos variables que vienen después de eso",
+    "Mira [Foo](https://es.wikipedia.org/wiki/Foo_(bar)) ⭐ hoy ⏰ y mañana",
+    "x".repeat(300),
+  ];
+  for (const m of muestras) {
+    it(m.slice(0, 40), () => {
+      const una = prepararVoz(m);
+      assert.ok(una.length <= VOZ_MAX);
+      assert.equal(prepararVoz(una), una);
+    });
+  }
+  it("pedirVoz aplica prepararVoz: ningún llamador puede pasar de VOZ_MAX", () => {
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "elevenlabs.ts"), "utf8");
+    assert.match(src, /text: prepararVoz\(hablado\)/);
+  });
+});
+
+describe("paraVoz: enlaces con paréntesis en la URL", () => {
+  it("un nivel de paréntesis en la URL no deja restos", () => {
+    assert.equal(paraVoz("Mira [Foo](https://es.wikipedia.org/wiki/Foo_(bar)) hoy y [x](http://a.b/c) fin"), "Mira Foo hoy y x fin");
+    assert.equal(paraVoz("![gráfico (2026)](https://x.y/a_(1).png) listo"), "gráfico (2026) listo");
   });
 });

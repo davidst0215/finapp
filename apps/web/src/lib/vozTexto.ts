@@ -19,7 +19,7 @@ export function limpiarParaVoz(texto: string): string {
   return texto
     .replace(/```[\s\S]*?```/g, ' (código) ')
     .replace(/`([^`]*)`/g, '$1')
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/!?\[([^\]]*)\]\((?:[^()]|\([^()]*\))*\)/g, '$1') // la URL admite un nivel de paréntesis: Foo_(bar)
     .replace(/^\s{0,3}#{1,6}\s+/gm, '')
     .replace(/(\*\*|__)(.*?)\1/g, '$2')
     .replace(/^\s*[-*]\s+/gm, '')

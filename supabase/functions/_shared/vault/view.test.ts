@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { buildTasksView, firstLink, plainNote, toViewTask } from "./view.ts";
 import { corto, hablado, preguntaCual, preguntaDonde, resumenGeneral, resumenTareas, vozCual, vozTareas } from "./speech.ts";
 import { parseConfig } from "./taxonomy.ts";
+import { prepararVoz } from "../voz.ts";
 import type { TaskRow } from "./types.ts";
 
 const HOY = "2026-10-05"; // lunes
@@ -207,4 +208,58 @@ test("speech.vozCual: con títulos y proyectos largos cabe, no pierde el «?» y
     const r = vozCual([t1, t2]);
     assert.ok(r.length <= 100 && r.endsWith("?"), `${n}: ${r}`);
   }
+});
+
+// Lo que se dice se presupuesta YA CONVERTIDO a palabras: un monto o un % crece al hablarse y no debe empujar fuera el «?» ni el «Y N más».
+const tarea = (folder: string, text: string, extra: Partial<ReturnType<typeof toViewTask>> = {}) => ({
+  ...toViewTask(row({ folder, text, due: "2026-10-01" }), CFG, HOY),
+  ...extra,
+});
+
+test("speech.vozCual: con montos en los títulos mide lo hablado y no pierde el «?»", () => {
+  const a = tarea("acme-ventas", "Pagar S/ 1,200 a Juan por el alquiler del local de Surco");
+  const b = tarea("acme-ventas", "Pagar S/ 800 a Juan por el alquiler del local de Surco");
+  const p = vozCual([a, b]);
+  assert.ok(p.length <= 100 && p.endsWith("?"), `${p.length}: ${p}`);
+  assert.equal(prepararVoz(p), p); // al convertir no crece ni se recorta
+  assert.match(p, /mil doscientos/);
+  assert.match(p, /ochocientos/);
+  // Proyectos distintos y 3 opciones.
+  const c = tarea("beta-datos", "Pagar S/ 1,500 de alquiler y el 18% de comisión a la inmobiliaria Hernández");
+  const d = tarea("acme-soporte", "Pagar S/ 2,350.50 al proveedor de internet por los tres meses atrasados");
+  const q = vozCual([c, d, a]);
+  assert.ok(q.length <= 100 && q.endsWith("?"), `${q.length}: ${q}`);
+  assert.equal(prepararVoz(q), q);
+  assert.match(q, /^¿Cuál de las 3: /);
+});
+
+test("speech.vozCual: títulos idénticos en proyectos distintos se distinguen por proyecto, no por la última palabra", () => {
+  const texto = "Preparar la presentación trimestral de resultados para el comité de dirección";
+  const a = tarea("acme-ventas", texto);
+  const b = tarea("beta-datos", texto);
+  assert.equal(vozCual([a, b]), "¿La de Acme Ventas o la de Beta Datos?");
+  assert.equal(vozCual([a, b, a]), "¿La de Acme Ventas o la de Beta Datos?");
+  // En el mismo proyecto no hay nada que los distinga: se dice.
+  assert.equal(vozCual([a, tarea("acme-ventas", texto)]), "Tienen el mismo título en Acme Ventas: ¿cuál?");
+  // Títulos que solo comparten el inicio siguen mostrándose desde donde difieren.
+  const c = tarea("acme-ventas", `${texto} de Acme`);
+  const d = tarea("acme-ventas", `${texto} de Beta`);
+  assert.match(vozCual([c, d]), /de Acme o .*de Beta\?$/);
+});
+
+test("speech.vozTareas: con montos y un proyecto largo cabe, acota el proyecto y conserva «Y N más.»", () => {
+  const largo = "Maquimas Colombia cobranzas regionales y nacionales";
+  const primera = tarea("acme-ventas", "Cobrar S/ 2,350.50 al cliente moroso de la región norte y el 18% de recargo", { project: largo, frente: null });
+  const resto = Array.from({ length: 4 }, (_, i) => tarea("acme-ventas", `Otra ${i}`, { project: largo, frente: null }));
+  for (const kind of ["overdue", "today", "inbox"] as const) {
+    const v = vozTareas(kind, [primera, ...resto]);
+    assert.ok(v.length <= 100, `${kind} ${v.length}: ${v}`);
+    assert.ok(v.endsWith("Y 4 más."), `${kind}: ${v}`);
+    assert.equal(prepararVoz(v), v);
+    assert.doesNotMatch(v, /(dos|mil|trescientos|cincuenta|cientos),/); // un número cortado sin su unidad afirmaría otra cifra
+    assert.ok(!v.includes("regionales y nacionales"), `el proyecto debe acotarse a ~24: ${v}`);
+  }
+  const p = vozTareas("project", [primera, ...resto], { projectLabel: largo });
+  assert.ok(p.length <= 100 && p.endsWith("Y 4 más.") && prepararVoz(p) === p, `${p.length}: ${p}`);
+  assert.equal(vozTareas("overdue", []), "No tienes tareas vencidas.");
 });

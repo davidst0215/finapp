@@ -1,6 +1,6 @@
 // Frases que Wabid dice (y muestra) sobre la agenda y el correo. Las arma el código, no el modelo:
 // horas y días como se hablan, sin inventar nada. Lógica pura.
-import { cortoVoz, palabras } from "../voz.ts";
+import { cortoVoz, palabras, paraVoz } from "../voz.ts";
 import type { CalEvent } from "./events.ts";
 import type { MailItem } from "./mail.ts";
 import { addDays, DIAS, limaDateKey, limaHM, MESES, weekdayOf } from "./time.ts";
@@ -74,6 +74,8 @@ export function vozAgenda(events: CalEvent[], key: string, now: Date): string {
   if (a.todos.length === 0) return agendaVacia(a, key);
   const n = a.todos.length;
   const primero = a.todos[0]!;
+  // Medido ya convertido a palabras: "Pagar alquiler de S/ 1,500" son 26 caracteres y hablados son 38.
+  const titulo = paraVoz(primero.title);
   const cola = n > 1 ? `; y ${n - 1} más.` : ".";
   const cuenta = plural(n, "evento", "eventos");
 
@@ -89,7 +91,7 @@ export function vozAgenda(events: CalEvent[], key: string, now: Date): string {
     for (const cuando of cuandos) {
       const base = `${intro}: ${cuando}, `;
       const sitio = PRESUPUESTO_AGENDA - base.length - cola.length;
-      if (primero.title.length <= sitio || sitio >= MIN_TITULO) return `${base}${cortoVoz(primero.title, sitio)}${cola}`;
+      if (titulo.length <= sitio || sitio >= MIN_TITULO) return `${base}${cortoVoz(titulo, sitio)}${cola}`;
     }
   }
   // Ni así cabe un título: se dice sin él, con la hora más corta y el «y N más» intactos.
