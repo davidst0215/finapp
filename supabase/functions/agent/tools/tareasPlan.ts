@@ -7,8 +7,15 @@ import { destinoHablado, type Indice, preguntaProyecto, type Resolucion, resolve
 import { corto } from "../../_shared/vault/speech.ts";
 import { INBOX_FOLDER } from "../../_shared/vault/taxonomy.ts";
 import type { ToolResult } from "../types.ts";
+import { HORA_POR_DEFECTO } from "./avisosPlan.ts";
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
+
+/** «recuérdame», «recuérdalo», «avísame»…: se lo pide a Wabid. «Avisar a Ana» dentro del texto de una tarea NO es un pedido de aviso. */
+export const PIDE_AVISO = /\b(?:recu[eé]rd(?:ame|amelo|amela|alo|ala)|av[ií]same(?:lo|la)?)\b/i;
+
+/** «a las 5», «a las 5 y media», «a las 10:30», «a las cinco», «a la una»: David dijo una hora (aunque el modelo no la haya pasado en `time`). */
+export const HORA_EN_TEXTO = /\ba\s+las\s+(?:\d{1,2}(?::\d{2})?|(?:dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)\b)|\ba\s+la\s+(?:una|1)\b/i;
 
 export type PlanTarea = {
   text: string;
@@ -22,8 +29,10 @@ export type PlanTarea = {
   /** Si el proyecto pedido no existe: la tarea queda en el cajón y se dice. */
   aviso: string;
   avisoVoz: string;
-  /** Para la pantalla: lo que pasará (o no) con «recuérdame». */
-  recordatorio: string;
+  /** David pidió «recuérdame / avísame»: además de la tarea hay que programar un aviso (o decirle que falta el cuándo). */
+  pidioAviso: boolean;
+  /** Cuándo suena ese aviso (día y hora de Lima; solo el día = 9:00). null si no dio fecha ni hora. */
+  recordar: { fecha: string; hora: string; porDefecto: boolean } | null;
   /** Qué pasó con el proyecto que dijo (para el registro): null si no dijo ninguno. */
   proyecto: Resolucion | null;
   /** «a las cinco de la tarde», para la voz. */
@@ -37,7 +46,7 @@ const clarify = (message: string, voz?: string, proyecto: Resolucion | null = nu
 
 /**
  * Convierte lo que pidió el modelo (create_task) en un plan o en una pregunta. `dictado` es lo que dijo David: solo se mira
- * para saber si pidió «recuérdame». Sin hora ni fecha la tarea queda sin vencimiento; con hora y sin fecha es de hoy, o de
+ * para saber si pidió «recuérdame» (entonces la tarea lleva además un aviso a esa hora). Sin hora ni fecha la tarea queda sin vencimiento; con hora y sin fecha es de hoy, o de
  * mañana si esa hora ya pasó en Lima.
  */
 export function planearTarea(
@@ -78,6 +87,11 @@ export function planearTarea(
     hora = parseTime(horaDicha);
     if (!hora) return clarify("No entendí la hora. Dímela como las cinco de la tarde.", undefined, proyecto);
   }
+  // «…y recuérdame a las 5» sin que el modelo pase la hora: NO se cae en las 9:00 por defecto (la hora equivocada, sin que David lo note):
+  // se vuelve a preguntar antes de escribir nada. Al responder, el modelo repite create_task con time.
+  if (!hora && PIDE_AVISO.test(ctx.dictado) && HORA_EN_TEXTO.test(ctx.dictado)) {
+    return clarify("¿A qué hora te aviso? Dímela como las cinco de la tarde.", "¿A qué hora te aviso?", proyecto);
+  }
 
   let due: string | null = null;
   const fechaDicha = str(args.due).trim();
@@ -93,13 +107,9 @@ export function planearTarea(
   const extra = str(args.note).trim();
   const note = [hora ? `Hora: ${hora}` : "", extra].filter(Boolean).join(". ") || null;
 
-  // Todavía no hay avisos programados a una hora: el resumen de las 7:00 incluye lo que vence ese día. No se promete otra cosa.
-  // (Una tarea con `with` espera a otra persona: el resumen la cuenta en «esperas», no en las del día.)
-  let recordatorio = "";
-  if (due && !str(args.with).trim() && /recu[eé]rd|av[ií]sa/i.test(ctx.dictado)) {
-    if (due > ctx.hoy) recordatorio = ` Te lo recordará el resumen de las 7:00 de ese día${hora ? "; aún no te aviso a la hora exacta" : ""}.`;
-    else if (hora) recordatorio = " Aún no te aviso a la hora exacta.";
-  }
+  // «Recuérdame / avísame» programa un aviso push (módulo avisos, migración 017) a la hora dicha; con solo el día, a las 9:00.
+  const pidioAviso = PIDE_AVISO.test(ctx.dictado);
+  const recordar = pidioAviso && due ? { fecha: due, hora: hora ?? HORA_POR_DEFECTO, porDefecto: !hora } : null;
 
-  return { plan: { text, folder, donde, due, hora, note, aviso, avisoVoz, recordatorio, proyecto, horaHablada: hora ? horaHablada(hora) : "" } };
+  return { plan: { text, folder, donde, due, hora, note, aviso, avisoVoz, pidioAviso, recordar, proyecto, horaHablada: hora ? horaHablada(hora) : "" } };
 }

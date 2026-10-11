@@ -1,16 +1,22 @@
 import {
   buscarCuenta, fraseCuentaCreada, fraseCuentas, MONEDA_HABLADA, monto, numeroDictado, opcionesHabladas, TIPO_HABLADO, type TipoCuenta, validarCuentaNueva,
 } from "../../_shared/cuentas.ts";
+import { patrimonio, redondear, textoTc, type Tasa, ultimaTasa } from "../../_shared/fx.ts";
 import { comentario, conComentario } from "../prompt.ts";
 import { conDetalle } from "../respuesta.ts";
 import { type AgentContext, type AgentModule, type ToolResult, tool } from "../types.ts";
-import { fechaHablada, type FiltroRecurrentes, type Recurrente, resumenRecurrentes, vozRecurrentes } from "./recurrentes.ts";
+import { fechaHablada, type FiltroRecurrentes, type Recurrente, recurrentesEnSoles, resumenRecurrentes, vozRecurrentes } from "./recurrentes.ts";
 import { rangoSemana } from "./semana.ts";
 
 type Account = { account_id: string; account_name: string; current_balance: number; account_type: string; currency_code: string };
 type Category = { category_id: string; category_name: string; category_type: string };
 type Goal = { goal_id: string; goal_name: string; target_amount: number; current_amount: number; target_date: string | null };
-type Data = { accounts: Account[]; categories: Category[]; goals: Goal[]; recurring: Recurrente[]; paidIds: Set<string>; recurrentesOk: boolean };
+// `tc`: tipo de cambio USD→PEN guardado (null si todavía no hay ninguno). Los totales del contexto ya vienen en soles.
+type Data = { accounts: Account[]; categories: Category[]; goals: Goal[]; recurring: Recurrente[]; paidIds: Set<string>; recurrentesOk: boolean; tc: Tasa | null };
+
+const simbolo = (moneda: string | null | undefined) => (moneda === "USD" ? "US$" : "S/");
+/** Un total de la base impreso en el contexto: a céntimos, sin restos de coma flotante (el modelo dice las cifras tal cual vienen). */
+const c2 = (n: unknown) => redondear(Number(n));
 
 const MESES = ["", "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
 const FRECUENCIA: Record<string, string> = { daily: "diario", weekly: "semanal", biweekly: "quincenal", monthly: "mensual", quarterly: "trimestral", annual: "anual" };
@@ -22,7 +28,8 @@ const rules = `FINANZAS:
 - "no fueron 60" o "cámbialo a 60" = editar el último.
 - Cuentas: "crea / abre una cuenta (tarjeta, ahorros, efectivo…)" = create_account; "qué cuentas tengo", "mis saldos" = list_accounts (dinero de David, no el crédito de IA). Pregunta solo si falta el nombre: tipo, moneda y saldo inicial son opcionales, nunca los preguntes.
 - Si nombra una cuenta al registrar un movimiento ("pagué 30 con la de BCP") pásala en account; en transfer, las palabras de cada cuenta. currency_code solo si David dijo la moneda; vacío si no (con una cuenta nombrada se usa la suya).
-- Voz: una frase. En consultas (analyze_finances) di en answer solo la cifra pedida, redonda y sin céntimos; el desglose va en el campo detalle (pantalla).`;
+- Voz: una frase. En consultas (analyze_finances) di en answer solo la cifra pedida, redonda y sin céntimos; el desglose va en el campo detalle (pantalla).
+- Totales y saldos SIEMPRE en soles: el contexto ya convierte los dólares con el tipo de cambio. Si hay dólares en juego, di la cifra en soles y añade corto «incluye US$ 40»; nunca sumes dólares como soles. Una cuenta en dólares se dice en su moneda. Si el contexto avisa que falta el tipo de cambio, dilo en vez de sumar.`;
 
 async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: Data }> {
   const { supabase, user, limaNow } = ctx;
@@ -35,7 +42,7 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
   const nextMonthStart = month === 12 ? `${year + 1}-01-01` : `${year}-${String(month + 1).padStart(2, "0")}-01`;
   const semana = rangoSemana(limaNow);
 
-  const [accountsRes, categoriesRes, goalsRes, summaryRes, prevSummaryRes, spendRes, prevSpendRes, budgetsRes, recentRes, recurringRes, paidRes, weekRes, last7Res] = await Promise.all([
+  const [accountsRes, categoriesRes, goalsRes, summaryRes, prevSummaryRes, spendRes, prevSpendRes, budgetsRes, recentRes, recurringRes, paidRes, weekRes, last7Res, tc] = await Promise.all([
     // Orden explícito y estable (la más antigua primero): sin `account`, el movimiento va a accounts[0], y ese orden no puede depender de cómo
     // devuelva las filas la base.
     supabase.from("accounts").select("account_id, account_name, current_balance, account_type, currency_code").eq("user_id", user.id).eq("is_active", true)
@@ -50,15 +57,16 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
       p_end_date: new Date(prevYear, prevMonth, 0).toISOString().slice(0, 10),
     }),
     supabase.rpc("fn_get_budget_status"),
-    supabase.from("transactions").select("description, amount, transaction_type, transaction_date, category:categories(category_name)")
+    supabase.from("transactions").select("description, amount, currency_code, transaction_type, transaction_date, category:categories(category_name)")
       .eq("user_id", user.id).order("transaction_date", { ascending: false }).limit(10),
-    supabase.from("recurring_transactions").select("recurring_id, description, amount, frequency, next_due_date")
+    supabase.from("recurring_transactions").select("recurring_id, description, amount, currency_code, frequency, next_due_date")
       .eq("user_id", user.id).eq("is_active", true).order("next_due_date"),
     // Pagos de este mes en hora de Lima: un pago a las 20:00 del 30 es del 30, no del 1 (UTC).
     supabase.from("transactions").select("recurring_id").eq("user_id", user.id).eq("is_recurring", true)
       .gte("transaction_date", `${monthStart}T00:00:00-05:00`).lt("transaction_date", `${nextMonthStart}T00:00:00-05:00`),
     supabase.rpc("fn_get_spending_by_category", { p_start_date: semana.lunes, p_end_date: semana.hoy }),
     supabase.rpc("fn_get_spending_by_category", { p_start_date: semana.hace7, p_end_date: semana.hoy }),
+    ultimaTasa(supabase), // solo lectura: la tabla la mantiene la función `fx` (y el brief de las 7:00)
   ]);
 
   const accounts = (accountsRes.data ?? []) as Account[];
@@ -70,7 +78,8 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
   const prevCats = (prevSpendRes.data ?? []) as { category_name: string; total_amount: number }[];
   const budgets = (budgetsRes.data ?? []) as { category_name: string; amount_spent: number; amount_limit: number; percentage_used: number }[];
   const recent = recentRes.data ?? [];
-  const recurring = (recurringRes.data ?? []) as Recurrente[];
+  // Un pago fijo en dólares entra a la lista (y a sus totales) ya en soles; el original queda en `original` para mostrarlo.
+  const recurring = recurrentesEnSoles((recurringRes.data ?? []) as Recurrente[], tc);
   const paidIds = new Set((paidRes.data ?? []).map((t: { recurring_id: string | null }) => t.recurring_id).filter((id): id is string => Boolean(id)));
   // Con un error de lectura, "no tienes pagos fijos" sería falso e invitaría a duplicarlos.
   const recurrentesOk = !recurringRes.error && !paidRes.error;
@@ -79,9 +88,20 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
   const day = limaNow.getDate();
   const ctxLines: string[] = [];
 
+  // Dólares en juego: en una cuenta, en un pago fijo o en los movimientos de este mes o el anterior.
+  const hayDolares = accounts.some((a) => a.currency_code === "USD") || recurring.some((r) => r.currency_code === "USD" || r.original) ||
+    [cur, prev].some((m) => Number(m?.expenses_usd) > 0 || Number(m?.income_usd) > 0);
+  if (hayDolares) {
+    ctxLines.push(tc
+      ? `TIPO DE CAMBIO: US$ 1 = S/ ${textoTc(tc.valor)} (${tc.fuente}, ${fechaHablada(tc.fecha)}). Todos los montos de abajo en S/ ya incluyen los dólares convertidos (cada movimiento con el tipo de su día); lo que va en US$ está en dólares.`
+      : "AVISO: hay dólares pero todavía no hay tipo de cambio guardado: los totales en S/ NO incluyen los dólares. Dilo así; no los sumes como soles.");
+  }
   if (cur) {
-    ctxLines.push(`MES ACTUAL (${MESES[month]} ${year}, día ${day}/${daysInMonth}, quedan ${daysInMonth - day} días):`);
-    ctxLines.push(`- Ingresos: S/${cur.total_income}`, `- Gastos: S/${cur.total_expenses}`, `- Balance neto: S/${cur.net_balance}`);
+    ctxLines.push(`${ctxLines.length ? "\n" : ""}MES ACTUAL (${MESES[month]} ${year}, día ${day}/${daysInMonth}, quedan ${daysInMonth - day} días):`);
+    ctxLines.push(`- Ingresos: S/${c2(cur.total_income)}`, `- Gastos: S/${c2(cur.total_expenses)}`, `- Balance neto: S/${c2(cur.net_balance)}`);
+    if (Number(cur.expenses_usd) > 0 || Number(cur.income_usd) > 0) {
+      ctxLines.push(`- De eso en dólares: gastos US$ ${c2(cur.expenses_usd)}, ingresos US$ ${c2(cur.income_usd)}`);
+    }
     if (cur.total_expenses > 0) {
       const dailyAvg = cur.total_expenses / day;
       ctxLines.push(`- Promedio diario de gasto: S/${dailyAvg.toFixed(2)}`, `- Gasto proyectado fin de mes: S/${(dailyAvg * daysInMonth).toFixed(2)}`);
@@ -89,7 +109,7 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
   }
   if (prev) {
     ctxLines.push(`\nMES ANTERIOR (${MESES[prevMonth]}):`);
-    ctxLines.push(`- Ingresos: S/${prev.total_income}`, `- Gastos: S/${prev.total_expenses}`, `- Balance: S/${prev.net_balance}`);
+    ctxLines.push(`- Ingresos: S/${c2(prev.total_income)}`, `- Gastos: S/${c2(prev.total_expenses)}`, `- Balance: S/${c2(prev.net_balance)}`);
     if (cur && prev.total_expenses > 0) {
       const pct = ((cur.total_expenses - prev.total_expenses) / prev.total_expenses * 100).toFixed(1);
       ctxLines.push(`- Cambio en gastos vs anterior: ${Number(pct) > 0 ? "+" : ""}${pct}%`);
@@ -126,6 +146,16 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
     }
   }
   ctxLines.push(`\nCUENTAS: ${accounts.map((a) => `${a.account_name} (${TIPO_HABLADO[a.account_type as TipoCuenta] ?? a.account_type}): ${monto(Number(a.current_balance), a.currency_code)}`).join(", ") || "ninguna"}`);
+  if (accounts.length > 0) {
+    // En una tarjeta el saldo es lo que debe: resta. Con dólares, el total en soles los incluye convertidos.
+    const p = patrimonio(accounts, tc);
+    const aparte = p.hayUsd
+      ? p.usdEnSoles !== null
+        ? ` (incluye US$ ${p.usd.toFixed(2)} = ${monto(p.usdEnSoles, "PEN")} al tipo de cambio)`
+        : ` (SIN contar US$ ${p.usd.toFixed(2)}: falta el tipo de cambio)`
+      : "";
+    ctxLines.push(`PATRIMONIO NETO EN SOLES: ${monto(p.soles, "PEN")}${aparte}`);
+  }
   if (goals.length > 0) {
     ctxLines.push("\nMETAS DE AHORRO:");
     for (const g of goals) {
@@ -133,11 +163,12 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
     }
   }
   if (recurring.length > 0) {
-    const total = recurring.reduce((s, r) => s + Number(r.amount), 0);
+    // Un pago en dólares que no se pudo convertir (sin tipo de cambio) no es soles: no entra en el total.
+    const total = recurring.reduce((s, r) => s + (r.currency_code === "USD" ? 0 : Number(r.amount)), 0);
     const pagados = recurring.filter((r) => paidIds.has(r.recurring_id)).length;
     ctxLines.push("\nRECURRENTES (suscripciones y pagos fijos):", `Total fijo mensual: S/${total.toFixed(2)}. Pagados este mes: ${pagados}/${recurring.length}`);
     for (const r of recurring) {
-      ctxLines.push(`- ${r.description}: S/${r.amount} (${r.frequency}) ${paidIds.has(r.recurring_id) ? "✓ PAGADO" : "PENDIENTE"} próximo: ${r.next_due_date}`);
+      ctxLines.push(`- ${r.description}: ${simbolo(r.currency_code)}${r.amount}${r.original ? ` (${r.original})` : ""} (${r.frequency}) ${paidIds.has(r.recurring_id) ? "✓ PAGADO" : "PENDIENTE"} próximo: ${r.next_due_date}`);
     }
   }
   if (recent.length > 0) {
@@ -145,11 +176,11 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
     for (const t of recent) {
       const sign = t.transaction_type === "income" ? "+" : "-";
       const cat = (t.category as { category_name?: string } | null)?.category_name ?? "";
-      ctxLines.push(`- ${new Date(t.transaction_date).toLocaleDateString("es-PE", { timeZone: "America/Lima" })}: ${sign}S/${t.amount} ${t.description ?? cat}`);
+      ctxLines.push(`- ${new Date(t.transaction_date).toLocaleDateString("es-PE", { timeZone: "America/Lima" })}: ${sign}${simbolo(t.currency_code)}${t.amount} ${t.description ?? cat}`);
     }
   }
 
-  return { prompt: ctxLines.join("\n"), data: { accounts, categories, goals, recurring, paidIds, recurrentesOk } };
+  return { prompt: ctxLines.join("\n"), data: { accounts, categories, goals, recurring, paidIds, recurrentesOk, tc } };
 }
 
 const nextDueDate = (current: string, frequency: string): string => {
@@ -248,12 +279,16 @@ export const finanzas: AgentModule<Data> = {
       const type = str(args.transaction_type);
       const cat = categories.find((c) => c.category_name.toLowerCase() === str(args.category_name).toLowerCase() && c.category_type === type);
       // Con una cuenta nombrada va a esa. Sin ella, a la primera (la más antigua), como siempre: no se cambia la elección en silencio.
+      // Excepción: sin moneda dicha el gasto es en soles, y la base rechaza un gasto en soles en una cuenta en dólares (migración 016):
+      // si la más antigua está en dólares va a la primera en soles; si no hay ninguna, se pregunta.
       const nombrada = str(args.account).trim();
-      const elegida = nombrada ? cuentaNombrada(nombrada, accounts) : { cuenta: accounts[0] };
+      const dicha = str(args.currency_code).trim().toUpperCase();
+      const porDefecto = dicha ? accounts[0] : accounts.find((a) => a.currency_code === "PEN");
+      if (!nombrada && !porDefecto) return { action: "clarify", message: "Solo tienes cuentas en dólares. ¿El movimiento fue en dólares?" };
+      const elegida = nombrada ? cuentaNombrada(nombrada, accounts) : { cuenta: porDefecto! };
       if ("respuesta" in elegida) return elegida.respuesta;
       const account = elegida.cuenta;
       // La moneda es la que dijo; si nombró una cuenta y no dijo moneda, la de esa cuenta. Si dijo una y la cuenta es de otra, se pregunta.
-      const dicha = str(args.currency_code).trim().toUpperCase();
       const currency = dicha || (nombrada ? account.currency_code : "PEN");
       // Con o sin cuenta nombrada: si la moneda DICHA no es la de la cuenta que recibiría el movimiento, se pregunta.
       if (dicha && account.currency_code !== currency) {
@@ -291,9 +326,16 @@ export const finanzas: AgentModule<Data> = {
       const f = fraseCuentaCreada(v.cuenta);
       return { action: "create_account", message: conComentario(f.message, args), voz: conComentario(f.voz, args), data: row };
     },
-    async list_accounts(_args, _ctx, { accounts }) {
-      const f = fraseCuentas(accounts);
-      return { action: "list_accounts", message: f.message, voz: f.voz, data: { accounts: accounts.map((a) => ({ name: a.account_name, type: a.account_type, currency: a.currency_code, balance: Number(a.current_balance) })) } };
+    async list_accounts(_args, _ctx, { accounts, tc }) {
+      const f = fraseCuentas(accounts, tc);
+      const p = patrimonio(accounts, tc);
+      return {
+        action: "list_accounts", message: f.message, voz: f.voz,
+        data: {
+          accounts: accounts.map((a) => ({ name: a.account_name, type: a.account_type, currency: a.currency_code, balance: Number(a.current_balance) })),
+          total_soles: p.soles, usd: p.usd, tipo_cambio: tc ? { valor: tc.valor, fecha: tc.fecha } : null,
+        },
+      };
     },
     async create_budget(args, { supabase, user }, { categories }) {
       const cat = categories.find((c) => c.category_name.toLowerCase() === str(args.category_name).toLowerCase() && c.category_type === "expense");
@@ -316,20 +358,22 @@ export const finanzas: AgentModule<Data> = {
       return { action: "contribute_to_goal", message: `S/ ${Number(args.amount).toFixed(2)} agregados a "${goal.goal_name}", vas ${((nuevo / goal.target_amount) * 100).toFixed(0)}%.` };
     },
     async create_recurring(args, { supabase, user, limaNow }, { accounts, categories }) {
-      const account = accounts[0];
+      // El monto se dice en soles: va a la primera cuenta en soles (o a la primera, con la moneda de ESA cuenta: pagarlo luego exige que coincidan).
+      const account = accounts.find((a) => a.currency_code === "PEN") ?? accounts[0];
       if (!account) return err("No tienes cuentas creadas. Crea una en Finanzas → Cuentas.");
       const cat = categories.find((c) => c.category_name.toLowerCase() === str(args.category_name).toLowerCase());
       const hoy = limaNow.toISOString().slice(0, 10);
       const { error } = await supabase.from("recurring_transactions").insert({
-        user_id: user.id, account_id: account.account_id, category_id: cat?.category_id ?? null,
+        user_id: user.id, account_id: account.account_id, category_id: cat?.category_id ?? null, currency_code: account.currency_code,
         transaction_type: "expense", amount: args.amount, description: args.description,
         frequency: args.frequency, start_date: hoy, next_due_date: hoy, is_active: true, auto_register: false,
       });
       if (error) return err(error.message);
-      return { action: "create_recurring", message: `Recurrente "${args.description}" de S/ ${Number(args.amount).toFixed(2)} (${FRECUENCIA[str(args.frequency)] ?? args.frequency}) creado.` };
+      return { action: "create_recurring", message: `Recurrente "${args.description}" de ${simbolo(account.currency_code)} ${Number(args.amount).toFixed(2)} (${FRECUENCIA[str(args.frequency)] ?? args.frequency}) creado.` };
     },
     async edit_transaction(args, { supabase, user }) {
-      const { data: txs } = await supabase.from("transactions").select("transaction_id, description, amount")
+      // Editar el monto mueve el saldo de la cuenta por la diferencia (trigger de la migración 016): aquí no se toca current_balance.
+      const { data: txs } = await supabase.from("transactions").select("transaction_id, description, amount, currency_code")
         .eq("user_id", user.id).ilike("description", `%${str(args.search_description)}%`).order("transaction_date", { ascending: false }).limit(1);
       const tx = txs?.[0];
       if (!tx) return err(`No encontré "${args.search_description}".`);
@@ -338,16 +382,16 @@ export const finanzas: AgentModule<Data> = {
       if (args.new_description) upd.description = args.new_description;
       const { error } = await supabase.from("transactions").update(upd).eq("transaction_id", tx.transaction_id);
       if (error) return err(error.message);
-      return { action: "edit_transaction", message: `"${tx.description}" actualizado${args.new_amount ? `: S/ ${Number(args.new_amount).toFixed(2)}` : ""}${args.new_description ? `, ahora "${args.new_description}"` : ""}.` };
+      return { action: "edit_transaction", message: `"${tx.description}" actualizado${args.new_amount ? `: ${simbolo(tx.currency_code)} ${Number(args.new_amount).toFixed(2)}` : ""}${args.new_description ? `, ahora "${args.new_description}"` : ""}.` };
     },
     async delete_transaction(args, { supabase, user }) {
-      const { data: txs } = await supabase.from("transactions").select("transaction_id, description, amount")
+      const { data: txs } = await supabase.from("transactions").select("transaction_id, description, amount, currency_code")
         .eq("user_id", user.id).ilike("description", `%${str(args.search_description)}%`).order("transaction_date", { ascending: false }).limit(1);
       const tx = txs?.[0];
       if (!tx) return err(`No encontré "${args.search_description}".`);
-      const { error } = await supabase.from("transactions").delete().eq("transaction_id", tx.transaction_id);
+      const { error } = await supabase.from("transactions").delete().eq("transaction_id", tx.transaction_id); // el trigger devuelve el monto a la cuenta
       if (error) return err(error.message);
-      return { action: "delete_transaction", message: `"${tx.description}" de S/ ${Number(tx.amount).toFixed(2)} eliminado.` };
+      return { action: "delete_transaction", message: `"${tx.description}" de ${simbolo(tx.currency_code)} ${Number(tx.amount).toFixed(2)} eliminado.` };
     },
     async transfer(args, { supabase, user, text }, { accounts }) {
       const amount = montoValido(args.amount);
@@ -372,12 +416,13 @@ export const finanzas: AgentModule<Data> = {
     },
     async pay_recurring(args, { supabase, user, text }) {
       const { data: recs } = await supabase.from("recurring_transactions")
-        .select("recurring_id, description, amount, frequency, account_id, category_id, transaction_type, next_due_date")
+        .select("recurring_id, description, amount, currency_code, frequency, account_id, category_id, transaction_type, next_due_date")
         .eq("user_id", user.id).eq("is_active", true).ilike("description", `%${str(args.search_description)}%`).limit(1);
       const rec = recs?.[0];
       if (!rec) return err(`No encontré el recurrente "${args.search_description}".`);
+      // La moneda del pago es la del recurrente (antes iba siempre PEN: en una cuenta en dólares la base ya lo rechaza).
       const { error } = await supabase.from("transactions").insert({
-        user_id: user.id, transaction_type: rec.transaction_type, amount: rec.amount, currency_code: "PEN",
+        user_id: user.id, transaction_type: rec.transaction_type, amount: rec.amount, currency_code: rec.currency_code ?? "PEN",
         description: rec.description, account_id: rec.account_id, category_id: rec.category_id,
         transaction_date: new Date().toISOString(), input_method: "recurring",
         raw_voice_text: text, is_recurring: true, recurring_id: rec.recurring_id,
@@ -387,7 +432,7 @@ export const finanzas: AgentModule<Data> = {
       const proximo = nextDueDate(rec.next_due_date, rec.frequency);
       await supabase.from("recurring_transactions").update({ next_due_date: proximo }).eq("recurring_id", rec.recurring_id);
       // La fecha va en palabras ("el 5 de noviembre"): con "2026-11-05" la voz leía los números sueltos.
-      return { action: "pay_recurring", message: `${rec.description} pagado, S/ ${Number(rec.amount).toFixed(2)}. Próximo: ${fechaHablada(proximo)}.` };
+      return { action: "pay_recurring", message: `${rec.description} pagado, ${simbolo(rec.currency_code)} ${Number(rec.amount).toFixed(2)}. Próximo: ${fechaHablada(proximo)}.` };
     },
     list_recurring: async (args, { limaNow }, { recurring, paidIds, recurrentesOk }) => {
       if (!recurrentesOk) return err("No pude leer tus pagos fijos. Intenta de nuevo en un momento.");

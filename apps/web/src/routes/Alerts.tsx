@@ -101,7 +101,7 @@ export function AlertsPage() {
             alert_type: 'recurring_due' as AlertType,
             reference_id: r.recurring_id,
             title: `${r.description} próximo a vencer`,
-            message: `Pago de S/${r.amount.toFixed(2)} vence el ${r.next_due_date}.`,
+            message: `Pago de ${r.currency_code === 'USD' ? 'US$' : 'S/'}${r.amount.toFixed(2)} vence el ${r.next_due_date}.`,
             is_read: false,
             is_dismissed: false,
           });

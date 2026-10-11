@@ -9,6 +9,7 @@ import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 import { Spinner } from '@/components/ui/Spinner';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { NotaCambio } from '@/components/ui/NotaCambio';
 
 interface BudgetStatus {
   budget_id: string;
@@ -22,7 +23,7 @@ interface BudgetStatus {
 }
 
 export function BudgetsPage() {
-  const { categories, fetchCategories } = useAppStore();
+  const { categories, accounts, fetchCategories, fetchAccounts } = useAppStore();
   const [budgets, setBudgets] = useState<BudgetStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -42,7 +43,8 @@ export function BudgetsPage() {
   useEffect(() => {
     fetchBudgets();
     fetchCategories();
-  }, [fetchCategories]);
+    fetchAccounts(); // para saber si hay cuentas en dólares (el gasto en dólares cuenta en soles)
+  }, [fetchCategories, fetchAccounts]);
 
   const expenseCategories = categories.filter(c => c.category_type === 'expense');
   const usedCategoryNames = new Set(budgets.map(b => b.category_name));
@@ -108,6 +110,9 @@ export function BudgetsPage() {
               style={{ width: `${Math.min((totalSpent / totalLimit) * 100, 100)}%` }}
             />
           </div>
+          {accounts.some(a => a.currency_code === 'USD') && (
+            <NotaCambio texto="Los gastos en dólares cuentan en soles, con el tipo de cambio de su día." className="mt-3" />
+          )}
         </div>
       )}
 

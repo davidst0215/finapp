@@ -7,11 +7,13 @@ import { useAppStore } from '@/stores/appStore';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 import { useNotifications } from '@/hooks/useNotifications';
 import { useOfflineSync } from '@/hooks/useOfflineSync';
+import { useTipoCambio } from '@/stores/fxStore';
 
 export function AppShell() {
   const { error, clearError, fetchAccounts, fetchCategories, fetchTransactions } = useAppStore();
   useNotifications();
   useOfflineSync();
+  useTipoCambio(); // al abrir la app: el tipo de cambio vigente (lo refresca la función `fx` si venció) para los totales y para el agente
   useEffect(prefetchTasks, []); // Tareas es una pestaña principal: su primera visita no debe esperar a la red
 
   const handleRetry = () => {
