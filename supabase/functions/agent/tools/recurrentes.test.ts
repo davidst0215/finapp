@@ -64,13 +64,18 @@ test("fin de mes correcto en febrero", () => {
 test("voz: el total en cifras redondas, el primero y «y N más»; las fechas se ven en pantalla", () => {
   assert.equal(vozRecurrentes(lista, pagados, HOY, "pending"), "Te faltan S/ 78: Spotify S/ 26, vencido; y 1 más.");
   assert.equal(vozRecurrentes(lista, pagados, HOY, "all"), "Tienes 4 pagos fijos por S/ 1128 al mes. Te faltan S/ 78: Spotify S/ 26, vencido; y 1 más.");
+  // «unos» solo cuando se redondea: 452.25 → «unos S/ 452»; el pago concreto conserva sus céntimos.
+  const pagos = [r("1", "Netflix", 45.9, "2026-10-15"), r("2", "Spotify", 26, "2026-10-03"), r("3", "Luz del Sur", 118.45, "2026-10-20"), r("4", "Internet", 99.9, "2026-10-25")];
+  assert.equal(vozRecurrentes(pagos, new Set(), HOY, "pending"), "Te faltan unos S/ 290: Spotify S/ 26, vencido; y 3 más.");
+  assert.equal(vozRecurrentes([pagos[0]!], new Set(), HOY, "pending"), "Te falta Netflix S/ 45.90.");
+  assert.equal(vozRecurrentes(pagos, new Set(["2", "3"]), HOY, "paid"), "Este mes ya pagaste unos S/ 144 en 2 pagos.");
   assert.equal(vozRecurrentes(lista, pagados, HOY, "paid"), "Este mes ya pagaste S/ 100 en 1 pago.");
   assert.equal(vozRecurrentes([lista[3]!], pagados, HOY, "pending"), "No te falta pagar nada este mes.");
   assert.equal(vozRecurrentes(lista, new Set(), HOY, "paid"), "Todavía no registras pagos fijos este mes.");
   assert.match(vozRecurrentes([], new Set(), HOY, "pending"), /No tienes pagos fijos/);
   const uno = [r("1", "Netflix", 45.9, "2026-10-15")];
-  assert.equal(vozRecurrentes(uno, new Set(), HOY, "pending"), "Te falta S/ 46: Netflix S/ 46.");
-  assert.equal(vozRecurrentes(uno, new Set(["1"]), HOY, "all"), "Tienes 1 pago fijo por S/ 46 al mes. Este mes no te falta ninguno.");
+  assert.equal(vozRecurrentes(uno, new Set(), HOY, "pending"), "Te falta Netflix S/ 45.90.");
+  assert.equal(vozRecurrentes(uno, new Set(["1"]), HOY, "all"), "Tienes 1 pago fijo por S/ 45.90 al mes. Este mes no te falta ninguno.");
 });
 
 test("la voz es bastante más corta que la pantalla cuando hay muchos pagos", () => {

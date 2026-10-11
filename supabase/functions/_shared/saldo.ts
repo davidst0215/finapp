@@ -237,7 +237,9 @@ export function mensajeVozCorto(s: Saldo): string {
   const o = s.openrouter;
   if (o.estado !== "ok") return "No pude consultar tu saldo ahora.";
   if (o.proyeccion.tipo === "agotado") return "Se te acabó el saldo, conviene recargar.";
-  const monto = o.restante >= 1 ? `unos US$ ${Math.round(o.restante)}` : usd(o.restante);
+  // «unos» solo si de verdad se redondea: US$ 30 es exacto, US$ 9.73 es «unos US$ 10».
+  const entero = Math.round(o.restante);
+  const monto = o.restante >= 1 ? `${Math.abs(o.restante - entero) < 0.005 ? "" : "unos "}US$ ${entero}` : usd(o.restante);
   const bajo = o.bajo ? ", conviene recargar" : "";
   if (o.proyeccion.tipo === "desconocida") return `Te quedan ${monto}${bajo}.`;
   const dura = o.proyeccion.tipo === "mas_de_12_meses" ? "dura más de doce meses" : `alcanza para ${duracion(o.proyeccion.dias)}`;

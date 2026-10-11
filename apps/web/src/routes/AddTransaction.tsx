@@ -6,8 +6,8 @@ import { useAppStore } from '@/stores/appStore';
 import { useAuthStore } from '@/stores/authStore';
 import { supabase, functionUrl, calentarFunciones } from '@/lib/supabase';
 import { reproducirStream, type Reproduccion } from '@/lib/audioStream';
-import { recortarParaVoz } from '@/lib/vozTexto';
-import { separarRespuesta } from '@/lib/respuestaAgente';
+import { limpiarParaVoz, MAX_ENVIO } from '@/lib/vozTexto';
+import { respaldoDeVoz, separarRespuesta } from '@/lib/respuestaAgente';
 import { esFraseDeCierre, leerEscucharAlAbrir, MAX_SILENCIOS } from '@/lib/conversacion';
 import { cn } from '@/lib/utils';
 
@@ -90,6 +90,23 @@ export function AddTransactionPage() {
     window.speechSynthesis?.cancel();
   }, []);
 
+  // ── Voz del navegador: gratis, sin red. Respaldo cuando la de ElevenLabs no sonó ──
+  const vozDelNavegador = useCallback(async (text: string, vigente: () => boolean): Promise<void> => {
+    if (!vigente() || !('speechSynthesis' in window)) return;
+    setOrbState('speaking');
+    await new Promise<void>((ok) => {
+      // Algunos navegadores nunca disparan onend/onerror: el tope evita un orb "hablando" para siempre.
+      const tope = setTimeout(ok, text.length * 90 + 3000);
+      const listo = () => { clearTimeout(tope); ok(); };
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = 'es-PE';
+      u.onend = listo;
+      u.onerror = listo;
+      window.speechSynthesis.speak(u);
+    });
+  }, []);
+
   // ── Voz (ElevenLabs, suena mientras llega) ──
   const speak = useCallback(async (text: string, vigente: () => boolean): Promise<void> => {
     setOrbState('speaking');
@@ -109,7 +126,7 @@ export function AddTransactionPage() {
           'Authorization': `Bearer ${session.access_token}`,
           'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
         },
-        body: JSON.stringify({ text: recortarParaVoz(text).texto }), // el servidor también pone el tope (100); aquí no se manda de más
+        body: JSON.stringify({ text: limpiarParaVoz(text).slice(0, MAX_ENVIO) }), // el servidor hace el único recorte (100 caracteres)
       });
       if (!response.ok) throw new Error('TTS failed');
       if (!vigente()) return;
@@ -124,24 +141,17 @@ export function AddTransactionPage() {
     }
 
     // Si la voz de Wabid no llegó a sonar, la del navegador lee el mismo texto.
-    if (sono || !vigente() || !('speechSynthesis' in window)) return;
-    await new Promise<void>((ok) => {
-      // Algunos navegadores nunca disparan onend/onerror: el tope evita un orb "hablando" para siempre.
-      const tope = setTimeout(ok, text.length * 90 + 3000);
-      const listo = () => { clearTimeout(tope); ok(); };
-      window.speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = 'es-PE';
-      u.onend = listo;
-      u.onerror = listo;
-      window.speechSynthesis.speak(u);
-    });
-  }, []);
+    if (sono || !vigente()) return;
+    await vozDelNavegador(text, vigente);
+  }, [vozDelNavegador]);
 
   // La voz que vino con la respuesta del agente. El texto aparece cuando empieza a oírse, no antes: así no
-  // queda un silencio entre leer y escuchar. Si no trajo voz o no llegó a sonar, se pide a /tts (o al navegador).
+  // queda un silencio entre leer y escuchar.
   // `message` es lo que se ve y `dicho` lo que se dice (el campo `voz` de la respuesta, o el mismo `message` si no viene).
+  // Si el audio llegó pero no sonó, ElevenLabs ya cobró: va la voz del navegador, NO /tts (cobraría otra vez).
+  // /tts solo se pide si el audio nunca llegó.
   const hablar = useCallback(async (message: string, dicho: string, audio: ReadableStream<Uint8Array> | null, vigente: () => boolean) => {
+    let sono = false;
     if (audio) {
       const reproduccion = reproducirStream(new Response(audio), new Audio(), () => {
         if (!vigente()) return;
@@ -149,12 +159,14 @@ export function AddTransactionPage() {
         setOrbState('speaking');
       });
       reproduccionRef.current = reproduccion;
-      const sono = await reproduccion.fin;
-      if (sono || !vigente()) return;
+      sono = await reproduccion.fin;
     }
+    const respaldo = respaldoDeVoz({ llegoAudio: audio !== null, sono, vigente: vigente() });
+    if (respaldo === 'ninguno') return;
     setSubtitle(message);
-    await speak(dicho, vigente);
-  }, [speak]);
+    if (respaldo === 'navegador') await vozDelNavegador(dicho, vigente);
+    else await speak(dicho, vigente);
+  }, [speak, vozDelNavegador]);
 
   // ── Agente con memoria de la conversación: texto y voz llegan en una sola respuesta ──
   const callAgent = useCallback(async (text: string) => {
@@ -230,7 +242,8 @@ export function AddTransactionPage() {
       }
       // Apenas termina la voz se puede volver a hablar; el subtítulo queda un momento para leerlo.
       setOrbState('idle');
-      setTimeout(() => setSubtitle(s => (s === message ? '' : s)), 2500);
+      // Con detalle en pantalla (lo dicho es más corto que lo que se ve) se queda más tiempo para poder leerlo.
+      setTimeout(() => setSubtitle(s => (s === message ? '' : s)), dicho !== message ? 9000 : 2500);
 
     } catch (err) {
       clearTimeout(timeout);

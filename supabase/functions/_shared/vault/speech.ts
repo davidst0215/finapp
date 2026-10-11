@@ -67,10 +67,41 @@ export function resumenGeneral(c: { open: number; overdue: number; today: number
   return conCajon && c.inbox > 0 ? `${base} Y ${c.inbox} ${plural(c.inbox, "espera", "esperan")} en el cajón.` : base;
 }
 
-/** Pregunta de aclaración para decir: dos opciones como máximo, todo en una sola pregunta para que "¿cuál?" nunca se corte. */
+const PRESUPUESTO_CUAL = 96; // por debajo de VOZ_MAX: la pregunta entera cabe y nunca pierde el «?»
+
+/**
+ * Los dos títulos recortados a `largo`. Si por tener el mismo inicio quedan idénticos ("Preparar la presentación…" de
+ * dos proyectos), se muestran desde la palabra anterior a la primera que difiere.
+ */
+function titulosDistintos(a: string, b: string, largo: number): [string, string] {
+  const ca = corto(a, largo), cb = corto(b, largo);
+  if (ca !== cb) return [ca, cb];
+  const wa = a.split(/\s+/), wb = b.split(/\s+/);
+  let i = 0;
+  while (i < wa.length && i < wb.length && wa[i] === wb[i]) i++;
+  const desde = Math.max(0, i - 1);
+  return [corto(wa.slice(desde).join(" "), largo), corto(wb.slice(desde).join(" "), largo)];
+}
+
+/**
+ * Pregunta de aclaración para decir: dos opciones como máximo, en UNA sola pregunta que siempre cierra con «?».
+ * El largo de cada opción se presupuesta para que quepan las dos: en el mismo proyecto este se dice una sola vez
+ * ("¿Cuál en Acme Ventas: A o B?"); en proyectos distintos cada opción lleva el suyo, con nombres acotados; y si ni así
+ * cupiera, se distingue solo por proyecto ("¿La de TDV o la de Maquimas?").
+ */
 export function vozCual(tasks: ViewTask[]): string {
-  const opciones = tasks.slice(0, 2).map((t) => `${corto(t.text, 30)}, de ${hablado(t)}`).join("; o ");
-  return `¿Cuál${tasks.length > 2 ? ` de las ${tasks.length}` : ""}: ${opciones}?`;
+  const [a, b] = tasks;
+  if (!a || !b) return "¿Cuál de ellas?";
+  const de = tasks.length > 2 ? ` de las ${tasks.length}` : "";
+  const pa = corto(hablado(a), 18), pb = corto(hablado(b), 18);
+  const mismo = hablado(a) === hablado(b);
+  let pregunta = "";
+  for (let largo = 34; largo >= 10; largo -= 4) {
+    const [ta, tb] = titulosDistintos(a.text, b.text, largo);
+    pregunta = mismo ? `¿Cuál${de} en ${pa}: ${ta} o ${tb}?` : `¿Cuál${de}: ${ta}, de ${pa}; o ${tb}, de ${pb}?`;
+    if (pregunta.length <= PRESUPUESTO_CUAL) return pregunta;
+  }
+  return mismo ? pregunta : `¿La de ${pa} o la de ${pb}?`;
 }
 
 export function preguntaCual(tasks: ViewTask[]): string {

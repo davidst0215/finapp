@@ -50,7 +50,6 @@ const introAgenda = (a: Agenda, key: string) =>
   key === a.today ? `Te ${a.todos.length === 1 ? "queda" : "quedan"} ${plural(a.todos.length, "evento", "eventos")} hoy` : `${cap(a.dia)} tienes ${plural(a.todos.length, "evento", "eventos")}`;
 
 const itemAgenda = (e: CalEvent, max: number) => (e.all_day ? `todo el día, ${corto(e.title, max)}` : `a ${horaHablada(e.start_hm)}, ${corto(e.title, max)}`);
-const itemAgendaVoz = (e: CalEvent) => (e.all_day ? `todo el día, ${cortoVoz(e.title, 30)}` : `a ${horaHablada(e.start_hm)}, ${cortoVoz(e.title, 30)}`);
 
 // Qué tienes en `key` (lo que se ve: hasta 4 eventos). Para hoy solo cuenta lo que aún no terminó.
 export function resumenAgenda(events: CalEvent[], key: string, now: Date): string {
@@ -61,12 +60,40 @@ export function resumenAgenda(events: CalEvent[], key: string, now: Date): strin
   return `${introAgenda(a, key)}: ${lista.join("; ")}${resto > 0 ? `; y ${resto} más` : ""}.`;
 }
 
-// Lo que se dice: cuántos eventos hay, el primero y "y N más". El resto se ve en pantalla.
+const PRESUPUESTO_AGENDA = 96; // por debajo de VOZ_MAX: la frase entera cabe y conserva su «y N más»
+const MIN_TITULO = 24; // un título que hay que cortar debe conservar al menos esto; si no, se acorta antes la hora o la fecha
+
+/**
+ * Lo que se dice: cuántos eventos hay, el primero y «y N más». El resto se ve en pantalla.
+ * La frase se presupuesta: el «y N más» se reserva primero y el título recibe lo que sobra. Si con una fecha lejana
+ * ("el viernes 15 de enero de 2027") o una hora con minutos ("las ocho y cuarenta y cinco de la noche") el título quedaría
+ * quedaría cortado a menos de MIN_TITULO, se acorta primero la hora (a las 20:45), luego la fecha (el viernes 15) y por último se omite.
+ */
 export function vozAgenda(events: CalEvent[], key: string, now: Date): string {
   const a = agendaDe(events, key, now);
   if (a.todos.length === 0) return agendaVacia(a, key);
-  const resto = a.todos.length - 1;
-  return `${introAgenda(a, key)}: ${itemAgendaVoz(a.todos[0]!)}${resto > 0 ? `; y ${resto} más` : ""}.`;
+  const n = a.todos.length;
+  const primero = a.todos[0]!;
+  const cola = n > 1 ? `; y ${n - 1} más.` : ".";
+  const cuenta = plural(n, "evento", "eventos");
+
+  const diaCorto = a.dia.replace(/^(el \S+ \S+).*$/, "$1");
+  const intros = key === a.today
+    ? [`Te ${n === 1 ? "queda" : "quedan"} ${cuenta} hoy`]
+    : [...new Set([`${cap(a.dia)} tienes ${cuenta}`, `${cap(diaCorto)} tienes ${cuenta}`, `Tienes ${cuenta}`])];
+  const cuandos = primero.all_day
+    ? ["todo el día"]
+    : [`a ${horaHablada(primero.start_hm)}`, `a las ${primero.start_hm.replace(/^0/, "")}`];
+
+  for (const intro of intros) {
+    for (const cuando of cuandos) {
+      const base = `${intro}: ${cuando}, `;
+      const sitio = PRESUPUESTO_AGENDA - base.length - cola.length;
+      if (primero.title.length <= sitio || sitio >= MIN_TITULO) return `${base}${cortoVoz(primero.title, sitio)}${cola}`;
+    }
+  }
+  // Ni así cabe un título: se dice sin él, con la hora más corta y el «y N más» intactos.
+  return `${intros.at(-1)}: ${cuandos.at(-1)}${cola}`;
 }
 
 export const remitenteCorto = (m: Pick<MailItem, "from_name" | "from_email">) => {

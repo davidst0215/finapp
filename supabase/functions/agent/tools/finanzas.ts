@@ -1,4 +1,5 @@
 import { comentario, conComentario } from "../prompt.ts";
+import { conDetalle } from "../respuesta.ts";
 import { type AgentContext, type AgentModule, tool } from "../types.ts";
 import { fechaHablada, type FiltroRecurrentes, type Recurrente, resumenRecurrentes, vozRecurrentes } from "./recurrentes.ts";
 import { rangoSemana } from "./semana.ts";
@@ -16,7 +17,7 @@ const rules = `FINANZAS:
 - Gasto: gasté, pagué, compré, costó. Ingreso: sueldo, cobré, me pagaron, gané.
 - "pon 500 en comida" = presupuesto. "Netflix 45 mensual" = recurrente. "ahorrar 5000 para viaje" = meta.
 - "no fueron 60" o "cámbialo a 60" = editar el último.
-- Voz: una frase. En consultas (analyze_finances) di solo la cifra pedida, redonda y sin céntimos; el desglose va a la pantalla.`;
+- Voz: una frase. En consultas (analyze_finances) di en answer solo la cifra pedida, redonda y sin céntimos; el desglose va en el campo detalle (pantalla).`;
 
 async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: Data }> {
   const { supabase, user, limaNow } = ctx;
@@ -203,7 +204,8 @@ export const finanzas: AgentModule<Data> = {
     }, ["filter"]),
     tool("analyze_finances", "Analiza patrones financieros, proyecciones y comparaciones: ¿cómo voy?, ¿me alcanza?, ¿en qué gasto más?, ¿dónde puedo ahorrar?", {
       analysis_type: { type: "string", enum: ["projection", "comparison", "recommendations", "overview", "alert_check"] },
-      answer: { type: "string", description: "Respuesta FINAL que David escucha: UNA frase de 80 caracteres o menos con la cifra pedida (real, del contexto), redonda y sin céntimos: 'S/ 312'. Nunca un marcador ni 'déjame revisar': si no hay datos, dilo. Con mucho que contar, el dato principal y '¿Te detallo?'." },
+      answer: { type: "string", description: "Lo que David ESCUCHA: UNA frase de 80 caracteres o menos (60 si lleva montos: cada monto dicho cuenta ~35) con la cifra pedida, real, redonda y sin céntimos: 'S/ 312'. Nunca un marcador ni 'déjame revisar': si no hay datos, dilo." },
+      detalle: { type: "string", description: "Opcional. Lo que David VE en pantalla (no se dice): la respuesta completa con el desglose y las cifras exactas del contexto, en 2-4 frases cortas. Vacío si la frase ya lo dice todo." },
     }, ["analysis_type", "answer"]),
   ],
   handlers: {
@@ -319,6 +321,7 @@ export const finanzas: AgentModule<Data> = {
       // Pantalla: hasta 5 pagos con su fecha. Voz: el total, el primero y «y N más».
       return { action: "list_recurring", message: resumenRecurrentes(recurring, paidIds, hoy, filtro), voz: vozRecurrentes(recurring, paidIds, hoy, filtro) };
     },
-    analyze_finances: async (args) => ({ action: "analyze_finances", message: str(args.answer) }),
+    // Pantalla: el detalle (o, sin él, la misma frase). Voz: solo la frase de `answer`.
+    analyze_finances: async (args) => conDetalle("analyze_finances", args),
   },
 };

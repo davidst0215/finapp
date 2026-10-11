@@ -38,12 +38,19 @@ export function montosAVoz(texto: string): string {
 
 /** Texto listo para la voz: montos a palabras (determinista) y sin formato de texto. */
 export function paraVoz(text: string): string {
-  let t = montosAVoz(text);
+  // Un enlace markdown se dice por su texto: la URL no se lee ("[el doc](https://…)" → "el doc").
+  let t = montosAVoz(text.replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1"));
   t = t.replace(/\*\*|\*/g, "").replace(/#{1,3}\s/g, "").replace(/(^|\n)\s*[-•]\s/g, "$1");
   t = t.replace(/(\d+(?:\.\d+)?)%/g, "$1 por ciento");
-  t = t.replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, "");
+  t = t.replace(EMOJI, (c) => (SIMBOLOS_DE_TEXTO.has(c) ? c : ""));
   return t.replace(/\s{2,}/g, " ").trim();
 }
+
+// Emojis y sus piezas: pictogramas (⭐ ⏰ 🫠 …), tonos de piel, banderas, selector de variación (U+FE0F), unión (U+200D) y
+// teclas (U+20E3). ElevenLabs los leería como "estrella" o los saltaría, pero cobra el carácter.
+const EMOJI = /[\p{Extended_Pictographic}\p{Emoji_Modifier}\u{1F1E6}-\u{1F1FF}\u{FE0F}\u{200D}\u{20E3}]/gu;
+// Pictográficos "de texto" que sí se escriben en una frase normal.
+const SIMBOLOS_DE_TEXTO = new Set(["©", "®", "™"]);
 
 // --- Tope de voz -----------------------------------------------------------------------------------------------------
 // ElevenLabs cobra por carácter enviado. Todo lo que se manda pasa por `prepararVoz`: nunca más de VOZ_MAX caracteres
@@ -79,10 +86,16 @@ export function finesDeOracion(texto: string): number[] {
   return fines;
 }
 
+/** Una oración más corta que esto no es una respuesta ("Sí."): se sigue hasta la pausa en vez de quedarse con ella. */
+const MIN_ORACION = 12;
+// Tras una coma que abre un contraste ("…, pero no los gastos") no se corta: dejaría una afirmación falsa ("Te alcanza.").
+const CONTRASTE = /^(?:pero|aunque|sin embargo|salvo|excepto|no)(?![\p{L}\p{N}])/iu;
+
 /**
  * Recorta `texto` a `max` caracteres como lo diría una persona:
- * 1. hasta el último fin de oración que cabe (si deja al menos el 30 % del tope; una oración de 10 letras no es una respuesta);
- * 2. si la primera oración ya se pasa, hasta la última pausa natural (coma, punto y coma o dos puntos) y cierra con punto;
+ * 1. hasta el último fin de oración que cabe, si esa oración mide al menos MIN_ORACION (la segunda no hace falta que quepa);
+ * 2. si la primera oración ya se pasa, hasta la última pausa natural (coma, punto y coma o dos puntos) que no abra un
+ *    contraste (pero, aunque, sin embargo, salvo, excepto, no), y cierra con punto;
  * 3. sin pausa, hasta la última palabra completa, cerrando con punto.
  * Nunca pasa de `max` ni corta una palabra (salvo una "palabra" sola más larga que el tope, p. ej. una URL).
  */
@@ -91,20 +104,23 @@ export function acotarVoz(texto: string, max: number = VOZ_MAX): string {
   if (t.length <= max) return t;
 
   const fin = finesDeOracion(t).filter((f) => f <= max).at(-1) ?? 0;
-  if (fin >= max * 0.3) return t.slice(0, fin).trim();
+  if (fin >= MIN_ORACION) return t.slice(0, fin).trim();
 
   // Hay que dejar sitio al punto final. `ventana` son palabras completas (corta en el último espacio si hace falta).
   const ventana = t.slice(0, max - 1);
   const completa = /\s/.test(t[max - 1] ?? " ");
   const palabras = completa ? ventana : ventana.slice(0, Math.max(ventana.lastIndexOf(" "), 0)) || ventana;
 
-  const pausa = [...palabras.matchAll(/[,;:](?=\s)/g)].at(-1)?.index ?? -1;
+  // Se mira un carácter más allá de `palabras` (el espacio del corte) para ver también una coma que quedó justo al final.
+  const pausas = [...t.slice(0, palabras.length + 1).matchAll(/[,;:](?=\s)/g)]
+    .filter((m) => m.index < palabras.length && !CONTRASTE.test(t.slice(m.index + 1).trimStart()));
+  const pausa = pausas.at(-1)?.index ?? -1;
   const corte = pausa >= max * 0.35 ? palabras.slice(0, pausa) : palabras;
   return `${sinColgantes(corte)}.`;
 }
 
 // Palabras que no pueden cerrar una frase ("…lo que pasa con la."): si el corte las deja al final se quitan.
-const COLGANTES = new Set(["a", "al", "con", "de", "del", "e", "el", "en", "la", "las", "lo", "los", "o", "para", "por", "que", "se", "su", "sus", "u", "un", "una", "y", "tu", "tus", "mi", "mis", "sin", "como", "ni"]);
+const COLGANTES = new Set(["a", "al", "con", "de", "del", "e", "el", "en", "la", "las", "lo", "los", "o", "para", "por", "que", "se", "su", "sus", "u", "un", "una", "y", "tu", "tus", "mi", "mis", "sin", "como", "ni", "no", "sí", "más", "menos", "muy", "ya", "pero", "aunque", "salvo", "excepto", "embargo"]);
 
 function sinColgantes(texto: string): string {
   let t = texto.replace(/[\s,;:.!?…\-–—]+$/, "");
@@ -120,11 +136,15 @@ export function prepararVoz(texto: string, max: number = VOZ_MAX): string {
   return acotarVoz(paraVoz(texto), max);
 }
 
-/** Recorta un título o nombre para decirlo: en el límite de una palabra, sin puntos suspensivos (la voz los lee raro). */
+/**
+ * Recorta un título o nombre para decirlo: siempre en el último espacio, sin puntos suspensivos (la voz los lee raro) ni
+ * palabras colgantes. A mitad de palabra solo si no hay ningún espacio donde cortar.
+ */
 export function cortoVoz(s: string, max: number): string {
   const t = s.replace(/\s+/g, " ").trim();
   if (t.length <= max) return t;
   const cut = t.slice(0, max);
+  if (/\s/.test(t[max]!)) return sinColgantes(cut); // la palabra termina justo en el límite
   const sp = cut.lastIndexOf(" ");
-  return sinColgantes(sp > max * 0.5 ? cut.slice(0, sp) : cut);
+  return sinColgantes(sp > 0 ? cut.slice(0, sp) : cut);
 }

@@ -66,3 +66,15 @@ function unir(partes: Uint8Array[]): Uint8Array {
   }
   return total;
 }
+
+export type RespaldoDeVoz = 'ninguno' | 'navegador' | 'tts';
+
+/**
+ * Qué hacer cuando la voz del agente no se oyó. Si el audio ya llegó, ElevenLabs ya cobró esa frase: pedir /tts cobraría
+ * otra vez (y fallaría igual, p. ej. con el audio bloqueado por el navegador), así que se usa la voz del navegador, que
+ * es gratis. Solo si el audio nunca llegó (sin voz en el servidor, ElevenLabs falló antes del primer fragmento) se pide /tts.
+ */
+export function respaldoDeVoz(e: { llegoAudio: boolean; sono: boolean; vigente: boolean }): RespaldoDeVoz {
+  if (e.sono || !e.vigente) return 'ninguno';
+  return e.llegoAudio ? 'navegador' : 'tts';
+}

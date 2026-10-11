@@ -302,8 +302,8 @@ test("mensajeVozCorto: el saldo redondo y cuánto dura; el detalle queda en la p
   assert.equal(corto, "Te quedan unos US$ 10; alcanza para unos nueve meses.");
   assert.ok(corto.length < largo.length / 2, `${corto.length} vs ${largo.length}`);
   assert.equal(mensajeVozCorto(ok(0.45, { tipo: "dias", dias: 20 }, true)), "Te quedan US$ 0.45, conviene recargar; alcanza para unos veinte días.");
-  assert.equal(mensajeVozCorto(ok(30, { tipo: "mas_de_12_meses" })), "Te quedan unos US$ 30; dura más de doce meses.");
-  assert.equal(mensajeVozCorto(ok(5, { tipo: "desconocida" })), "Te quedan unos US$ 5.");
+  assert.equal(mensajeVozCorto(ok(30, { tipo: "mas_de_12_meses" })), "Te quedan US$ 30; dura más de doce meses."); // exacto: sin «unos»
+  assert.equal(mensajeVozCorto(ok(5.4, { tipo: "desconocida" })), "Te quedan unos US$ 5.");
   assert.equal(mensajeVozCorto(ok(0, { tipo: "agotado" })), "Se te acabó el saldo, conviene recargar.");
   assert.equal(mensajeVozCorto({ openrouter: { estado: "error", mensaje: "x" }, elevenlabs: { estado: "sin_configurar", mensaje: "y" }, actualizado: "" }), "No pude consultar tu saldo ahora.");
   // Lo que de verdad se envía (con la cifra en palabras) cabe en el tope.

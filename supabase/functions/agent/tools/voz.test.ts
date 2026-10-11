@@ -77,7 +77,7 @@ const CASOS: { nombre: string; msg: string; voz: string; esperado: string }[] = 
     nombre: "pagos pendientes (6)",
     msg: resumenRecurrentes(pagos, new Set(), "2026-10-05", "pending"),
     voz: vozRecurrentes(pagos, new Set(), "2026-10-05", "pending"),
-    esperado: "Te faltan S/ 452: Spotify S/ 26, vencido; y 5 más.",
+    esperado: "Te faltan unos S/ 452: Spotify S/ 26, vencido; y 5 más.",
   },
   {
     nombre: "saldo de IA",
@@ -124,7 +124,10 @@ describe("el prompt pide una sola frase corta y las reglas de cada módulo lo re
     assert.match(PERSONA, /Claro.*Listo,.*Perfecto.*Por supuesto/s);
     assert.match(PERSONA, /sin repetir la pregunta y sin despedidas/);
     assert.match(PERSONA, /Cifras redondas/);
-    assert.match(PERSONA, /¿Te detallo\?/);
+    assert.doesNotMatch(PERSONA, /¿Te detallo\?/); // el detalle va en `detalle` (pantalla): no se ofrece algo que la voz no puede dar
+    assert.match(PERSONA, /unos 35 caracteres/);
+    assert.match(PERSONA, /60 caracteres escritos o menos/);
+    assert.match(PERSONA, /campo detalle/);
     assert.doesNotMatch(PERSONA, /3-4 oraciones/);
     // Siguen: seguridad y formato de dinero.
     assert.match(PERSONA, /SEGURIDAD:/);

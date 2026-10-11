@@ -120,11 +120,53 @@ describe("lo que se dice de la agenda y el correo (la pantalla conserva el detal
     assert.equal(vozAgenda(otroDia.slice(0, 1), "2026-10-06", LUNES_8AM), "Mañana tienes 1 evento: a las nueve de la mañana, Daily de Maqui Colombia.");
   });
 
+  // Eventos de otro día (con año) sin pasar por `ev`, que fija el 5 de octubre de 2026.
+  const evEn = (dia: string, id: string, titulo: string, desde: string) => {
+    const [h, m] = desde.split(":").map(Number);
+    const hasta = `${String((h ?? 0) + 1).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+    return mapEvent({ id, summary: titulo, start: { dateTime: `${dia}T${desde}:00-05:00` }, end: { dateTime: `${dia}T${hasta}:00-05:00` } }) as CalEvent;
+  };
+
+  it("agenda: fecha lejana (con año) y hora con minutos no se comen el título ni el «y N más»", () => {
+    const dia = "2027-01-15";
+    const cinco = [
+      evEn(dia, "a", "Revisión trimestral de resultados con el comité de dirección", "08:45"),
+      ...["b", "c", "d", "e"].map((id, i) => evEn(dia, id, `Evento ${i}`, `${10 + i}:00`)),
+    ];
+    const v = vozAgenda(cinco, dia, LUNES_8AM);
+    assert.ok(v.length <= 96, `${v.length}: ${v}`);
+    assert.ok(v.endsWith("; y 4 más."), v);
+    assert.match(v, /Revisión trimestral/); // el título conserva lo esencial
+    assert.match(v, /^El viernes 15 de enero de 2027 tienes 5 eventos: a las 8:45, /); // la hora se acortó, no el título
+    assert.equal(diaHablado(dia, "2026-10-05"), "el viernes 15 de enero de 2027");
+  });
+
+  it("agenda: la hora con minutos de hoy se acorta para no cortar el título", () => {
+    const hoy = "2026-10-05";
+    const dos = [evEn(hoy, "a", "Comité de cobranzas con Marco y Daniel", "20:45"), evEn(hoy, "b", "Cena", "22:00")];
+    const v = vozAgenda(dos, hoy, LUNES_8AM);
+    assert.ok(v.length <= 96 && v.endsWith("; y 1 más."), v);
+    assert.equal(v, "Te quedan 2 eventos hoy: a las 20:45, Comité de cobranzas con Marco y Daniel; y 1 más.");
+  });
+
+  it("agenda: sin título que quepa, se dice sin él pero con el «y N más» y la hora", () => {
+    const dia = "2027-01-15";
+    const v = vozAgenda([evEn(dia, "a", "X".repeat(40), "20:45"), evEn(dia, "b", "Otro", "22:00")], dia, LUNES_8AM);
+    assert.ok(v.length <= 96 && v.endsWith("; y 1 más."), v);
+    assert.match(v, /a las 20:45/);
+  });
+
+  it("agenda: un evento de todo el día en fecha lejana", () => {
+    const dia = "2027-01-15";
+    const todoElDia = { ...evEn(dia, "a", "Feriado nacional del Perú", "00:00"), all_day: true, start_hm: "", end_hm: "" };
+    assert.equal(vozAgenda([todoElDia], dia, LUNES_8AM), "El viernes 15 de enero de 2027 tienes 1 evento: todo el día, Feriado nacional del Perú.");
+  });
+
   it("agenda: vacía, y título largo cortado en palabra", () => {
     assert.equal(vozAgenda([], "2026-10-06", LUNES_8AM), "No tienes nada en la agenda mañana.");
     const largo = { ...ev("9", "Revisión trimestral de resultados con el comité de dirección y los socios", "09:00", "10:00") };
     const v = vozAgenda([largo], "2026-10-05", LUNES_8AM);
-    assert.equal(v, "Te queda 1 evento hoy: a las nueve de la mañana, Revisión trimestral.");
+    assert.equal(v, "Te queda 1 evento hoy: a las nueve de la mañana, Revisión trimestral de resultados.");
     assert.ok(v.length <= 100);
   });
 

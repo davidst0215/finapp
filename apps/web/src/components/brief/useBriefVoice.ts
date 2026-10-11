@@ -3,7 +3,7 @@ import { functionUrl, supabase } from '@/lib/supabase';
 import { reproducirStream, type Reproduccion } from '@/lib/audioStream';
 import { recortarParaVoz } from '@/lib/vozTexto';
 
-/** Lo que se lee del brief: su titular (la primera oración, hasta MAX_VOZ caracteres). El texto completo se ve en pantalla. */
+/** Lo que se manda a leer del brief: el texto limpio. El servidor dice solo el titular (su primera oración, ≤ 100 caracteres). */
 export const recortarBrief = (text: string): string => recortarParaVoz(text).texto;
 
 export type VoiceState = 'idle' | 'loading' | 'playing' | 'error';

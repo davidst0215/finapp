@@ -18,7 +18,7 @@ import {
   secretoIgual,
   textoRespaldo,
   vozBrief,
-  MAX_HABLADO,
+  MAX_TEXTO,
   tituloBrief,
   ventanaMes,
 } from "./logic.ts";
@@ -151,7 +151,7 @@ test("una fuente caída se reporta en su sección y el resto sigue", () => {
   const txt = textoRespaldo(s);
   assert.match(txt, /Google no está conectado/);
   assert.match(vozBrief(s), /^No pude leer tu agenda ni tus tareas ni tus finanzas\.$/);
-  assert.ok(txt.length <= MAX_HABLADO);
+  assert.ok(txt.length <= MAX_TEXTO);
 });
 
 test("textoRespaldo: contenido y límite", () => {
@@ -166,7 +166,7 @@ test("textoRespaldo: contenido y límite", () => {
   assert.match(txt, /S\/ 486\.40 en octubre/);
   assert.match(txt, /Netflix S\/ 52\.00 mañana/);
   assert.doesNotMatch(txt, /Buenos días/);
-  assert.ok(txt.length <= MAX_HABLADO, `${txt.length}`);
+  assert.ok(txt.length <= MAX_TEXTO, `${txt.length}`);
   assert.ok(vozBrief(buildSections(AHORA, f)).length <= 90);
 });
 

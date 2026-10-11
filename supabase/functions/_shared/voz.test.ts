@@ -125,3 +125,77 @@ describe("cortoVoz", () => {
     assert.equal(cortoVoz("Cargo no reconocido en tu tarjeta de crédito", 32), "Cargo no reconocido");
   });
 });
+
+describe("acotarVoz: no corta en una coma que abre un contraste", () => {
+  const saldo = "Tu saldo alcanza para todos los pagos fijos de este mes, pero no para los gastos variables que vienen después de eso";
+  it("si cabe el contraste, lo conserva (cortando por palabra)", () => {
+    assert.equal(acotarVoz(saldo, 100), "Tu saldo alcanza para todos los pagos fijos de este mes, pero no para los gastos variables.");
+  });
+  it("prefiere una coma anterior antes que dejar una afirmación sin su «pero»", () => {
+    const t = "Tienes tres reuniones mañana, la primera a las nueve con Marco, pero la segunda se canceló por completo ayer mismo";
+    assert.equal(acotarVoz(t, 80), "Tienes tres reuniones mañana.");
+    // Con una coma normal en su lugar, la última pausa sí es buen corte.
+    assert.equal(acotarVoz(t.replace(", pero", ", y"), 80), "Tienes tres reuniones mañana, la primera a las nueve con Marco.");
+  });
+  for (const marca of ["pero", "aunque", "sin embargo", "salvo", "excepto", "no"]) {
+    it(`«, ${marca}» no es punto de corte`, () => {
+      const t = `El pago de la luz vence el viernes y el de internet el lunes, ${marca} puedes adelantarlos si prefieres evitar cualquier recargo por demora`;
+      const r = acotarVoz(t, 90);
+      assert.ok(r.length <= 90, r);
+      assert.ok(r.includes(`, ${marca} `), `cortó antes del «${marca}»: ${r}`);
+      esCorteLimpio(t, r);
+    });
+  }
+  it("una coma normal (sin contraste) sigue siendo un buen corte", () => {
+    const t = "Tienes tres reuniones mañana, la primera a las nueve con Marco, después viene el comité de cobranzas con todos";
+    assert.equal(acotarVoz(t, 70), "Tienes tres reuniones mañana, la primera a las nueve con Marco.");
+  });
+});
+
+describe("acotarVoz: una primera oración completa se acepta aunque la segunda no quepa (piso de 12 caracteres)", () => {
+  const resto = "Después de eso viene el comité largo con todos los socios y la gerencia general de la empresa hoy mismo";
+  it("22 caracteres alcanzan", () => assert.equal(acotarVoz(`Tienes tres reuniones. ${resto}`, 60), "Tienes tres reuniones."));
+  it("11 caracteres no: sigue hasta la pausa o la palabra", () => {
+    const r = acotarVoz(`Sí, claro. ${resto}`, 60);
+    assert.ok(r.startsWith("Sí, claro. Después de eso"), r);
+    assert.ok(r.length <= 60);
+  });
+});
+
+describe("palabras colgantes: no, sí, más, menos, muy, ya", () => {
+  for (const w of ["no", "sí", "más", "menos", "muy", "ya"]) {
+    it(`«${w}» no cierra un título`, () => {
+      const base = "Reunión con Ana";
+      assert.equal(cortoVoz(`${base} ${w} importante`, `${base} ${w}`.length), base);
+    });
+  }
+  it("también al cortar por palabra una frase larga", () => {
+    const r = acotarVoz("Gastaste mucho en comida este mes y todavía te quedan varios días por delante de gasto ya muy", 90);
+    assert.doesNotMatch(r, /\b(ya|muy|no|más)\.$/);
+  });
+});
+
+describe("cortoVoz: siempre en el último espacio", () => {
+  it("antes cortaba a mitad de palabra si el último espacio estaba en la primera mitad", () => {
+    assert.equal(cortoVoz("Ab cdefghijklmnop", 10), "Ab");
+    assert.equal(cortoVoz("Cerrar cotización trimestral de Maqui", 20), "Cerrar cotización");
+  });
+  it("si la palabra termina justo en el límite se conserva entera", () => {
+    assert.equal(cortoVoz("Reunión semanal Daniel Rojas", 22), "Reunión semanal Daniel");
+    assert.equal(cortoVoz("Reunión semanal con Daniel", 19), "Reunión semanal"); // «con» colgante
+  });
+  it("a mitad de palabra solo si no hay ningún espacio", () => {
+    assert.equal(cortoVoz("Planificación", 10), "Planificac");
+  });
+});
+
+describe("paraVoz: emojis y enlaces", () => {
+  it("quita emojis sueltos, con tono de piel, banderas, teclas y selector U+FE0F", () => {
+    assert.equal(paraVoz("⭐ Listo ⏰ ya 🫠 👍🏽 ❤\uFE0F 🇵🇪 1\uFE0F\u20E3 hecho"), "Listo ya 1 hecho");
+    assert.equal(paraVoz("Genial 👨\u200D👩\u200D👧 familia"), "Genial familia");
+  });
+  it("deja ©, ® y ™ que sí se escriben en una frase", () => assert.equal(paraVoz("Marca® y Co© listas"), "Marca® y Co© listas"));
+  it("un enlace markdown se dice por su texto", () => {
+    assert.equal(paraVoz("Mira [el informe](https://x.y/z?a=1) de S/ 45 y ![foto](a.png) fin"), "Mira el informe de cuarenta y cinco soles y foto fin");
+  });
+});

@@ -33,3 +33,13 @@ export function loQueSeDice(r: { message?: unknown; voz?: unknown }): string {
   const voz = typeof r.voz === "string" ? r.voz.trim() : "";
   return voz || (typeof r.message === "string" ? r.message : "");
 }
+
+/**
+ * Respuesta armada por el modelo (`query`, `analyze_finances`): `answer` es la frase que se dice y `detalle`, si viene, es
+ * lo que se ve en pantalla (el desglose completo). Sin `detalle`, la pantalla muestra la misma frase.
+ */
+export function conDetalle(action: string, args: Record<string, unknown>): { action: string; message: string; voz: string } {
+  const frase = typeof args.answer === "string" ? args.answer.trim() : "";
+  const detalle = typeof args.detalle === "string" ? args.detalle.trim() : "";
+  return { action, message: detalle || frase, voz: frase };
+}

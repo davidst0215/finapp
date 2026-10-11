@@ -44,7 +44,7 @@ export const MAX_ITEMS = 5; // por lista en pantalla
 export const MIN_DIAS_ESPERA = 3; // "más de 3 días"
 export const VENTANA_PAGOS_DIAS = 7;
 export const MAX_VENCIDO_DIAS = 30; // un pago vencido hace más que esto es ruido (o un recurrente abandonado)
-export const MAX_HABLADO = 250; // largo del texto del brief (pantalla y aviso). Lo que se dice son sus primeras ~100 letras: ver vozBrief
+export const MAX_TEXTO = 400; // largo del texto del brief en pantalla y en el aviso. Lo que se dice lo acota la voz (VOZ_MAX, ver vozBrief)
 const ABIERTA = new Set(["pending", "in-progress", "need-help"]);
 
 // ---------------------------------------------------------------- fechas (Lima)
@@ -191,7 +191,7 @@ const plural = (n: number, uno: string, varios: string) => `${n} ${n === 1 ? uno
 export const enDias = (d: number) => (d < 0 ? `vencido hace ${plural(-d, "día", "días")}` : d === 0 ? "hoy" : d === 1 ? "mañana" : `en ${d} días`);
 
 /** Corta en el último fin de oración que cabe; si la primera ya se pasa, en la última pausa; nunca a mitad de palabra. */
-export const acotar = (texto: string, max = MAX_HABLADO): string => acotarVoz(texto, max);
+export const acotar = (texto: string, max = MAX_TEXTO): string => acotarVoz(texto, max);
 
 /**
  * Titular del día, armado con los conteos de las secciones (sin modelo): es lo que se dice en voz alta, mientras que el
@@ -245,7 +245,7 @@ export function textoRespaldo(s: Secciones): string {
 export const SISTEMA_BRIEF = `Eres Wabid, el asistente personal de David (Lima, Perú). Redactas el resumen de las 7:00 a partir de unos DATOS en JSON.
 
 REGLAS:
-- Sin saludo. Primera oración: lo más importante del día en 90 caracteres o menos (se dice en voz alta). Después, como mucho 2 oraciones cortas de detalle (se ven en pantalla). Máximo 250 caracteres en total, en español neutro (tuteo). Sin listas, markdown, emojis ni comillas.
+- Sin saludo. Primera oración: lo más importante del día en 90 caracteres o menos (la voz dice solo lo que quepa en 100 caracteres). Cada monto o número que se dice cuenta unos 35 caracteres al hablarse (S/ 312 → «trescientos doce soles»): si la primera oración lleva montos, 60 caracteres escritos o menos. Después, como mucho 3 oraciones cortas de detalle (se ven en pantalla). Máximo 350 caracteres en total, en español neutro (tuteo). Sin listas, markdown, emojis ni comillas.
 - Seria y servicial; un toque breve de humor seco solo si cabe, y nada de sarcasmo si hay algo delicado.
 - Prioriza: la primera reunión con su hora, las tareas vencidas, los pagos próximos con su monto y, si hay, las esperas.
 - Montos exactamente como vienen, con formato S/ 45.90. No inventes números, nombres ni horas: usa solo los DATOS.

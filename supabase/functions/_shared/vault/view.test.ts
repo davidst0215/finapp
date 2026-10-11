@@ -174,7 +174,37 @@ test("speech.vozTareas: solo la primera y «y N más»; la pantalla sigue con ha
 test("speech.resumenGeneral sin cajón (voz) y vozCual: una sola pregunta", () => {
   assert.equal(resumenGeneral({ open: 1, overdue: 1, today: 0, inbox: 3 }, false), "Tienes 1 pendiente, 1 vencida y 0 para hoy.");
   const v = buildTasksView(ROWS, CFG, [], HOY, null);
-  assert.equal(vozCual(v.groups[0].tasks.slice(0, 2)), "¿Cuál: Cerrar propuesta, de Acme Ventas; o Sin fecha alta, de Acme Ventas?");
-  assert.match(vozCual(v.groups[0].tasks), /^¿Cuál de las 3: /);
-  assert.ok(vozCual(v.groups[0].tasks).endsWith("?"));
+  // Mismo proyecto: se dice una sola vez.
+  assert.equal(vozCual(v.groups[0].tasks.slice(0, 2)), "¿Cuál en Acme Ventas: Cerrar propuesta o Sin fecha alta?");
+  assert.match(vozCual(v.groups[0].tasks), /^¿Cuál de las 3 en Acme Ventas: /);
+  // Proyectos distintos: cada opción lleva el suyo.
+  const todas = v.groups.flatMap((g) => g.tasks);
+  const mix = [v.groups[0].tasks[0], todas.find((t) => t.text.startsWith("Esperar"))].filter((t): t is NonNullable<typeof t> => !!t);
+  assert.equal(vozCual(mix), "¿Cuál: Cerrar propuesta, de Acme Ventas; o Esperar: Luis envía la base, de Beta Datos?");
+});
+
+test("speech.vozCual: con títulos y proyectos largos cabe, no pierde el «?» y las opciones se distinguen", () => {
+  const larga = (folder: string, text: string) => toViewTask(row({ folder, text, due: "2026-10-01" }), CFG, HOY);
+  // Mismo inicio: los títulos recortados quedarían idénticos.
+  const a = larga("acme-ventas", "Preparar la presentación trimestral de resultados para el comité de dirección de Acme");
+  const b = larga("beta-datos", "Preparar la presentación trimestral de resultados para el directorio de Beta Datos");
+  const p = vozCual([a, b]);
+  assert.ok(p.length <= 100 && p.endsWith("?"), p);
+  const [x, y] = p.slice("¿Cuál: ".length, -1).split("; o ");
+  assert.notEqual(x, y);
+  assert.match(p, /comité/);
+  assert.match(p, /directorio/);
+  // Mismo proyecto y mismo inicio.
+  const c = larga("acme-ventas", "Preparar la presentación trimestral de resultados para el comité de dirección");
+  const d = larga("acme-ventas", "Preparar la presentación trimestral de resultados para el directorio de socios");
+  const q = vozCual([c, d, c]);
+  assert.ok(q.length <= 100 && q.endsWith("?") && q.startsWith("¿Cuál de las 3 en Acme Ventas: "), q);
+  assert.match(q, /comité[^?]* o [^?]*directorio/);
+  // Siempre dentro del tope, con cualquier mezcla de largos.
+  for (const n of [10, 40, 90, 150]) {
+    const t1 = larga("acme-soporte", "Tarea ".repeat(n / 6 + 1).trim());
+    const t2 = larga("beta-datos", "Otra ".repeat(n / 5 + 1).trim());
+    const r = vozCual([t1, t2]);
+    assert.ok(r.length <= 100 && r.endsWith("?"), `${n}: ${r}`);
+  }
 });
