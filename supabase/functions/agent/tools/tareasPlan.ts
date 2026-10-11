@@ -14,6 +14,9 @@ const str = (v: unknown) => (typeof v === "string" ? v : "");
 /** «recuérdame», «recuérdalo», «avísame»…: se lo pide a Wabid. «Avisar a Ana» dentro del texto de una tarea NO es un pedido de aviso. */
 export const PIDE_AVISO = /\b(?:recu[eé]rd(?:ame|amelo|amela|alo|ala)|av[ií]same(?:lo|la)?)\b/i;
 
+/** «a las 5», «a las 5 y media», «a las 10:30», «a las cinco», «a la una»: David dijo una hora (aunque el modelo no la haya pasado en `time`). */
+export const HORA_EN_TEXTO = /\ba\s+las\s+(?:\d{1,2}(?::\d{2})?|(?:dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)\b)|\ba\s+la\s+(?:una|1)\b/i;
+
 export type PlanTarea = {
   text: string;
   folder: string;
@@ -83,6 +86,11 @@ export function planearTarea(
   if (horaDicha) {
     hora = parseTime(horaDicha);
     if (!hora) return clarify("No entendí la hora. Dímela como las cinco de la tarde.", undefined, proyecto);
+  }
+  // «…y recuérdame a las 5» sin que el modelo pase la hora: NO se cae en las 9:00 por defecto (la hora equivocada, sin que David lo note):
+  // se vuelve a preguntar antes de escribir nada. Al responder, el modelo repite create_task con time.
+  if (!hora && PIDE_AVISO.test(ctx.dictado) && HORA_EN_TEXTO.test(ctx.dictado)) {
+    return clarify("¿A qué hora te aviso? Dímela como las cinco de la tarde.", "¿A qué hora te aviso?", proyecto);
   }
 
   let due: string | null = null;

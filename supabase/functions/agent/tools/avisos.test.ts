@@ -11,7 +11,7 @@ import { fakeAvisos } from "./avisosTestlib.ts";
 import { prepararVoz, VOZ_MAX } from "../../_shared/voz.ts";
 import { loQueSeDice } from "../respuesta.ts";
 
-const { avisos, cancelarAvisosDeTarea, crearAvisoDeTarea } = await import("./avisos.ts");
+const { avisos, cancelarAvisosDeTarea, crearAvisoDeTarea, moverAvisosDeTarea } = await import("./avisos.ts");
 const { planDeTarea } = await import("./avisosPlan.ts");
 
 const OTRO = "bbbbbbbb-0000-4000-8000-000000000002";
@@ -194,4 +194,31 @@ test("las tools y reglas del módulo: nombres únicos en el registro y reglas qu
   const crear = avisos.definitions[0]!.function.parameters as { required: string[]; properties: Record<string, unknown> };
   assert.deepEqual(crear.required, ["text"]);
   for (const k of ["text", "due", "time", "en_minutos"]) assert.ok(k in crear.properties, k);
+});
+
+test("mover una tarea (web): sus recordatorios la siguen por RPC con el texto recortado a 200; un error se traga y no rompe el movimiento", async () => {
+  const llamadas: { name: string; args: unknown }[] = [];
+  const db = { rpc: async (name: string, args: unknown) => { llamadas.push({ name, args }); return { data: 2, error: null }; } };
+  const n = await moverAvisosDeTarea(db as never, { path: "a.md", line: 3, texto: "x".repeat(300) }, { path: "b.md", line: 7 });
+  assert.equal(n, 2);
+  assert.deepEqual(llamadas, [{ name: "avisos_mover_tarea", args: { p_path: "a.md", p_line: 3, p_texto: "x".repeat(200), p_nuevo_path: "b.md", p_nueva_line: 7 } }]);
+  const log = capturarLog();
+  try {
+    const roto = { rpc: async () => ({ data: null, error: { message: "boom" } }) };
+    assert.equal(await moverAvisosDeTarea(roto as never, { path: "a.md", line: 3, texto: "t" }, { path: "b.md", line: 7 }), 0);
+    const lanza = { rpc: async () => { throw new Error("red"); } };
+    assert.equal(await moverAvisosDeTarea(lanza as never, { path: "a.md", line: 3, texto: "t" }, { path: "b.md", line: 7 }), 0);
+  } finally {
+    log.restaurar();
+  }
+});
+
+test("la web: task.status a «completed» cancela el recordatorio y task.move lo reubica (la función vault llama a cada helper en su acción)", () => {
+  // vault/index.ts usa Deno.serve y no se puede cargar en Node: se escanea la fuente, que es lo que evita que alguien quite la llamada.
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "vault", "index.ts"), "utf8");
+  const status = src.slice(src.indexOf('case "task.status"'), src.indexOf('case "task.move"'));
+  const move = src.slice(src.indexOf('case "task.move"'), src.indexOf('case "search"'));
+  assert.match(status, /body\.status === "completed"[\s\S]*cancelarAvisosDeTarea\(db, userId, \{ path: body\.path, line: body\.line as number, texto: r\.task\.text \}\)/);
+  assert.match(move, /moverAvisosDeTarea\(db, \{ path: body\.path, line: body\.line as number, texto: r\.task\.text \}, \{ path: r\.task\.path, line: r\.task\.line \}\)/);
+  assert.ok(src.includes('from "../_shared/avisosTarea.ts"'));
 });

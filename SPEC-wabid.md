@@ -62,7 +62,7 @@ Cada módulo se entrega a producción por separado (rama → PR → merge → de
 | claude-code | `008_claude_code.sql`, `012_claude_code_v2.sql` (ver `SPEC-claude-code-v2.md`) | `functions/claude-events/`, `tools/claude-hooks/*` (script local), `routes/modulos/ClaudeCodePage.tsx`, `components/claude/*` |
 | reuniones (2ª ola) | `009_reuniones.sql` | `functions/fathom/`, `agent/tools/reuniones.ts`, `routes/modulos/ReunionesPage.tsx`, `components/reuniones/*` |
 | brief (2ª ola) | `010_brief.sql` | `functions/brief/`, `routes/modulos/BriefPage.tsx`, `components/brief/*` |
-| avisos programados (recordatorios, vencimientos, presupuestos) | `017_avisos_programados.sql` (+ `check-017.mjs`) | `functions/avisos/`, `agent/tools/avisos*.ts`, `components/avisos/{Recordatorios,AvisosAutomaticos,SwitchRow,useProgramados}.*`; toca `_shared/notify.ts` (exporta dos funciones), `agent/tools/tareas*.ts` («recuérdame» crea el aviso) |
+| avisos programados (recordatorios, vencimientos, presupuestos) | `017_avisos_programados.sql` (+ `check-017.mjs`; DEPENDE de 016: `fn_a_soles`) | `functions/avisos/`, `_shared/avisosTarea.ts`, `agent/tools/avisos*.ts`, `components/avisos/{Recordatorios,AvisosAutomaticos,SwitchRow,useProgramados}.*`; toca `_shared/notify.ts` y `webpush-core.ts` (exporta dos funciones y `PUSH_FALLIDO`), `agent/tools/tareas*.ts` («recuérdame» crea el aviso), `functions/vault/index.ts` (completar o mover una tarea cancela o reubica su recordatorio) |
 
 Archivos compartidos que se pueden tocar con una sola línea: `agent/registry.ts` (import + entrada).
 
@@ -81,6 +81,18 @@ Archivos compartidos que se pueden tocar con una sola línea: `agent/registry.ts
 - Tipos y build: `cd apps/web && npx tsc -b && npx vite build`
 - Funciones: `npx supabase functions deploy <fn> --project-ref rrhyyclltgaecfyertqh`
 - Producción: `cd apps/web && vercel deploy --prod`
+
+### Avisos programados: despliegue y prueba de humo (migración 017)
+
+Orden: 016 antes que 017 (017 suma los presupuestos con `fn_a_soles`). Secreto en DOS sitios con el MISMO valor: Vault `avisos_cron_secret` y `AVISOS_CRON_SECRET` de la función.
+
+- **Desplegar `avisos` SIEMPRE con `--no-verify-jwt`:** `npx supabase functions deploy avisos --no-verify-jwt --project-ref rrhyyclltgaecfyertqh`. La llama pg_cron, que no tiene JWT. Sin la bandera el gateway responde 401 antes de llegar a la función: no se envía ningún aviso y la función no deja ni una línea en sus logs. No hay `config.toml` en el repo: la bandera es lo único que lo garantiza.
+- **Prueba de humo, después de desplegar y aplicar 017:**
+  1. Sin secreto: `curl -s -X POST https://rrhyyclltgaecfyertqh.supabase.co/functions/v1/avisos` debe responder `{"error":"No autorizado"}` (401) y dejar `avisos: 401` en los logs de la función. Si responde otra forma de 401 (`UNAUTHORIZED_NO_AUTH_HEADER`, `Invalid JWT`), falta `--no-verify-jwt`.
+  2. Jobs: `select jobname, schedule, active from cron.job where jobname like 'wabid-avisos%';` → `wabid-avisos` (`* * * * *`) y `wabid-avisos-mantener` (`5 * * * *`), activos.
+  3. Un envío de verdad: con la app instalada y los avisos activados en el celular, pedirle a Wabid «recuérdame probar el aviso en 2 minutos». A los ~2 min debe llegar el push; luego `select estado, detalle, intentos from avisos_programados order by created_at desc limit 3;` → `enviado`, `push`, 1.
+  4. Que el cron lo disparó y no fue a mano: `select status, return_message, end_time from cron.job_run_details where jobid = (select jobid from cron.job where jobname = 'wabid-avisos') order by end_time desc limit 5;` y `select status_code, created from net._http_response order by created desc limit 5;` → 200. Un 401 ahí es secreto desparejado (Vault ≠ función).
+- Los jobs no se tocan a mano: se reemplazan solos al volver a aplicar 017. El historial `cron.job_run_details` se purga a los 7 días dentro de `avisos_mantener` (si el rol no pudiera, deja un WARNING en los logs de Postgres y el resto sigue).
 
 ## Límites
 

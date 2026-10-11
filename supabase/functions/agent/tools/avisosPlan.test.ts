@@ -104,6 +104,12 @@ test("«en N minutos»: relativo a ahora, sin día ni hora; con día u hora se i
     assert.equal(r.action, "clarify", String(malo));
   }
   assert.equal(iso(plan({ text: "X", en_minutos: 20, time: "18:00" })), "2026-10-11T23:00:00.000Z", "si dio hora, manda la hora");
+  // El modelo a veces añade un día (due: "hoy" / "mañana") a «en 20 minutos»: sin time, en_minutos gana y el día se ignora.
+  const conDia = plan({ text: "Sacar la pizza", en_minutos: 20, due: "hoy" });
+  assert.deepEqual([iso(conDia), conDia.hablado], ["2026-10-11T17:20:00.000Z", "en 20 minutos"]);
+  assert.equal(iso(plan({ text: "X", en_minutos: 20, due: "mañana" })), "2026-10-11T17:20:00.000Z", "aunque el día sea otro");
+  // Sin en_minutos, un día solo sigue siendo las 9:00 (y hoy con las 9:00 ya pasadas, se pregunta).
+  assert.equal(pregunta({ text: "X", due: "hoy" }).action, "clarify");
 });
 
 test("lo que no se entiende o ya pasó se pregunta, no se adivina", () => {

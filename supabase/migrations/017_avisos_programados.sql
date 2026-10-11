@@ -1,13 +1,15 @@
 -- ============================================================
 -- MIGRATION 017: avisos programados (recordatorios, vencimientos y presupuestos)
--- Requiere 001 (cuentas, movimientos, recurrentes, presupuestos), 002, 004 (notifications) y 006 (push_subscriptions). Idempotente.
+-- Requiere 001 (cuentas, movimientos, recurrentes, presupuestos), 002, 004 (notifications), 006 (push_subscriptions) y 016 (fn_a_soles:
+-- los gastos de un presupuesto se suman EN SOLES, igual que fn_get_budget_status). 017 DEPENDE DE 016: aplicar 016 primero. Idempotente.
 --
 -- Qué hace
 --   * avisos_programados: cola de avisos con hora. Un cron cada minuto llama a la función `avisos`, que RECLAMA los vencidos
 --     con un UPDATE atómico (avisos_reclamar) y los envía por el mismo camino que todo aviso de Wabid (notify: bandeja + push).
 --   * Recordatorios de David ("recuérdame llamar a Marco a las 5"): los inserta el agente con su JWT (RLS). Pueden apuntar a
 --     una tarea de Norte (tarea_path / tarea_line).
---   * Vencimientos: pagos recurrentes y tarjetas avisan 1 día antes, a las 9:00 de Lima (avisos_encolar_vencimientos, cada hora).
+--   * Vencimientos: pagos recurrentes (no los diarios ni semanales: «mañana vence» sería ruido) y tarjetas avisan 1 día antes, a las
+--     9:00 de Lima (avisos_encolar_vencimientos, cada hora). El «Debes S/ X» de una tarjeta se arma al RECLAMAR, con la deuda de ese momento.
 --   * Presupuestos: un trigger en `transactions` encola el aviso al pasar el umbral (80 % por defecto) y el 100 % del presupuesto
 --     mensual de la categoría, UNA vez por umbral y mes (dedupe_key única).
 --   * avisos_preferencias: interruptores de "avisos de vencimientos" y "avisos de presupuesto". Se miran al ENVIAR, no al encolar:
@@ -27,7 +29,9 @@
 --   2. Desplegar la función con verify_jwt=false (la llama pg_cron, que no tiene JWT de usuario):
 --        npx supabase functions deploy avisos --no-verify-jwt --project-ref rrhyyclltgaecfyertqh
 --   3. Aplicar esta migración. Si el secreto de Vault falta, el job igual corre pero la función responde 401 y no pasa nada más.
--- Después de aplicar: desplegar `agent` (tools nuevas) y la web.
+--   OJO: sin --no-verify-jwt el gateway de Supabase rechaza con 401 a pg_cron ANTES de llegar a la función y no se envía nada (la función
+--   ni siquiera lo registra). Cada despliegue de `avisos` debe llevar la bandera.
+-- Después de aplicar: desplegar `agent` (tools nuevas) y la web, y correr la prueba de humo de SPEC-wabid.md (sección «Avisos programados»).
 -- ============================================================
 
 -- ------------------------------------------------------------
@@ -228,6 +232,19 @@ BEGIN
     RETURN n;
 END $$;
 
+-- Cuerpo del aviso de una tarjeta, con la deuda de ESTE momento. Con 016 el saldo de una tarjeta se mueve solo con cada compra y pago,
+-- así que el del encolado (hasta un día antes) ya no sirve. Sin la cuenta devuelve el texto que ya tenía.
+CREATE OR REPLACE FUNCTION avisos_cuerpo_tarjeta(p_account UUID, p_fecha DATE, p_actual TEXT) RETURNS TEXT
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+    SELECT COALESCE((
+        SELECT CASE WHEN a.current_balance > 0 THEN 'Debes ' || avisos_monto(a.current_balance, a.currency_code) || ' · ' || avisos_fecha_texto(p_fecha)
+                    ELSE 'Vence el ' || avisos_fecha_texto(p_fecha) END
+          FROM accounts a WHERE a.account_id = p_account
+    ), p_actual);
+$$;
+
 -- ¿Hay algo que enviar ahora? El cron lo consulta cada minuto y solo llama a la función `avisos` si es true: sin trabajo no hay
 -- invocación (1440 al día → las que de verdad hacen falta).
 CREATE OR REPLACE FUNCTION avisos_hay_trabajo(p_ahora TIMESTAMPTZ DEFAULT now()) RETURNS BOOLEAN
@@ -267,7 +284,8 @@ BEGIN
          FOR UPDATE SKIP LOCKED
     ), reclamados AS (
         UPDATE avisos_programados a
-           SET estado = 'enviando', reclamado_at = p_ahora, intentos = a.intentos + 1
+           SET estado = 'enviando', reclamado_at = p_ahora, intentos = a.intentos + 1,
+               cuerpo = CASE WHEN a.origen = 'tarjeta' THEN avisos_cuerpo_tarjeta(a.entidad_id, a.fecha_ref, a.cuerpo) ELSE a.cuerpo END
           FROM elegidos e
          WHERE a.aviso_id = e.aviso_id AND a.estado = 'pendiente'
         RETURNING a.*
@@ -320,6 +338,7 @@ BEGIN
          WHERE r.is_active AND r.transaction_type = 'expense'
            AND r.next_due_date BETWEEN v_hoy + 1 AND v_hoy + 2
            AND (r.end_date IS NULL OR r.end_date >= r.next_due_date)
+           AND r.frequency NOT IN ('daily', 'weekly') -- «mañana vence» de algo diario o semanal sería un aviso casi continuo
     ), ins AS (
         INSERT INTO avisos_programados (user_id, origen, titulo, cuerpo, url, cuando, entidad_id, fecha_ref, dedupe_key)
         SELECT c.user_id, 'vencimiento', left('Mañana vence ' || c.description, 120),
@@ -338,15 +357,14 @@ BEGIN
     WITH meses AS (
         SELECT (date_trunc('month', v_hoy::TIMESTAMP) + (g || ' month')::INTERVAL)::DATE AS mes FROM generate_series(0, 1) g
     ), cand AS (
-        SELECT a.user_id, a.account_id, a.account_name, a.current_balance, a.currency_code,
+        SELECT a.user_id, a.account_id, a.account_name,
                m.mes + (LEAST(a.payment_due_day, EXTRACT(day FROM (m.mes + INTERVAL '1 month' - INTERVAL '1 day'))::INT) - 1) AS fecha_pago
           FROM accounts a CROSS JOIN meses m
          WHERE a.is_active AND a.account_type = 'credit_card' AND a.payment_due_day IS NOT NULL
     ), ins AS (
         INSERT INTO avisos_programados (user_id, origen, titulo, cuerpo, url, cuando, entidad_id, fecha_ref, dedupe_key)
         SELECT c.user_id, 'tarjeta', left('Mañana vence el pago de ' || c.account_name, 120),
-               CASE WHEN c.current_balance > 0 THEN 'Debes ' || avisos_monto(c.current_balance, c.currency_code) || ' · ' || avisos_fecha_texto(c.fecha_pago)
-                    ELSE 'Vence el ' || avisos_fecha_texto(c.fecha_pago) END,
+               'Vence el ' || avisos_fecha_texto(c.fecha_pago), -- el «Debes S/ X» se arma al reclamar (avisos_cuerpo_tarjeta)
                '/accounts', ((c.fecha_pago - 1)::TIMESTAMP + TIME '09:00') AT TIME ZONE 'America/Lima', c.account_id, c.fecha_pago,
                'tarjeta:' || c.account_id || ':' || c.fecha_pago
           FROM cand c
@@ -384,8 +402,20 @@ DECLARE
     limpiados INTEGER := avisos_limpiar(p_ahora);
     encolados INTEGER := avisos_encolar_vencimientos(p_ahora);
     purgados  INTEGER := avisos_purgar(p_ahora);
+    historial INTEGER := 0;
 BEGIN
-    RETURN jsonb_build_object('limpiados', limpiados, 'encolados', encolados, 'purgados', purgados);
+    -- Cada ejecución de un job deja una fila en cron.job_run_details; con un job por minuto son 1440 al día y pg_cron no la purga sola
+    -- (Supabase lo documenta: «Clean up job run history», con este mismo DELETE corrido por el rol postgres, que es el dueño de esta función).
+    -- Si ese rol no pudiera (insufficient_privilege) o la tabla no existiera, se deja un WARNING y el resto del mantenimiento sigue.
+    BEGIN
+        IF to_regclass('cron.job_run_details') IS NOT NULL THEN
+            DELETE FROM cron.job_run_details WHERE end_time < p_ahora - INTERVAL '7 days';
+            GET DIAGNOSTICS historial = ROW_COUNT;
+        END IF;
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'avisos_mantener: no pude purgar cron.job_run_details: % (%)', SQLERRM, SQLSTATE;
+    END;
+    RETURN jsonb_build_object('limpiados', limpiados, 'encolados', encolados, 'purgados', purgados, 'historial_cron', historial);
 END $$;
 
 -- ------------------------------------------------------------
@@ -393,7 +423,8 @@ END $$;
 --   * Una sola vez por presupuesto, umbral y mes de Lima (llave presupuesto:<id>:<AAAA-MM>:<80|100>).
 --   * Si un solo gasto cruza los dos umbrales a la vez, sale solo el del 100 % y el otro queda 'omitido' (no son dos avisos seguidos).
 --   * Solo cuenta el mes en curso: un gasto atrasado de un mes cerrado no avisa.
---   * Suma igual que fn_get_budget_status (gastos de la categoría, sin subcategorías ni monedas), pero con el mes de Lima.
+--   * Suma como fn_get_budget_status de 016: gastos de la categoría EN SOLES (fn_a_soles con el tipo de cambio del día de cada gasto;
+--     uno en USD sin tipo de cambio queda fuera, como allí), sin subcategorías, pero con el mes de Lima.
 -- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION avisos_evaluar_presupuestos(
     p_user UUID, p_categoria UUID, p_fecha_gasto TIMESTAMPTZ, p_ahora TIMESTAMPTZ DEFAULT now()
@@ -418,13 +449,12 @@ BEGIN
     IF v_mes_gasto <> v_mes THEN RETURN 0; END IF;
 
     FOR b IN
-        SELECT bu.budget_id, bu.amount_limit, bu.alert_threshold, c.category_name, COALESCE(u.default_currency, 'PEN') AS moneda
+        SELECT bu.budget_id, bu.amount_limit, bu.alert_threshold, c.category_name
           FROM budgets bu
           JOIN categories c ON c.category_id = bu.category_id
-          LEFT JOIN users u ON u.user_id = bu.user_id
          WHERE bu.user_id = p_user AND bu.category_id = p_categoria AND bu.is_active AND bu.period_type = 'monthly'
     LOOP
-        SELECT COALESCE(SUM(t.amount), 0) INTO v_gastado
+        SELECT COALESCE(SUM(fn_a_soles(t.amount, t.currency_code, (t.transaction_date AT TIME ZONE 'America/Lima')::DATE)), 0) INTO v_gastado
           FROM transactions t
          WHERE t.user_id = p_user AND t.category_id = p_categoria AND t.transaction_type = 'expense'
            AND t.transaction_date >= v_desde AND t.transaction_date < v_hasta;
@@ -435,7 +465,7 @@ BEGIN
         IF v_gastado >= b.amount_limit THEN
             INSERT INTO avisos_programados (user_id, origen, titulo, cuerpo, url, cuando, entidad_id, fecha_ref, dedupe_key)
             VALUES (p_user, 'presupuesto', left('Pasaste tu presupuesto de ' || b.category_name, 120),
-                    avisos_monto(v_gastado, b.moneda) || ' de ' || avisos_monto(b.amount_limit, b.moneda) || ' este mes (' || v_pct || ' %).',
+                    avisos_monto(v_gastado, 'PEN') || ' de ' || avisos_monto(b.amount_limit, 'PEN') || ' este mes (' || v_pct || ' %).',
                     '/budgets', p_ahora, b.budget_id, v_mes::DATE, v_clave || '100')
             ON CONFLICT (user_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING;
             GET DIAGNOSTICS k = ROW_COUNT; n := n + k;
@@ -451,7 +481,7 @@ BEGIN
         ELSIF v_gastado >= b.amount_limit * v_umbral THEN
             INSERT INTO avisos_programados (user_id, origen, titulo, cuerpo, url, cuando, entidad_id, fecha_ref, dedupe_key)
             VALUES (p_user, 'presupuesto', left('Presupuesto de ' || b.category_name || ' al ' || v_pct || ' %', 120),
-                    'Llevas ' || avisos_monto(v_gastado, b.moneda) || ' de ' || avisos_monto(b.amount_limit, b.moneda) || ' este mes.',
+                    'Llevas ' || avisos_monto(v_gastado, 'PEN') || ' de ' || avisos_monto(b.amount_limit, 'PEN') || ' este mes.',
                     '/budgets', p_ahora, b.budget_id, v_mes::DATE, v_clave || round(v_umbral * 100)::INT)
             ON CONFLICT (user_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING;
             GET DIAGNOSTICS k = ROW_COUNT; n := n + k;
@@ -482,6 +512,43 @@ CREATE TRIGGER trg_transactions_avisos_presupuesto
     FOR EACH ROW EXECUTE FUNCTION trg_transactions_avisos_presupuesto();
 
 -- ------------------------------------------------------------
+-- Guardar la fila de la bandeja JUSTO al crearla (no al cerrar): si el proceso muere entre el push y el cierre, el rescate reutiliza esa
+-- fila en vez de crear otra. Solo sobre un reclamo vigente que aún no tiene una. Devuelve si guardó.
+-- ------------------------------------------------------------
+CREATE OR REPLACE FUNCTION avisos_asentar_notificacion(p_id UUID, p_notification_id UUID) RETURNS BOOLEAN
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    k INTEGER;
+BEGIN
+    UPDATE avisos_programados SET notification_id = p_notification_id
+     WHERE aviso_id = p_id AND estado = 'enviando' AND notification_id IS NULL;
+    GET DIAGNOSTICS k = ROW_COUNT;
+    RETURN k > 0;
+END $$;
+
+-- ------------------------------------------------------------
+-- Una tarea se movió de proyecto desde la web (task.move): sus recordatorios pendientes la siguen. La referencia es (ruta, línea, texto).
+-- El usuario solo puede CANCELAR (no editar esas columnas), por eso es una función con privilegios de dueño que filtra por auth.uid():
+-- solo toca lo suyo. Devuelve cuántos recordatorios movió.
+-- ------------------------------------------------------------
+CREATE OR REPLACE FUNCTION avisos_mover_tarea(p_path TEXT, p_line INTEGER, p_texto TEXT, p_nuevo_path TEXT, p_nueva_line INTEGER) RETURNS INTEGER
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    k INTEGER;
+BEGIN
+    IF auth.uid() IS NULL OR p_nuevo_path IS NULL OR p_nueva_line IS NULL THEN RETURN 0; END IF;
+    UPDATE avisos_programados SET tarea_path = p_nuevo_path, tarea_line = p_nueva_line
+     WHERE user_id = auth.uid() AND estado = 'pendiente' AND origen = 'tarea'
+       AND tarea_path = p_path AND tarea_line = p_line AND tarea_texto = left(p_texto, 200);
+    GET DIAGNOSTICS k = ROW_COUNT;
+    RETURN k;
+END $$;
+
+-- ------------------------------------------------------------
 -- Permisos de las funciones. Supabase concede EXECUTE a anon y authenticated por defecto: se quita. Estas funciones reciben un
 -- user_id como parámetro y corren con los permisos del dueño; solo el rol de servicio (la función `avisos`) y pg_cron las llaman.
 -- ------------------------------------------------------------
@@ -489,14 +556,18 @@ REVOKE EXECUTE ON FUNCTION
     avisos_fijar_ventanas(), avisos_origen_activo(UUID, TEXT), avisos_vencimiento_vigente(UUID, DATE), avisos_limpiar(TIMESTAMPTZ),
     avisos_hay_trabajo(TIMESTAMPTZ), avisos_reclamar(INTEGER, TIMESTAMPTZ), avisos_cerrar(UUID, BOOLEAN, TEXT, UUID, TIMESTAMPTZ),
     avisos_encolar_vencimientos(TIMESTAMPTZ), avisos_purgar(TIMESTAMPTZ), avisos_mantener(TIMESTAMPTZ),
-    avisos_evaluar_presupuestos(UUID, UUID, TIMESTAMPTZ, TIMESTAMPTZ), trg_transactions_avisos_presupuesto()
+    avisos_evaluar_presupuestos(UUID, UUID, TIMESTAMPTZ, TIMESTAMPTZ), trg_transactions_avisos_presupuesto(),
+    avisos_cuerpo_tarjeta(UUID, DATE, TEXT), avisos_asentar_notificacion(UUID, UUID), avisos_mover_tarea(TEXT, INTEGER, TEXT, TEXT, INTEGER)
 FROM PUBLIC, anon, authenticated;
 
 GRANT EXECUTE ON FUNCTION
     avisos_origen_activo(UUID, TEXT), avisos_vencimiento_vigente(UUID, DATE), avisos_limpiar(TIMESTAMPTZ),
     avisos_hay_trabajo(TIMESTAMPTZ), avisos_reclamar(INTEGER, TIMESTAMPTZ), avisos_cerrar(UUID, BOOLEAN, TEXT, UUID, TIMESTAMPTZ),
-    avisos_encolar_vencimientos(TIMESTAMPTZ), avisos_purgar(TIMESTAMPTZ), avisos_mantener(TIMESTAMPTZ)
+    avisos_encolar_vencimientos(TIMESTAMPTZ), avisos_purgar(TIMESTAMPTZ), avisos_mantener(TIMESTAMPTZ), avisos_asentar_notificacion(UUID, UUID)
 TO service_role;
+
+-- Esta SÍ la llama la sesión de David (la web, al mover una tarea): trabaja con auth.uid() y solo toca sus recordatorios.
+GRANT EXECUTE ON FUNCTION avisos_mover_tarea(TEXT, INTEGER, TEXT, TEXT, INTEGER) TO authenticated, service_role;
 
 -- ==== CRON (pg_cron y pg_net: no existen en PGlite; check-017.mjs corta aquí y prueba esta parte contra dobles) ====
 CREATE EXTENSION IF NOT EXISTS pg_cron;

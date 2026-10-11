@@ -24,7 +24,7 @@ const rules = `TAREAS (Norte, el vault de David):
 - "Recuérdame / avísame" solo, sin pedir anotarlo, es create_reminder (otro módulo). Si dice "anótalo y recuérdame", create_task: además programa el aviso a la hora que dio (solo el día: 9:00); no lo repitas. La hora de "y recuérdame a las 5" va en time (17:00), aunque la tarea no tenga hora.
 - "pagué / gasté / compré" es finanzas, no tareas.
 - Fechas y horas son de Lima, como las dice David ("hoy", "mañana", "viernes", "+3") o AAAA-MM-DD si dice día y mes; no hagas cuentas de calendario.
-- Proyecto: sus palabras tal cual ("nova fondos", "tdv bolsa", "maqui perú"); el sistema las reconoce. Sin proyecto, vacío: va al cajón. Si el sistema pregunta cuál ("¿app o normativa?") o confirma ("¿En Vera?") y David responde, repite create_task con la tarea original (mira el historial) y el proyecto completo.
+- Proyecto: sus palabras tal cual ("nova fondos", "tdv bolsa", "maqui perú"); el sistema las reconoce. Sin proyecto, vacío: va al cajón. Si el sistema pregunta cuál ("¿app o normativa?") o confirma ("¿En Vera?") y David responde, repite create_task con la tarea original (mira el historial) y el proyecto completo. Si pregunta la hora ("¿A qué hora te aviso?"), repite create_task con la hora en time.
 - Voz: una frase; el detalle va a la pantalla.`;
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");

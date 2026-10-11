@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { type AvisoReclamado, decidirEnvio, type Deps, kindDeAviso, procesarAviso, procesarLote } from "./logic.ts";
-import { NO_PUSH, type PushSummary } from "../_shared/webpush-core.ts";
+import { NO_PUSH, PUSH_FALLIDO, type PushSummary } from "../_shared/webpush-core.ts";
 
 const resumen = (o: Partial<PushSummary>): PushSummary => ({ ...NO_PUSH, ...o });
 
@@ -12,16 +12,24 @@ const aviso = (o: Partial<AvisoReclamado> = {}): AvisoReclamado => ({
   notification_id: null, intentos: 1, ...o,
 });
 
-function dobles(push: PushSummary | Error | (() => PushSummary), opciones: { notificacion?: string | null } = {}) {
-  const llamadas = { crear: [] as unknown[], push: [] as unknown[], cierres: [] as unknown[][] };
+function dobles(push: PushSummary | Error | (() => PushSummary), opciones: { notificacion?: string | null; asentarFalla?: boolean } = {}) {
+  /** Orden en que ocurrió cada paso: la prueba del asiento de la bandeja mira que sea crear → asentar → push → cerrar. */
+  const orden: string[] = [];
+  const llamadas = { crear: [] as unknown[], asentar: [] as unknown[], push: [] as unknown[], cierres: [] as unknown[][], orden };
   const deps: Deps = {
-    crearNotificacion: async (u, n) => { llamadas.crear.push([u, n]); return opciones.notificacion === undefined ? "n1" : opciones.notificacion; },
+    crearNotificacion: async (u, n) => { orden.push("crear"); llamadas.crear.push([u, n]); return opciones.notificacion === undefined ? "n1" : opciones.notificacion; },
+    asentarNotificacion: async (aviso, id) => {
+      orden.push("asentar");
+      llamadas.asentar.push([aviso, id]);
+      if (opciones.asentarFalla) throw new Error("rpc caído");
+    },
     enviarPush: async (u, id, n) => {
+      orden.push("push");
       llamadas.push.push([u, id, n]);
       if (push instanceof Error) throw push;
       return typeof push === "function" ? push() : push;
     },
-    cerrar: async (...args) => { llamadas.cierres.push(args); },
+    cerrar: async (...args) => { orden.push("cerrar"); llamadas.cierres.push(args); },
   };
   return { deps, llamadas };
 }
@@ -39,6 +47,41 @@ test("decidirEnvio: push aceptado, sin dispositivos y dispositivos caducados son
   assert.equal(decidirEnvio(resumen({ devices: 1, removed: 1, statuses: [410] })).ok, true, "el 410 borra la suscripción: no se reintenta");
   assert.deepEqual(decidirEnvio(resumen({ devices: 2, failed: 2, statuses: [503, 429] })), { ok: false, detalle: "push rechazado (503)" });
   assert.deepEqual(decidirEnvio(resumen({ devices: 1, failed: 1, statuses: [null] })), { ok: false, detalle: "push sin respuesta" });
+});
+
+test("decidirEnvio: un error real al intentar el push NO se confunde con «sin suscripciones» (se reintenta, no se da por enviado)", () => {
+  assert.deepEqual(decidirEnvio(PUSH_FALLIDO), { ok: false, detalle: "no pude intentar el push" });
+  assert.equal(decidirEnvio(NO_PUSH).ok, true, "mientras que sin suscripciones sí queda en la bandeja");
+  assert.notDeepEqual(PUSH_FALLIDO, NO_PUSH);
+});
+
+test("un error al leer las suscripciones (PUSH_FALLIDO) deja el aviso para reintento, con la fila de la bandeja ya asentada", async () => {
+  const { deps, llamadas } = dobles(PUSH_FALLIDO);
+  assert.equal(await procesarAviso(aviso(), deps), "reintento");
+  assert.deepEqual(llamadas.cierres, [["a1", false, "no pude intentar el push", "n1"]]);
+});
+
+test("la fila de la bandeja se asienta en el aviso ANTES del push (si el proceso muere en medio, el rescate no crea otra)", async () => {
+  const { deps, llamadas } = dobles(resumen({ devices: 1, sent: 1, statuses: [201] }));
+  await procesarAviso(aviso(), deps);
+  assert.deepEqual(llamadas.orden, ["crear", "asentar", "push", "cerrar"]);
+  assert.deepEqual(llamadas.asentar, [["a1", "n1"]]);
+  // un reintento que ya la trae no crea ni asienta nada
+  const rescate = dobles(resumen({ devices: 1, sent: 1, statuses: [201] }));
+  await procesarAviso(aviso({ notification_id: "n-previa" }), rescate.deps);
+  assert.deepEqual(rescate.llamadas.orden, ["push", "cerrar"]);
+});
+
+test("si asentar la fila falla, el aviso se envía igual (no se pierde por eso)", async () => {
+  const log = console.error;
+  console.error = () => {};
+  try {
+    const { deps, llamadas } = dobles(resumen({ devices: 1, sent: 1, statuses: [201] }), { asentarFalla: true });
+    assert.equal(await procesarAviso(aviso(), deps), "enviado");
+    assert.deepEqual(llamadas.orden, ["crear", "asentar", "push", "cerrar"]);
+  } finally {
+    console.error = log;
+  }
 });
 
 test("procesarAviso: guarda en la bandeja, envía el push y cierra como enviado", async () => {

@@ -32,11 +32,14 @@ export type Decision = { ok: boolean; detalle: string };
 /**
  * ¿Salió el aviso? Lo guardado en la bandeja ya cuenta como entregado; el push es el canal rápido.
  *  - Algún dispositivo lo aceptó → ok por push.
+ *  - El envío no se pudo ni intentar (`error`: falló la lectura de suscripciones o algo lanzó) → falla, se reintenta. NO es lo mismo
+ *    que «sin suscripciones»: dar por entregado un fallo real perdería el aviso sin que nadie lo note.
  *  - Ningún dispositivo (no hay suscripciones, o los VAPID no están configurados) → ok por bandeja: reintentar no cambia nada.
  *  - Todos los dispositivos estaban caducados (404/410, ya se borraron) → ok por bandeja.
  *  - Hubo dispositivos y NINGUNO respondió (red, 5xx, 429, rechazo) → falla, se reintenta.
  */
 export function decidirEnvio(resumen: PushSummary): Decision {
+  if (resumen.error) return { ok: false, detalle: "no pude intentar el push" };
   if (resumen.sent > 0) return { ok: true, detalle: "push" };
   if (resumen.devices === 0) return { ok: true, detalle: "bandeja (sin dispositivos con avisos)" };
   if (resumen.failed === 0) return { ok: true, detalle: "bandeja (dispositivos caducados)" };
@@ -47,6 +50,8 @@ export function decidirEnvio(resumen: PushSummary): Decision {
 export type Deps = {
   /** Deja el aviso en la bandeja y devuelve su id (null si no se pudo). */
   crearNotificacion: (userId: string, notice: { kind: KindAviso; title: string; body: string; url?: string }) => Promise<string | null>;
+  /** Guarda en el aviso la fila de la bandeja recién creada (SQL avisos_asentar_notificacion), ANTES de enviar el push. */
+  asentarNotificacion: (avisoId: string, notificationId: string) => Promise<void>;
   /** Envía el push de una notificación ya guardada. */
   enviarPush: (userId: string, notificationId: string, notice: { kind: KindAviso; title: string; body: string; url?: string }) => Promise<PushSummary>;
   /** Cierra el envío (SQL avisos_cerrar): ok → enviado; si no, reintento con espera o fallido. */
@@ -62,7 +67,12 @@ export async function procesarAviso(a: AvisoReclamado, deps: Deps): Promise<Resu
   let decision: Decision;
   try {
     // Un reintento reutiliza la fila de la bandeja que ya se creó: no duplica el aviso en la lista.
-    notificationId ??= await deps.crearNotificacion(a.user_id, notice);
+    if (notificationId === null) {
+      notificationId = await deps.crearNotificacion(a.user_id, notice);
+      // Se asienta YA, antes del push y del cierre: si el proceso muere en medio, el rescate encuentra la fila y no crea otra.
+      // Si asentarla falla, se envía igual (en el peor caso, un rescate duplicaría la fila de la bandeja).
+      if (notificationId !== null) await deps.asentarNotificacion(a.aviso_id, notificationId).catch((e) => console.error("avisos: asentar:", e instanceof Error ? e.message : String(e)));
+    }
     if (notificationId === null) {
       decision = { ok: false, detalle: "no se pudo guardar en la bandeja" };
     } else {
@@ -74,7 +84,8 @@ export async function procesarAviso(a: AvisoReclamado, deps: Deps): Promise<Resu
   try {
     await deps.cerrar(a.aviso_id, decision.ok, decision.detalle, notificationId);
   } catch (e) {
-    // Si el cierre falla, el reclamo queda 'enviando' y avisos_limpiar lo rescata a los 5 min (el push ya salió: a lo sumo se repite una vez).
+    // Si el cierre falla, el reclamo queda 'enviando' y avisos_limpiar lo rescata a los 5 min. El push ya pudo haber salido: el rescate lo
+    // REENVÍA (hasta agotar los intentos si el cierre sigue fallando), pero la fila de la bandeja es una sola, la asentada arriba.
     console.error("avisos: cerrar:", e instanceof Error ? e.message : String(e));
   }
   return decision.ok ? "enviado" : "reintento";

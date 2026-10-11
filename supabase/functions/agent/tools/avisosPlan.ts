@@ -49,7 +49,7 @@ export function enMinutosHablado(n: number): string {
 
 /**
  * Convierte lo que pidió el modelo (create_reminder) en un plan o en una pregunta.
- *  - `en_minutos` (sin día ni hora): ahora + N minutos.
+ *  - `en_minutos` (sin hora; un día suelto se ignora): ahora + N minutos.
  *  - día y hora: esa hora de Lima ese día. Solo el día: 9:00. Solo la hora: hoy si aún no pasó; si ya pasó, mañana.
  *  - Un instante que ya pasó o a más de un año se pregunta, no se adivina.
  * `ahora` es el instante real (no el corrido −5 h del agente).
@@ -64,8 +64,9 @@ export function planearRecordatorio(args: Record<string, unknown>, ctx: { ahora:
   const horaDicha = str(args.time).trim();
   const minutosDichos = args.en_minutos === undefined || args.en_minutos === null || args.en_minutos === "" ? null : Number(args.en_minutos);
 
-  // Relativo: "en 20 minutos".
-  if (minutosDichos !== null && !dueDicho && !horaDicha) {
+  // Relativo: "en 20 minutos". Gana siempre que no haya una hora dicha, aunque el modelo mande también un día (a veces pone due: "hoy"):
+  // «en 20 minutos» ya es un instante exacto y el día sobra. Si hay hora, manda la hora.
+  if (minutosDichos !== null && !horaDicha) {
     const n = Math.round(minutosDichos);
     if (!Number.isFinite(n) || n < 1 || n > MAX_MINUTOS) return clarify("Dime en cuántos minutos, hasta una semana.");
     const cuando = new Date(ahora.getTime() + n * 60_000);

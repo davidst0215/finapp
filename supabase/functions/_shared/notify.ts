@@ -6,6 +6,7 @@ import {
   buildPushPayload,
   nextFailureCount,
   NO_PUSH,
+  PUSH_FALLIDO,
   shouldDropSubscription,
   parseSubscriptionInput,
   type PushSendResult,
@@ -71,7 +72,7 @@ export async function pushToDevices(db: SupabaseClient, userId: string, notifica
       .eq("user_id", userId);
     if (error) {
       console.error("push: leer suscripciones:", error.message);
-      return NO_PUSH;
+      return PUSH_FALLIDO; // un error real, no «sin suscripciones»: quien reintenta (función avisos) no debe darlo por entregado
     }
     const subs = (data ?? []) as SubscriptionRow[];
     if (subs.length === 0) return NO_PUSH;
@@ -93,7 +94,7 @@ export async function pushToDevices(db: SupabaseClient, userId: string, notifica
     return summarizePush(results);
   } catch (e) {
     console.error("push:", e instanceof Error ? e.message : String(e));
-    return NO_PUSH;
+    return PUSH_FALLIDO;
   }
 }
 

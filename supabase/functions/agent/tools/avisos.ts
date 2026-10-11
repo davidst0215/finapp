@@ -65,18 +65,9 @@ export async function crearAvisoDeTarea(
   }
 }
 
-/** Al completar una tarea, sus recordatorios pendientes ya no hacen falta. Nunca lanza: completar la tarea no depende de esto. */
-export async function cancelarAvisosDeTarea(db: SupabaseClient, userId: string, tarea: { path: string; line: number; texto: string }): Promise<number> {
-  try {
-    const { data, error } = await db.from("avisos_programados").update({ estado: "cancelado" }).eq("user_id", userId).eq("estado", "pendiente")
-      .eq("tarea_path", tarea.path).eq("tarea_line", tarea.line).eq("tarea_texto", tarea.texto.slice(0, 200)).select("aviso_id");
-    if (error) throw new Error(error.message);
-    return data?.length ?? 0;
-  } catch (e) {
-    console.error("avisos: cancelarAvisosDeTarea:", e instanceof Error ? e.message : String(e));
-    return 0;
-  }
-}
+// Completar o mover una tarea cancela o reubica sus recordatorios; la lógica vive en _shared/avisosTarea.ts porque también la usa la web
+// (función `vault`). Se reexporta aquí para quien ya la importaba de este módulo.
+export { cancelarAvisosDeTarea, moverAvisosDeTarea } from "../../_shared/avisosTarea.ts";
 
 // --- create_reminder -----------------------------------------------------------------------------
 const createReminder = async (args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> => {

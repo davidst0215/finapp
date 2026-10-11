@@ -21,7 +21,12 @@ Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return json({ error: "Método no permitido" }, 405);
 
   // Primero se valida el secreto; la configuración faltante se dice solo a quien ya se identificó.
-  if (!secretoIgual(req.headers.get("x-avisos-secret"), Deno.env.get("AVISOS_CRON_SECRET"))) return json({ error: "No autorizado" }, 401);
+  if (!secretoIgual(req.headers.get("x-avisos-secret"), Deno.env.get("AVISOS_CRON_SECRET"))) {
+    // Sin esta línea un secreto desparejado entre Vault y la función es invisible: pg_cron solo ve que el HTTP salió. Si NO aparece nunca y
+    // los avisos no salen, falta --no-verify-jwt: el gateway rechaza antes de llegar aquí (ver «Avisos programados» en SPEC-wabid.md).
+    console.warn("avisos: 401");
+    return json({ error: "No autorizado" }, 401);
+  }
 
   try {
     const db = adminClient();
@@ -31,6 +36,10 @@ Deno.serve(async (req: Request) => {
 
     const deps: Deps = {
       crearNotificacion: (userId, notice) => insertNotice(db, userId, notice),
+      asentarNotificacion: async (avisoId, notificationId) => {
+        const { error: e } = await db.rpc("avisos_asentar_notificacion", { p_id: avisoId, p_notification_id: notificationId });
+        if (e) throw new Error(e.message);
+      },
       enviarPush: (userId, notificationId, notice) => pushToDevices(db, userId, notificationId, notice),
       cerrar: async (avisoId, ok, detalle, notificationId) => {
         const { error: e } = await db.rpc("avisos_cerrar", { p_id: avisoId, p_ok: ok, p_detalle: detalle, p_notification_id: notificationId });

@@ -200,6 +200,36 @@ test("«recuérdame que Ana envíe el contrato»: una tarea que espera a otra pe
   }
 });
 
+test("«…y recuérdame a las 5» sin que llegue time: pregunta la hora y NO escribe la tarea ni programa nada (no cae en las 9:00)", async () => {
+  const gh = githubFalso();
+  const log = capturarLog();
+  try {
+    const casos: [string, Record<string, unknown>][] = [
+      ["agéndame llamar a Ana mañana y recuérdame a las 5", { text: "Llamar a Ana", due: "mañana" }],
+      ["recuérdame mañana a la una llamar a Ana", { text: "Llamar a Ana", due: "mañana" }],
+      ["recuérdame el viernes a las 5 y media llamar a Ana", { text: "Llamar a Ana", due: "viernes" }],
+    ];
+    for (const [dictado, args] of casos) {
+      const { db, avisos } = conAviso();
+      const r = await tareas.handlers.create_task(args, ctx(db, dictado), undefined);
+      assert.equal(r.action, "clarify", dictado);
+      assert.equal(r.message, "¿A qué hora te aviso? Dímela como las cinco de la tarde.");
+      assert.equal(r.voz, "¿A qué hora te aviso?");
+      assert.equal(avisos.filas.length, 0, `${dictado}: ningún aviso`);
+    }
+    assert.equal(gh.escrituras.length, 0, "ninguna tarea escrita en Norte");
+    // al responder la hora, el modelo repite create_task con time y ahora sí: tarea + aviso a las 17:00
+    const { db, avisos } = conAviso();
+    const r = await tareas.handlers.create_task({ text: "Llamar a Ana", due: "mañana", time: "17:00" }, ctx(db, "agéndame llamar a Ana mañana y recuérdame a las 5"), undefined);
+    assert.equal(r.action, "create_task");
+    assert.equal(avisos.filas[0]!.cuando, "2026-10-12T22:00:00.000Z");
+    assert.equal(gh.escrituras.length, 1);
+  } finally {
+    gh.restaurar();
+    log.restaurar();
+  }
+});
+
 test("si el aviso no se puede guardar, la tarea ya escrita queda y se dice (no se deshace)", async () => {
   const { db, avisos } = conAviso([], { errorEn: "insert" });
   const gh = githubFalso();
