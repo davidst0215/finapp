@@ -2,7 +2,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  armarCatalogo, CatalogoCache, fraseQueEs, MAX_CATALOGO_CHARS, MAX_FICHA_CHARS, parametrosBusqueda, recortarFicha, resolverFichas, topePorFicha, type CatalogoRow, type FichaCat,
+  armarCatalogo, CatalogoCache, fraseQueEs, fragmentosDeFicha, fueRecortada, MAX_CATALOGO_CHARS, MAX_FICHA_CHARS, MAX_FICHA_SOLA, palabrasClave,
+  parametrosBusqueda, recortarFicha, resolverFichas, topePorFicha, type CatalogoRow, type FichaCat,
 } from "./catalogo.ts";
 
 const fila = (slug: string, title: string, cliente: string | null, que_es = ""): CatalogoRow => ({ path: `60-wiki/proyectos/${slug}.md`, title, cliente, que_es });
@@ -143,10 +144,55 @@ test("recortarFicha: las secciones que nombra la pregunta se salvan; Relacionado
   assert.ok(sinPregunta.length <= 6000);
 });
 
-test("topePorFicha: una sola ficha puede leerse más que cada una de dos", () => {
-  assert.equal(topePorFicha(1), 9000);
+test("topePorFicha: una sola ficha puede leerse (casi) entera; cada una de dos, menos", () => {
+  assert.equal(topePorFicha(1), 20_000);
   assert.equal(topePorFicha(2), 6000);
-  assert.equal(topePorFicha(0), 9000);
+  assert.equal(topePorFicha(0), 20_000);
+  assert.equal(MAX_FICHA_SOLA, 20_000);
+});
+
+test("una ficha de 12 000 caracteres (la más grande del vault) ya no pierde secciones cuando se lee sola", () => {
+  const sec = (n: string) => `## ${n}\n${"dato de la sección. ".repeat(40)}`;
+  const grande = ["# TDV", sec("Qué es"), sec("Estado actual"), sec("Arquitectura"), sec("Repos"), sec("Datos"), sec("Decisiones"), sec("Trampas conocidas"),
+    sec("Personas"), sec("Relacionados"), sec("Fuentes"), sec("Anexo A"), sec("Anexo B")].join("\n\n");
+  assert.ok(grande.length > 9000 && grande.length < 12_500, String(grande.length));
+  const sola = recortarFicha(grande, topePorFicha(1), "qué decidimos");
+  assert.equal(sola, grande.trim(), "completa");
+  assert.equal(fueRecortada(sola), false);
+  const deDos = recortarFicha(grande, topePorFicha(2), "qué decidimos");
+  assert.equal(fueRecortada(deDos), true);
+});
+
+test("palabrasClave: raíces de 5 letras de las palabras con contenido", () => {
+  assert.deepEqual(palabrasClave("¿Qué decidimos sobre la cesión en novafondos?"), ["decid", "cesio", "novaf"]);
+  assert.deepEqual(palabrasClave("en qué quedó lota visión"), ["lota", "visio"]);
+  assert.deepEqual(palabrasClave("la de en y el"), []);
+  assert.equal(palabrasClave("uno dos tres cuatro cinco seis siete ocho nueve diez once doce trece catorce quince").length, 8, "máximo 8");
+});
+
+test("fragmentosDeFicha: solo lo que menciona la pregunta, con su encabezado, en orden y dentro del tope", () => {
+  const relleno = (n: string) => `## ${n}\n${"texto sin relación. ".repeat(60)}`;
+  const ficha = [
+    "# Novafondos", "", relleno("Historia"), relleno("Repos"),
+    "## Decisiones\n- 2026-09-27: la cesión de cartera se cobra al ceder, no al contratar.\n- Otra decisión sin relación.",
+    relleno("Anexo"),
+    "## Trampas\nLa cesión de contratos exige firma del cedente.",
+  ].join("\n\n");
+  const f = fragmentosDeFicha(ficha, "¿qué decidimos sobre la cesión?", 1500);
+  assert.ok(f.length <= 1500, String(f.length));
+  assert.ok(f.startsWith("# Novafondos"));
+  assert.ok(f.includes("## Decisiones") && f.includes("la cesión de cartera se cobra al ceder"));
+  assert.ok(f.includes("## Trampas") && f.includes("exige firma del cedente"));
+  assert.ok(f.indexOf("## Decisiones") < f.indexOf("## Trampas"), "orden original");
+  assert.ok(!f.includes("texto sin relación"), "nada de relleno");
+  assert.equal(fragmentosDeFicha(ficha, "¿qué hay de la ñoñería inexistente?", 1500), "");
+  assert.equal(fragmentosDeFicha(ficha, "la de en", 1500), "");
+});
+
+test("fragmentosDeFicha: con poco espacio se queda con las coincidencias más fuertes", () => {
+  const ficha = ["# T", "## A\nsolo cesión aquí", "x", "x", "x", "## B\ncesión de cartera y tarifa de cobranza juntas", "x", "x", "x"].join("\n");
+  const f = fragmentosDeFicha(ficha, "cesión cartera tarifa", 70);
+  assert.ok(f.includes("tarifa de cobranza") && !f.includes("solo cesión aquí"), f);
 });
 
 test("CatalogoCache: sirve mientras no cambie tree_sha ni venza; sin sha no cachea", () => {

@@ -31,6 +31,21 @@ const RESPALDO_MS = 3000;
 // Lo que se dice en voz alta no pasa de VOZ_MAX (100) caracteres ya convertidos (_shared/voz.ts): el texto completo
 // igual llega a la pantalla en `message`, y `voz` (si el handler lo trae) es lo que se dice en su lugar.
 
+// Una tool bien formada ocupa ~40 tokens de salida; más de 250 es sospechoso (varias tools, texto suelto o un argumento
+// desbocado). Se registra QUÉ pasó, sin el contenido: cuántas tools, el largo de sus argumentos y el texto que las acompañó.
+const SALIDA_LARGA = 250;
+function avisarSalidaLarga(data: { usage?: { completion_tokens?: number }; choices?: { finish_reason?: string; message?: { content?: unknown; tool_calls?: { function?: { name?: string; arguments?: string } }[] } }[] }) {
+  const tokOut = Number(data.usage?.completion_tokens) || 0;
+  if (tokOut < SALIDA_LARGA) return;
+  const msg = data.choices?.[0]?.message;
+  const calls = msg?.tool_calls ?? [];
+  console.log(JSON.stringify({
+    evt: "agent_salida_larga", tok_out: tokOut, finish: data.choices?.[0]?.finish_reason, tool_calls: calls.length,
+    tools: calls.slice(0, 5).map((c) => c.function?.name), args_chars: calls.slice(0, 5).map((c) => (c.function?.arguments ?? "").length),
+    content_chars: typeof msg?.content === "string" ? msg.content.length : 0,
+  }));
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
@@ -139,6 +154,9 @@ Deno.serve(async (req: Request) => {
       ],
       tools: DEFINITIONS,
       tool_choice: "required",
+      // Una sola tool por pedido: solo se ejecuta la primera, y varias llamadas en paralelo son salida que se paga y se espera
+      // en vano (10-oct: un pedido llegó a tok_out 500, el tope, con una tool válida y sin reintento).
+      parallel_tool_calls: false,
       temperature: 0.15,
       max_tokens: 500,
     }, RESPALDO_MS));
@@ -161,6 +179,7 @@ Deno.serve(async (req: Request) => {
       if (typeof data.model === "string" && !data.model.startsWith(LLM_MODEL)) prov += ` (${data.model})`; // cayó al modelo de respaldo
       t.tokens(data.usage);
       call = data.choices?.[0]?.message?.tool_calls?.[0];
+      avisarSalidaLarga(data);
       if (!respuestaInservible(call)) break;
       console.error(`agent: respuesta inservible del modelo (intento ${intento + 1})`);
     }

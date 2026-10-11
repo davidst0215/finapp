@@ -1,10 +1,11 @@
+import { buscarCuenta, fraseCuentaCreada, fraseCuentas, monto, opcionesHabladas, TIPO_HABLADO, type TipoCuenta, validarCuentaNueva } from "../../_shared/cuentas.ts";
 import { comentario, conComentario } from "../prompt.ts";
 import { conDetalle } from "../respuesta.ts";
-import { type AgentContext, type AgentModule, tool } from "../types.ts";
+import { type AgentContext, type AgentModule, type ToolResult, tool } from "../types.ts";
 import { fechaHablada, type FiltroRecurrentes, type Recurrente, resumenRecurrentes, vozRecurrentes } from "./recurrentes.ts";
 import { rangoSemana } from "./semana.ts";
 
-type Account = { account_id: string; account_name: string; current_balance: number; account_type: string };
+type Account = { account_id: string; account_name: string; current_balance: number; account_type: string; currency_code: string };
 type Category = { category_id: string; category_name: string; category_type: string };
 type Goal = { goal_id: string; goal_name: string; target_amount: number; current_amount: number; target_date: string | null };
 type Data = { accounts: Account[]; categories: Category[]; goals: Goal[]; recurring: Recurrente[]; paidIds: Set<string>; recurrentesOk: boolean };
@@ -17,6 +18,8 @@ const rules = `FINANZAS:
 - Gasto: gasté, pagué, compré, costó. Ingreso: sueldo, cobré, me pagaron, gané.
 - "pon 500 en comida" = presupuesto. "Netflix 45 mensual" = recurrente. "ahorrar 5000 para viaje" = meta.
 - "no fueron 60" o "cámbialo a 60" = editar el último.
+- Cuentas: "crea / abre una cuenta (tarjeta, ahorros, efectivo…)" = create_account; "qué cuentas tengo", "mis saldos" = list_accounts (dinero de David, no el crédito de IA). Pregunta solo si falta el nombre: tipo, moneda y saldo inicial son opcionales, nunca los preguntes.
+- Si nombra una cuenta al registrar un movimiento ("pagué 30 con la de BCP") pásala en account; en transfer, las palabras de cada cuenta.
 - Voz: una frase. En consultas (analyze_finances) di en answer solo la cifra pedida, redonda y sin céntimos; el desglose va en el campo detalle (pantalla).`;
 
 async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: Data }> {
@@ -31,7 +34,7 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
   const semana = rangoSemana(limaNow);
 
   const [accountsRes, categoriesRes, goalsRes, summaryRes, prevSummaryRes, spendRes, prevSpendRes, budgetsRes, recentRes, recurringRes, paidRes, weekRes, last7Res] = await Promise.all([
-    supabase.from("accounts").select("account_id, account_name, current_balance, account_type").eq("user_id", user.id).eq("is_active", true),
+    supabase.from("accounts").select("account_id, account_name, current_balance, account_type, currency_code").eq("user_id", user.id).eq("is_active", true),
     supabase.from("categories").select("category_id, category_name, category_type").eq("is_active", true).or(`user_id.eq.${user.id},user_id.is.null`),
     supabase.from("savings_goals").select("goal_id, goal_name, target_amount, current_amount, target_date").eq("user_id", user.id).eq("is_completed", false),
     supabase.rpc("fn_get_monthly_summary", { p_year: year, p_month: month }),
@@ -117,7 +120,7 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
       ctxLines.push(`- ${b.category_name}: S/${b.amount_spent}/S/${b.amount_limit} (${b.percentage_used}%) ${estado}`);
     }
   }
-  ctxLines.push(`\nCUENTAS: ${accounts.map((a) => `${a.account_name}: S/${a.current_balance}`).join(", ") || "ninguna"}`);
+  ctxLines.push(`\nCUENTAS: ${accounts.map((a) => `${a.account_name} (${TIPO_HABLADO[a.account_type as TipoCuenta] ?? a.account_type}): ${monto(Number(a.current_balance), a.currency_code)}`).join(", ") || "ninguna"}`);
   if (goals.length > 0) {
     ctxLines.push("\nMETAS DE AHORRO:");
     for (const g of goals) {
@@ -158,8 +161,21 @@ const nextDueDate = (current: string, frequency: string): string => {
   return d.toISOString().slice(0, 10);
 };
 
-const err = (message: string) => ({ action: "error", message });
+const err = (message: string): ToolResult => ({ action: "error", message });
 const str = (v: unknown) => (typeof v === "string" ? v : "");
+/** Monto dictado: número finito, positivo y razonable (la base exige amount > 0). */
+const montoValido = (v: unknown): number | null => {
+  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v.replace(/,/g, "")) : NaN;
+  return Number.isFinite(n) && n > 0 && n < 1e9 ? n : null;
+};
+
+/** La cuenta que David nombró ("la de BCP", "mi Interbank"); ambigua o desconocida → la frase para preguntar o avisar. */
+function cuentaNombrada(nombre: string, accounts: Account[]): { cuenta: Account } | { respuesta: ToolResult } {
+  const r = buscarCuenta(nombre, accounts);
+  if (r.kind === "one") return { cuenta: r.cuenta };
+  if (r.kind === "many") return { respuesta: { action: "clarify", message: `¿Cuál: ${opcionesHabladas(r.cuentas)}?` } };
+  return { respuesta: err(`No encontré una cuenta «${nombre.trim().slice(0, 40)}». Tienes: ${opcionesHabladas(accounts, 5)}.`) };
+}
 
 export const finanzas: AgentModule<Data> = {
   id: "finanzas",
@@ -173,8 +189,17 @@ export const finanzas: AgentModule<Data> = {
       category_name: { type: "string", description: "Categoría: Alimentación, Transporte, Entretenimiento, Compras, Salud, Educación, Servicios, Vivienda, Ropa, Tecnología, Suscripciones, Mascotas, Regalos, Otros gastos, Sueldo, Freelance, Negocio, Inversiones, Trading, Otros ingresos" },
       currency_code: { type: "string", enum: ["PEN", "USD"], description: "PEN por defecto, USD si dice dólares" },
       notes: { type: "string", description: "Detalle adicional si el usuario da información extra (lugar, con quién, etc.)" },
+      account: { type: "string", description: "Cuenta con las palabras de David ('la de BCP', 'mi Interbank'), solo si la nombró; vacío si no" },
       comentario,
     }, ["amount", "transaction_type", "description"]),
+    tool("create_account", "Crea una cuenta de David (banco, ahorros, tarjeta, efectivo…): 'crea una cuenta Interbank en soles con 500'.", {
+      account_name: { type: "string", description: "Nombre de la cuenta como lo dijo (ej. 'Interbank')" },
+      account_type: { type: "string", enum: ["checking", "savings", "credit_card", "cash", "investment", "loan", "other"], description: "checking=banco (por defecto), savings=ahorros, credit_card=tarjeta, cash=efectivo, investment, loan=préstamo" },
+      currency_code: { type: "string", enum: ["PEN", "USD"], description: "PEN por defecto, USD si dice dólares" },
+      initial_balance: { type: "number", description: "Saldo inicial (en una tarjeta, lo que debe); vacío si no lo dijo" },
+      comentario,
+    }, ["account_name"]),
+    tool("list_accounts", "Lista las cuentas de David con su saldo: '¿qué cuentas tengo?', 'mis saldos'. El sistema arma la respuesta.", {}),
     tool("create_budget", "Crea un presupuesto mensual para una categoría.", {
       category_name: { type: "string" }, amount_limit: { type: "number" },
     }, ["category_name", "amount_limit"]),
@@ -193,8 +218,10 @@ export const finanzas: AgentModule<Data> = {
       search_description: { type: "string" }, new_amount: { type: "number" }, new_description: { type: "string" },
     }, ["search_description"]),
     tool("delete_transaction", "Elimina una transacción.", { search_description: { type: "string" } }, ["search_description"]),
-    tool("transfer", "Transfiere entre cuentas.", {
-      amount: { type: "number" }, from_account: { type: "string" }, to_account: { type: "string" },
+    tool("transfer", "Transfiere entre dos cuentas de David de la misma moneda.", {
+      amount: { type: "number" },
+      from_account: { type: "string", description: "Cuenta de origen con las palabras de David ('la de BCP')" },
+      to_account: { type: "string", description: "Cuenta de destino con las palabras de David ('mi Interbank')" },
     }, ["amount", "from_account", "to_account"]),
     tool("pay_recurring", "Marca un pago recurrente como pagado: crea la transacción y avanza la próxima fecha. Usa cuando dice 'ya pagué Netflix', 'pagué el alquiler'.", {
       search_description: { type: "string", description: "Nombre del recurrente a marcar como pagado" },
@@ -210,13 +237,19 @@ export const finanzas: AgentModule<Data> = {
   ],
   handlers: {
     async create_transaction(args, { supabase, user, text }, { accounts, categories }) {
-      const account = accounts[0];
-      if (!account) return err("No tienes cuentas creadas. Crea una en Finanzas → Cuentas.");
+      if (!accounts.length) return err("No tienes cuentas todavía. Dime «crea una cuenta» con su nombre y la anoto.");
+      const amount = montoValido(args.amount);
+      if (amount === null) return err("No entendí el monto: dímelo en números y mayor que cero.");
       const type = str(args.transaction_type);
       const cat = categories.find((c) => c.category_name.toLowerCase() === str(args.category_name).toLowerCase() && c.category_type === type);
       const currency = str(args.currency_code) || "PEN";
+      // Con una cuenta nombrada va a esa; si no, a la primera de la moneda del movimiento (y, si no hay, a la primera).
+      const nombrada = str(args.account).trim();
+      const elegida = nombrada ? cuentaNombrada(nombrada, accounts) : { cuenta: accounts.find((a) => a.currency_code === currency) ?? accounts[0] };
+      if ("respuesta" in elegida) return elegida.respuesta;
+      const account = elegida.cuenta;
       const { data: tx, error } = await supabase.from("transactions").insert({
-        user_id: user.id, transaction_type: type, amount: args.amount, currency_code: currency,
+        user_id: user.id, transaction_type: type, amount, currency_code: currency,
         description: args.description, account_id: account.account_id,
         category_id: cat?.category_id ?? null, transaction_date: new Date().toISOString(),
         input_method: "voice", raw_voice_text: text, is_recurring: false,
@@ -225,7 +258,23 @@ export const finanzas: AgentModule<Data> = {
       if (error) return err(error.message);
       const label = type === "income" ? "ingreso" : "gasto";
       const sym = currency === "USD" ? "US$" : "S/";
-      return { action: "create_transaction", message: conComentario(`${label[0]!.toUpperCase()}${label.slice(1)} de ${sym} ${Number(args.amount).toFixed(2)} en ${args.description}.`, args), data: tx };
+      const enCuenta = nombrada ? ` (${account.account_name})` : "";
+      return { action: "create_transaction", message: conComentario(`${label[0]!.toUpperCase()}${label.slice(1)} de ${sym} ${amount.toFixed(2)} en ${args.description}${enCuenta}.`, args), data: tx };
+    },
+    async create_account(args, { supabase, user }, { accounts }) {
+      const v = validarCuentaNueva(args, accounts);
+      if (!v.ok) return { action: v.pregunta ? "clarify" : "error", message: v.error };
+      const { data: row, error } = await supabase.from("accounts").insert({ user_id: user.id, ...v.cuenta, is_active: true }).select("account_id, account_name").single();
+      if (error) {
+        console.error("create_account:", error.code ?? "", error.message);
+        return err("No pude crear la cuenta ahora. Inténtalo de nuevo.");
+      }
+      const f = fraseCuentaCreada(v.cuenta);
+      return { action: "create_account", message: conComentario(f.message, args), voz: conComentario(f.voz, args), data: row };
+    },
+    async list_accounts(_args, _ctx, { accounts }) {
+      const f = fraseCuentas(accounts);
+      return { action: "list_accounts", message: f.message, voz: f.voz, data: { accounts: accounts.map((a) => ({ name: a.account_name, type: a.account_type, currency: a.currency_code, balance: Number(a.current_balance) })) } };
     },
     async create_budget(args, { supabase, user }, { categories }) {
       const cat = categories.find((c) => c.category_name.toLowerCase() === str(args.category_name).toLowerCase() && c.category_type === "expense");
@@ -282,18 +331,25 @@ export const finanzas: AgentModule<Data> = {
       return { action: "delete_transaction", message: `"${tx.description}" de S/ ${Number(tx.amount).toFixed(2)} eliminado.` };
     },
     async transfer(args, { supabase, user, text }, { accounts }) {
-      const from = accounts.find((a) => a.account_name.toLowerCase().includes(str(args.from_account).toLowerCase()));
-      const to = accounts.find((a) => a.account_name.toLowerCase().includes(str(args.to_account).toLowerCase()));
-      if (!from || !to) return err("No encontré las cuentas.");
+      const amount = montoValido(args.amount);
+      if (amount === null) return err("No entendí el monto: dímelo en números y mayor que cero.");
+      const origen = cuentaNombrada(str(args.from_account), accounts);
+      if ("respuesta" in origen) return origen.respuesta;
+      const destino = cuentaNombrada(str(args.to_account), accounts);
+      if ("respuesta" in destino) return destino.respuesta;
+      const from = origen.cuenta, to = destino.cuenta;
+      if (from.account_id === to.account_id) return err("Dame dos cuentas distintas para transferir.");
+      // No hay tipo de cambio: pasar soles a una cuenta en dólares sin convertir dejaría saldos falsos.
+      if (from.currency_code !== to.currency_code) return err("No transfiero entre soles y dólares: son monedas distintas.");
       const { error } = await supabase.from("transactions").insert({
-        user_id: user.id, transaction_type: "transfer", amount: args.amount, currency_code: "PEN",
+        user_id: user.id, transaction_type: "transfer", amount, currency_code: from.currency_code,
         description: `Transferencia a ${to.account_name}`, account_id: from.account_id,
         transfer_to_account_id: to.account_id, transaction_date: new Date().toISOString(),
         input_method: "voice", raw_voice_text: text, is_recurring: false,
         category_id: null, notes: null, tags: null, recurring_id: null,
       });
       if (error) return err(error.message);
-      return { action: "transfer", message: `S/ ${Number(args.amount).toFixed(2)} transferidos de ${from.account_name} a ${to.account_name}.` };
+      return { action: "transfer", message: `${monto(amount, from.currency_code)} transferidos de ${from.account_name} a ${to.account_name}.` };
     },
     async pay_recurring(args, { supabase, user, text }) {
       const { data: recs } = await supabase.from("recurring_transactions")

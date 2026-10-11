@@ -12,16 +12,19 @@
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { llmConfigured, llmFetch } from "./llm.ts";
 import { createGitHub, GitHubError, type GitHubApi } from "./vault/github.ts";
-import { folderOfPath, planSync } from "./vault/docs.ts";
-import { resolveDue } from "./vault/fechas.ts";
+import { folderOfPath, planSync, slugOf } from "./vault/docs.ts";
+import { isIsoDate, limaToday, resolveDue } from "./vault/fechas.ts";
 import {
   opCreateTask, opMoveTask, opSetStatus, PartialMoveError, VaultError, type FileWrite,
 } from "./vault/ops.ts";
-import { armarCatalogo, CatalogoCache, parametrosBusqueda, recortarFicha, topePorFicha, type Catalogo, type CatalogoRow } from "./vault/catalogo.ts";
+import {
+  armarCatalogo, CatalogoCache, fragmentosDeFicha, fueRecortada, parametrosBusqueda, recortarFicha, topePorFicha, type Catalogo, type CatalogoRow,
+} from "./vault/catalogo.ts";
+import { construirIndice, fichaProy, type FichaProy, type Indice, type PendientesIn } from "./vault/proyectos.ts";
 import { rowsForFile } from "./vault/rows.ts";
 import {
-  buildAnswerMessages, clienteChips, mensajeMemoria, parseAnswer, pickRelated, toSources, type ClienteChip, type Hit, vozMemoria,
-  type Related, type RelatedRow, type Source,
+  buildAnswerMessages, clienteChips, mensajeMemoria, parseAnswer, pickRelated, textoPendientes, toSources, type ClienteChip, type Hit,
+  type ParsedAnswer, type Related, type RelatedRow, type Source, type TareaPend, vozMemoria,
 } from "./vault/search.ts";
 import {
   classify, INBOX_FOLDER, isFolderSlug, listDestinations, parseConfig, type Config,
@@ -370,6 +373,29 @@ export type SearchInput = {
   q: unknown; cliente?: unknown; answer?: unknown; limit?: unknown;
   /** Rutas de fichas YA validadas contra el catálogo (resolverFichas): se leen completas en vez de buscar por palabras. */
   fichaPaths?: string[];
+  /** Lo que dijo David, completo: el modelo que redacta responde a esto (q son solo las palabras clave para buscar). */
+  pregunta?: unknown;
+  /** Carpetas de 20-projects cuyos pendientes (las tareas reales, de vault_tasks) se suman como fuente. Máximo 3 entre todas. */
+  pendientes?: PendientesIn[];
+  /** Hoy en Lima (AAAA-MM-DD), para fechar los pendientes. */
+  hoy?: string;
+  /** También busca por palabras entre los docs de pendientes (aparte: no desplaza fichas ni notas). Solo el agente lo pide. */
+  incluirPendientes?: boolean;
+};
+/** Lo que el agente registra de cada búsqueda (sin el texto de David). */
+export type MemoriaMeta = {
+  fichas: string[];
+  hits: number;
+  pendientes: string[];
+  encontrado: boolean;
+  /** Se pidió una segunda respuesta porque la primera dijo «No lo encuentro» y había algo nuevo que mostrar. */
+  segunda: boolean;
+  /** Cuántas fichas o notas más (de la búsqueda por palabras) entraron en esa segunda respuesta. */
+  ampliada: number;
+  recortada: boolean;
+  llm: number;
+  tok_in: number;
+  tok_out: number;
 };
 export type SearchResult = {
   q: string;
@@ -383,6 +409,7 @@ export type SearchResult = {
   spoken: string | null;
   /** Lo que se dice en voz alta: la respuesta sin fuente, de ~100 caracteres como máximo (solo si se pidió respuesta). */
   voz: string | null;
+  meta: MemoriaMeta;
 };
 
 const catalogoCache = new CatalogoCache();
@@ -410,6 +437,35 @@ export async function cargarCatalogo(db: SupabaseClient, userId: string): Promis
   return cat;
 }
 
+// --- Proyectos hablados ------------------------------------------------------------------------------
+const aliasCache = new Map<string, { sha: string; at: number; fichas: FichaProy[] }>();
+const ALIAS_TTL_MS = 10 * 60_000;
+
+/** De cada ficha, solo lo que sirve para reconocer proyectos (cliente, madre y carpetas que nombra). Se guarda hasta que cambie el vault. */
+async function fichasParaAlias(db: SupabaseClient, userId: string): Promise<FichaProy[]> {
+  const sha = (await getSyncState(db, userId))?.tree_sha ?? null;
+  const hit = aliasCache.get(userId);
+  if (sha && hit && hit.sha === sha && Date.now() - hit.at < ALIAS_TTL_MS) return hit.fichas;
+  try {
+    const rows = await selectAll<{ path: string; cliente: string | null; padre: string | null; content: string | null }>((from, to) =>
+      db.from("vault_docs").select("path, cliente, padre, content").eq("user_id", userId).eq("kind", "ficha").order("path").range(from, to)
+    );
+    const fichas = rows.map((r) => fichaProy({ slug: slugOf(r.path), cliente: r.cliente, padre: r.padre, content: r.content }));
+    if (sha) aliasCache.set(userId, { sha, at: Date.now(), fichas });
+    return fichas;
+  } catch (e) {
+    // Sin fichas los alias salen solo de las carpetas y de la configuración: peor, pero no se cae.
+    console.error("vault: no pude leer las fichas para los alias:", e instanceof Error ? e.message : String(e));
+    return [];
+  }
+}
+
+/** Carpetas del vault + configuración de Norte + fichas → cómo reconocer un proyecto por su nombre hablado (ver vault/proyectos.ts). */
+export async function cargarIndiceProyectos(db: SupabaseClient, userId: string, cfg: Config): Promise<Indice> {
+  const [carpetas, fichas] = await Promise.all([knownFolders(db, userId), fichasParaAlias(db, userId)]);
+  return construirIndice(cfg, carpetas, fichas);
+}
+
 type FichaDoc = { path: string; title: string; cliente: string | null; proyecto: string | null; padre: string | null; tags: string[] | null; links: string[] | null; content: string | null };
 
 async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
@@ -421,11 +477,46 @@ async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   }
 }
 
+const MAX_PENDIENTES = 3;
+const tituloPendientes = (t: string) => t.replace(/^Pendientes\s*[—–-]\s*/i, "").trim();
+
+/** Tareas reales (no subtareas) de las carpetas dadas, agrupadas por carpeta. */
+async function tareasPorCarpeta(db: SupabaseClient, userId: string, carpetas: string[]): Promise<Map<string, TareaPend[]>> {
+  const rows = await selectAll<TareaPend & { folder: string; parent_line: number | null }>((from, to) =>
+    db.from("vault_tasks").select("folder, text, status, priority, due, done_on, note, parent_line").eq("user_id", userId).in("folder", carpetas)
+      .order("path").order("line").range(from, to)
+  );
+  const out = new Map<string, TareaPend[]>();
+  for (const r of rows) {
+    if (r.parent_line !== null) continue;
+    out.set(r.folder, [...(out.get(r.folder) ?? []), r]);
+  }
+  return out;
+}
+
+/**
+ * Fichas y notas que la búsqueda por palabras encuentra y que la primera respuesta no vio (hasta 2, con sus fragmentos). Cuando la
+ * IA ya eligió una ficha, la búsqueda normal solo trae notas: si la ficha elegida no tenía la respuesta, aquí se mira todo lo demás.
+ */
+async function ampliarBusqueda(db: SupabaseClient, q: string, cliente: string | null, vistos: Set<string>): Promise<Hit[]> {
+  try {
+    const { data, error } = await db.rpc("vault_search", { p_query: q, p_cliente: cliente, p_kinds: null, p_limit: 4, p_context: true });
+    if (error) throw new Error(error.message);
+    return ((data ?? []) as Hit[]).filter((h) => !vistos.has(h.path)).slice(0, 2);
+  } catch (e) {
+    console.error("vault: la búsqueda ampliada falló:", e instanceof Error ? e.message : String(e));
+    return [];
+  }
+}
+
 export async function searchMemory(db: SupabaseClient, userId: string, input: SearchInput): Promise<SearchResult> {
   const q = typeof input.q === "string" ? input.q.trim().slice(0, 300) : "";
+  const pregunta = typeof input.pregunta === "string" && input.pregunta.trim() ? input.pregunta.trim().slice(0, 300) : q;
   const cliente = typeof input.cliente === "string" && input.cliente.trim() ? input.cliente.trim() : null;
   const wantAnswer = input.answer === true;
   const limit = Number.isInteger(input.limit) ? Math.min(Math.max(input.limit as number, 1), 12) : 8;
+  const hoy = isIsoDate(input.hoy) ? input.hoy : limaToday();
+  const meta: MemoriaMeta = { fichas: [], hits: 0, pendientes: [], encontrado: false, segunda: false, ampliada: 0, recortada: false, llm: 0, tok_in: 0, tok_out: 0 };
 
   // Una sola lectura liviana (≈100 filas) sirve para los chips, el conteo y resolver los relacionados.
   const catalogP = selectAll<{ path: string; title: string; cliente: string | null; proyecto: string | null; padre: string | null; kind: string }>(
@@ -446,14 +537,50 @@ export async function searchMemory(db: SupabaseClient, userId: string, input: Se
         })
     : Promise.resolve([]);
 
+  // Los docs de pendientes no tienen texto (sus tareas viven en vault_tasks): la búsqueda por palabras solo los encuentra por su
+  // título, y sirve para saber DE QUÉ proyecto traer las tareas. Va aparte para no desplazar fichas ni notas del límite.
+  // Solo cuando quien llama no supo decir de qué proyecto (si ya lo dijo, esto solo agregaría ruido), y sin las palabras que están
+  // en el título de TODOS los pendientes ("Pendientes — …"): con "estado pendientes lota" coincidirían los 33.
+  const qPend = q.replace(/\b(pendientes?|tareas?|proyectos?|estado)\b/gi, " ").replace(/\s+/g, " ").trim();
+  const pendDocsP: PromiseLike<{ path: string; title: string }[]> = input.incluirPendientes && qPend.length >= 3 && !input.pendientes?.length
+    ? db.rpc("vault_search", { p_query: qPend, p_cliente: null, p_kinds: ["pendientes"], p_limit: MAX_PENDIENTES, p_context: false })
+        .then(({ data, error }) => (error ? [] : ((data ?? []) as { path: string; title: string }[])))
+    : Promise.resolve([]);
+
   // Primero se leen las fichas: si ninguna existe (catálogo cacheado con una ficha ya borrada), la búsqueda por palabras
   // vuelve a cubrir fichas y notas en vez de quedarse solo con notas.
   const completos: Record<string, string> = {};
   const fichaDocs = await fichasP;
+  const tope = topePorFicha(fichaDocs.length);
+  const sobre = `${pregunta} ${q}`;
+  const recortadas: FichaDoc[] = [];
   const fichaHits: Hit[] = fichaDocs.map((d) => {
-    completos[d.path] = recortarFicha(d.content ?? "", topePorFicha(fichaDocs.length), q);
+    completos[d.path] = recortarFicha(d.content ?? "", tope, sobre);
+    if (fueRecortada(completos[d.path])) recortadas.push(d);
     return { path: d.path, kind: "ficha", title: d.title, cliente: d.cliente, proyecto: d.proyecto, padre: d.padre, tags: d.tags ?? [], links: d.links ?? [], score: 1, snippet: "", context: null };
   });
+  meta.fichas = fichaDocs.map((d) => slugOf(d.path));
+  meta.recortada = recortadas.length > 0;
+
+  // Pendientes: las carpetas que pidió quien llama y, después, las que encontró la búsqueda por palabras (nunca el cajón: son cientos).
+  const pendHits: Hit[] = [];
+  const carpetas = new Map<string, string>();
+  const sumar = (carpeta: string, etiqueta: string) => {
+    if (carpetas.size < MAX_PENDIENTES && isFolderSlug(carpeta) && carpeta !== INBOX_FOLDER && !carpetas.has(carpeta)) carpetas.set(carpeta, etiqueta.slice(0, 80));
+  };
+  for (const p of input.pendientes ?? []) if (p && typeof p.carpeta === "string") sumar(p.carpeta, String(p.etiqueta ?? p.carpeta));
+  for (const d of await pendDocsP) sumar(folderOfPath(d.path), tituloPendientes(d.title));
+  if (carpetas.size) {
+    const tareas = await tareasPorCarpeta(db, userId, [...carpetas.keys()]);
+    for (const [carpeta, etiqueta] of carpetas) {
+      const texto = textoPendientes(etiqueta, tareas.get(carpeta) ?? [], hoy);
+      if (!texto) continue;
+      const path = `20-projects/${carpeta}/pendientes.md`;
+      completos[path] = texto;
+      meta.pendientes.push(carpeta);
+      pendHits.push({ path, kind: "pendientes", title: `Pendientes — ${etiqueta}`, cliente: null, proyecto: null, padre: null, tags: [], links: [], score: 1, snippet: "", context: null });
+    }
+  }
 
   let hits: Hit[] = [];
   if (q) {
@@ -462,10 +589,11 @@ export async function searchMemory(db: SupabaseClient, userId: string, input: Se
     if (error) throw new VaultError(`No pude buscar en el vault: ${error.message}`, 500);
     hits = (data ?? []) as Hit[];
   }
-  hits = [...fichaHits, ...hits];
+  hits = [...fichaHits, ...pendHits, ...hits];
+  meta.hits = hits.length;
   const catalog = await catalogP;
   const clientes = clienteChips(catalog);
-  const base = { q, clientes, indexed: catalog.length };
+  const base = { q, clientes, indexed: catalog.length, meta };
   if (!hits.length) return { ...base, answer: null, answerError: null, sources: [], related: [], spoken: null, voz: null };
 
   // Relacionados: fichas enlazadas desde la mejor coincidencia (wikilinks y padre) y luego el resto de coincidencias.
@@ -482,27 +610,75 @@ export async function searchMemory(db: SupabaseClient, userId: string, input: Se
   let voz: string | null = null;
   let shown = hits;
   if (wantAnswer) {
-    const fuentes = hits.slice(0, fichaHits.length ? fichaHits.length + 2 : 4);
+    const propias = fichaHits.length + pendHits.length;
+    const fuentes = hits.slice(0, propias + (fichaHits.length ? 2 : 4));
     if (!llmConfigured()) {
       answerError = "El modelo no está configurado.";
     } else {
-      try {
-        const res = await withTimeout(llmFetch({ messages: buildAnswerMessages(q, fuentes, completos), temperature: 0.1, max_tokens: 260 }), 12_000);
+      const redactar = async (cuales: Hit[], material: Record<string, string>, fragmentos: boolean): Promise<ParsedAnswer> => {
+        const res = await withTimeout(llmFetch({ messages: buildAnswerMessages(pregunta, cuales, material, { fragmentos }), temperature: 0.1, max_tokens: 260 }), 12_000);
         if (!res.ok) throw new Error(`modelo ${res.status}`);
         const data = await res.json();
-        const parsed = parseAnswer(String(data?.choices?.[0]?.message?.content ?? ""), fuentes.length);
+        meta.llm++;
+        meta.tok_in += Number(data?.usage?.prompt_tokens) || 0;
+        meta.tok_out += Number(data?.usage?.completion_tokens) || 0;
+        const parsed = parseAnswer(String(data?.choices?.[0]?.message?.content ?? ""), cuales.length);
         if (!parsed) throw new Error("respuesta vacía");
+        return parsed;
+      };
+      let respaldadoPor = fuentes; // las fuentes numeradas de la respuesta que se queda
+      try {
+        let parsed = await redactar(fuentes, completos, false);
+        // «No lo encuentro»: segunda oportunidad con lo que la primera no vio, y solo si hay algo nuevo que mostrar:
+        //  · las partes de las fichas que se leyeron recortadas y mencionan las palabras de la pregunta;
+        //  · otras fichas o notas que la búsqueda por palabras encuentra (la IA pudo elegir la ficha equivocada del catálogo).
+        // Una llamada más al modelo, únicamente cuando la primera falló.
+        if (!parsed.found) {
+          const fuentes2: Hit[] = [];
+          const material2: Record<string, string> = {};
+          for (const d of recortadas) {
+            const f = fragmentosDeFicha(d.content ?? "", sobre);
+            const h = fichaHits.find((x) => x.path === d.path);
+            if (f && h) {
+              material2[d.path] = f;
+              fuentes2.push(h);
+            }
+          }
+          const extra = q && fichaHits.length ? await ampliarBusqueda(db, q, cliente, new Set(hits.map((h) => h.path))) : [];
+          meta.ampliada = extra.length;
+          if (fuentes2.length || extra.length) {
+            for (const h of pendHits) {
+              material2[h.path] = completos[h.path];
+              fuentes2.push(h);
+            }
+            fuentes2.push(...extra);
+            meta.segunda = true;
+            try {
+              const segunda = await redactar(fuentes2, material2, true);
+              if (segunda.found) {
+                parsed = segunda;
+                respaldadoPor = fuentes2;
+              }
+            } catch (e) {
+              console.error("vault: la segunda respuesta falló:", e instanceof Error ? e.message : String(e));
+            }
+          }
+        }
         answer = parsed.answer;
+        meta.encontrado = parsed.found;
         // Las fuentes que respaldan la respuesta; si el modelo no las nombró, las dos mejores.
-        const usadas = parsed.found ? (parsed.used.length ? parsed.used.map((n) => fuentes[n - 1]) : fuentes.slice(0, 2)) : fuentes;
+        const usadas = parsed.found ? (parsed.used.length ? parsed.used.map((n) => respaldadoPor[n - 1]) : respaldadoPor.slice(0, 2)) : fuentes;
         shown = usadas;
         spoken = parsed.found ? mensajeMemoria(parsed.answer, usadas[0]?.title ?? null) : mensajeMemoria(parsed.answer, null);
         voz = vozMemoria(parsed.answer);
       } catch (e) {
         console.error("vault: no pude redactar la respuesta:", e instanceof Error ? e.message : String(e));
         answerError = "No pude redactar la respuesta; estas son las fichas encontradas.";
+        meta.encontrado = true; // hay fuentes, aunque no se haya podido redactar
       }
     }
+  } else {
+    meta.encontrado = true;
   }
 
   const related = pickRelated({

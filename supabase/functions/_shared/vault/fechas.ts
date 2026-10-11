@@ -16,6 +16,14 @@ export function limaToday(now: Date = new Date()): string {
   return new Date(now.getTime() - 5 * 3_600_000).toISOString().slice(0, 10);
 }
 
+/**
+ * Fecha y minutos del día en Lima a partir de `limaNow`: el agente lo recibe ya corrido −5 h (el runtime corre en UTC), así que
+ * sus getters UTC son la hora de Lima. A las 22:30 en Lima (03:30 UTC del día siguiente) `hoy` sigue siendo el día de Lima.
+ */
+export function relojLima(limaNow: Date): { hoy: string; minutos: number } {
+  return { hoy: limaNow.toISOString().slice(0, 10), minutos: limaNow.getUTCHours() * 60 + limaNow.getUTCMinutes() };
+}
+
 const toUtc = (iso: string): number => {
   const [y, m, d] = iso.split("-").map(Number);
   return Date.UTC(y, m - 1, d);

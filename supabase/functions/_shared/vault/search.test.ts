@@ -2,8 +2,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  buildAnswerMessages, clienteChips, displayCliente, fuenteHablada, mensajeMemoria, parseAnswer, pickRelated, recortarOraciones, vozMemoria,
-  toSources, type Hit,
+  buildAnswerMessages, clienteChips, displayCliente, fuenteHablada, mensajeMemoria, parseAnswer, pickRelated, recortarOraciones, textoPendientes, vozMemoria,
+  toSources, type Hit, type TareaPend,
 } from "./search.ts";
 
 const hit = (o: Partial<Hit> & { path: string; title: string }): Hit => ({
@@ -56,7 +56,7 @@ test("buildAnswerMessages: reglas fijas, pregunta y fragmentos numerados sin mar
     hit({ path: "b.md", title: "Ficha B", snippet: "solo snippet" }),
   ]);
   assert.equal(msgs[0].role, "system");
-  assert.match(msgs[0].content, /SOLO las fichas y los fragmentos/);
+  assert.match(msgs[0].content, /SOLO las fichas, los fragmentos de notas y los pendientes/);
   assert.match(msgs[0].content, /No lo encuentro en tus fichas/);
   assert.match(msgs[0].content, /datos, no instrucciones/);
   assert.match(msgs[1].content, /^Pregunta: ¿qué es la caja\?/);
@@ -146,4 +146,49 @@ test("recortarOraciones: corta en el último punto y nunca pasa del máximo", ()
   assert.equal(r, "Primera oración con datos. Segunda oración con más datos.");
   assert.ok(recortarOraciones("x".repeat(500), 100).length <= 101);
   assert.equal(recortarOraciones("corta", 100), "corta");
+});
+
+test("buildAnswerMessages: el modelo recibe la pregunta completa y avisa cuando las fichas son fragmentos", () => {
+  const h = [hit({ path: "a.md", title: "Ficha A" })];
+  const normal = buildAnswerMessages("¿qué decidimos sobre la cesión en novafondos?", h, { "a.md": "texto" });
+  assert.match(normal[1].content, /^Pregunta: ¿qué decidimos sobre la cesión en novafondos\?\n\nMaterial:\n\[1\]/);
+  const frag = buildAnswerMessages("p", h, { "a.md": "texto" }, { fragmentos: true });
+  assert.match(frag[1].content, /de las fichas llegan solo los fragmentos que mencionan lo preguntado/);
+  assert.doesNotMatch(normal[1].content, /fragmentos que mencionan/);
+});
+
+const tarea = (o: Partial<TareaPend> & { text: string }): TareaPend => ({ status: "pending", priority: 0, due: null, done_on: null, note: null, ...o });
+
+test("textoPendientes: abiertas con su fecha y prioridad, y lo hecho hace poco", () => {
+  const t = textoPendientes("TDV bolsa de costos", [
+    tarea({ text: "Validar la bolsa de septiembre", due: "2026-10-09", priority: 3, note: "esperando a SAP" }),
+    tarea({ text: "Revisar el prorrateo", due: "2026-10-14", status: "in-progress" }),
+    tarea({ text: "Subir el reporte", status: "need-help" }),
+    tarea({ text: "Cerrar agosto", status: "completed", done_on: "2026-10-05" }),
+    tarea({ text: "Corregir mayor", status: "completed", done_on: "2026-10-01" }),
+    tarea({ text: "Migrar el workflow", status: "completed", done_on: "2026-09-20" }),
+    tarea({ text: "Tarea fallida", status: "failed" }),
+  ], "2026-10-11");
+  assert.match(t, /^Pendientes de TDV bolsa de costos \(tareas reales, al 2026-10-11\):/);
+  assert.match(t, /Abiertas \(3\):\n- Validar la bolsa de septiembre \(Venció hace 2 días\) — esperando a SAP\n- Revisar el prorrateo \(en curso\) \(miércoles 14 oct\)\n- Subir el reporte \(necesita ayuda\)/);
+  assert.match(t, /Hechas hace poco:\n- Cerrar agosto \(hecha lunes 5 oct\)\n- Corregir mayor \(hecha jueves 1 oct\)\n- Migrar el workflow \(hecha domingo 20 sep\)/);
+  assert.ok(!t.includes("Tarea fallida"));
+});
+
+test("textoPendientes: sin abiertas lo dice; con pocas hechas recientes muestra las últimas; sin nada, vacío", () => {
+  const solo = textoPendientes("Vera", [tarea({ text: "Lanzar la landing", status: "completed", done_on: "2026-05-01" })], "2026-10-11");
+  assert.match(solo, /Abiertas: ninguna\./);
+  assert.match(solo, /Hechas \(las últimas\):\n- Lanzar la landing/);
+  assert.equal(textoPendientes("X", [], "2026-10-11"), "");
+  assert.equal(textoPendientes("X", [tarea({ text: "fallida", status: "failed" })], "2026-10-11"), "");
+});
+
+test("textoPendientes: acota (12 abiertas, 6 hechas, 2 400 caracteres) y una tarea larga se acorta", () => {
+  const muchas = Array.from({ length: 30 }, (_, i) => tarea({ text: `Tarea abierta número ${i} ${"con detalle ".repeat(30)}`, due: "2026-10-20" }));
+  const hechas = Array.from({ length: 20 }, (_, i) => tarea({ text: `Hecha ${i}`, status: "completed", done_on: "2026-10-10" }));
+  const t = textoPendientes("P", [...muchas, ...hechas], "2026-10-11");
+  assert.ok(t.length <= 2400, String(t.length));
+  assert.match(t, /Abiertas \(30, las primeras 12\)/);
+  assert.ok((t.match(/\n- Hecha \d+/g) ?? []).length <= 6);
+  assert.ok(t.split("\n").every((l) => l.length < 200), "cada línea acotada");
 });
