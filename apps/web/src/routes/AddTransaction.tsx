@@ -445,6 +445,15 @@ export function AddTransactionPage() {
     return () => document.removeEventListener('visibilitychange', alCambiar);
   }, [cortarVoz, terminarConversacion, iniciarConversacion]);
 
+  // Ir a otro módulo de la app desmonta esta pantalla, y el micrófono no es de React: seguía escuchando (y al terminar la frase
+  // ejecutaba el pedido, o volvía a escuchar) con David en otra pestaña. Salir de Wabid = pasar a segundo plano.
+  // cortarVoz y terminarConversacion son estables ([]), así que esto corre solo al desmontar.
+  useEffect(() => () => {
+    turnoRef.current++;
+    cortarVoz();
+    terminarConversacion();
+  }, [cortarVoz, terminarConversacion]);
+
   // ── Text submit ──
   const handleSubmitText = () => {
     if (!input.trim()) return;
