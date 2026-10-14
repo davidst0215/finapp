@@ -90,6 +90,33 @@ test("nombres parecidos NO se confunden: Juana≠Juan, Luisa≠Luis, Daniela≠D
   assert.equal(buscarContacto("Marco", [marcoSaya, marcoGym], "del gimnasios").kind, "many", "una pista parecida no elige");
 });
 
+// El dictado por voz no sabe cómo se escribió el nombre al guardarlo: «Melisa» y «Melissa» suenan igual. Solo cuenta cuando la
+// escritura exacta no encontró a nadie; y las parejas de arriba (Juana/Juan…) siguen siendo personas distintas.
+test("misma pronunciación, otra ortografía: Melissa = Melisa = Mellisa = Melyssa, Anna = Ana", () => {
+  const melissa = [c("Melissa", "+51944000020")];
+  for (const dicho of ["Melisa", "Mellisa", "Melyssa", "MELISA", "mi Melisa"]) {
+    const r = buscarContacto(dicho, melissa);
+    assert.equal(r.kind === "one" && r.contacto.nombre, "Melissa", `«${dicho}» encuentra a Melissa`);
+  }
+  assert.equal(buscarContacto("Melissa", [c("Melisa", "+51944000021")]).kind, "one", "también al revés");
+  assert.equal(buscarContacto("Ana", [c("Anna", "+51944000022")]).kind, "one");
+  assert.equal(buscarContacto("Melisa Rojas", [c("Melissa Rojas", "+51944000023")]).kind, "one", "nombre y apellido");
+  // Lo que no suena igual sigue sin encontrarse.
+  assert.equal(buscarContacto("Melina", melissa).kind, "none");
+  assert.equal(buscarContacto("Lisa", melissa).kind, "none");
+  assert.equal(buscarContacto("Meli", melissa).kind, "none", "sin abreviaturas (para eso está el apodo)");
+  assert.equal(buscarContacto("Melisa Paz", [c("Melissa Rojas", "+51944000023")]).kind, "none", "un apellido distinto no es ella");
+  // La escritura exacta gana: con Ana y Anna guardadas, «Ana» es Ana.
+  const dos = [c("Ana", "+51944000024"), c("Anna", "+51944000025")];
+  const exacta = buscarContacto("Ana", dos);
+  assert.equal(exacta.kind === "one" && exacta.contacto.nombre, "Ana");
+  // Si solo suena igual a dos, se pregunta cuál (nunca se elige uno).
+  assert.equal(buscarContacto("Melyssa", [c("Melissa", "+51944000026"), c("Melisa", "+51944000027")]).kind, "many");
+  // La relación sigue mandando: otro «de Saya» no es ella.
+  assert.equal(buscarContacto("Melisa", [c("Melissa", "+51944000028", "de Saya")], "de Saya").kind, "one");
+  assert.equal(buscarContacto("Melisa", [c("Melissa", "+51944000028", "de Saya")], "del gimnasio").kind, "none");
+});
+
 test("lo único que se perdona: tildes, mayúsculas y relleno (palabras IGUALES)", () => {
   assert.equal(nombreDe(buscarContacto("NINOSKA", AGENDA)), "Niñoska");
   assert.equal(nombreDe(buscarContacto("josé luis pérez", AGENDA)), "José Luis Pérez");

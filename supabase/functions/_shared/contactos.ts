@@ -74,33 +74,48 @@ export type Busqueda =
  * Sin coincidencia por nombre, las palabras que sobran pueden ser la relación ("Marco Saya"), pero solo si al menos una
  * palabra es del nombre: "Saya" a secas no elige a nadie, y "Marco Gómez" no se carga al único Marco.
  * Si David dio una relación (`pista`: «Marco del gimnasio») y el ÚNICO candidato tiene otra, no es él: «none» y se pide el número.
+ * Solo si la escritura exacta no encontró a nadie se repite la búsqueda con ortografías que suenan igual («Melisa» = «Melissa»): el
+ * dictado por voz no sabe cómo escribiste el nombre al guardarlo. Nunca junta nombres distintos («Marcos» sigue sin ser «Marco»).
  */
 export function buscarContacto(consulta: unknown, contactos: Contacto[], pista?: unknown): Busqueda {
-  const q = palabrasContacto(typeof consulta === "string" ? consulta : "");
+  const exacta = buscarCon(consulta, contactos, pista, palabrasContacto);
+  return exacta.kind !== "none" ? exacta : buscarCon(consulta, contactos, pista, palabrasFoneticas);
+}
+
+/**
+ * La palabra tal como suena: letra doble → una («Melissa» = «Melisa», «Anna» = «Ana»), «y» → «i» («Melyssa»), «v» → «b», «h» muda
+ * («Hector» = «Ector», pero «ch» se queda). Es lo mínimo que separa a la misma persona escrita de dos formas; «Juana», «Luisa» o
+ * «Marcos» siguen siendo otras palabras, porque no cambia ninguna letra que dé una sílaba distinta.
+ */
+const foneticaPalabra = (p: string): string => p.replace(/(.)\1+/g, "$1").replace(/y/g, "i").replace(/v/g, "b").replace(/(?<!c)h/g, "");
+const palabrasFoneticas = (s: string): string[] => palabrasContacto(s).map(foneticaPalabra);
+
+function buscarCon(consulta: unknown, contactos: Contacto[], pista: unknown, palabras: (s: string) => string[]): Busqueda {
+  const q = palabras(typeof consulta === "string" ? consulta : "");
   if (!q.length) return { kind: "none" };
-  const bolsa = (c: Contacto) => [...palabrasContacto(c.nombre), ...c.alias.flatMap(palabrasContacto)];
+  const bolsa = (c: Contacto) => [...palabras(c.nombre), ...c.alias.flatMap(palabras)];
 
   let c = contactos.filter((x) => cubreExacto(q, bolsa(x)));
   if (!c.length) {
     c = contactos.filter((x) => {
       const nombres = bolsa(x);
-      return q.some((t) => nombres.includes(t)) && cubreExacto(q, [...nombres, ...palabrasContacto(x.relacion ?? "")]);
+      return q.some((t) => nombres.includes(t)) && cubreExacto(q, [...nombres, ...palabras(x.relacion ?? "")]);
     });
   }
-  const clave = palabrasContacto(typeof pista === "string" ? pista : "");
+  const clave = palabras(typeof pista === "string" ? pista : "");
   if (c.length <= 1) {
     if (!c.length) return { kind: "none" };
     // La relación que David dijo debe estar en la del contacto; si no, es otra persona con el mismo nombre que no tengo.
-    if (clave.length && !cubreExacto(clave, palabrasContacto(c[0]!.relacion ?? ""))) return { kind: "none" };
+    if (clave.length && !cubreExacto(clave, palabras(c[0]!.relacion ?? ""))) return { kind: "none" };
     return { kind: "one", contacto: c[0]! };
   }
 
   if (clave.length) {
-    const porRelacion = c.filter((x) => cubreExacto(clave, palabrasContacto(x.relacion ?? "")));
+    const porRelacion = c.filter((x) => cubreExacto(clave, palabras(x.relacion ?? "")));
     if (porRelacion.length) c = porRelacion;
   }
   if (c.length > 1) {
-    const exactos = c.filter((x) => mismasPalabras(q, palabrasContacto(x.nombre)) || x.alias.some((a) => mismasPalabras(q, palabrasContacto(a))));
+    const exactos = c.filter((x) => mismasPalabras(q, palabras(x.nombre)) || x.alias.some((a) => mismasPalabras(q, palabras(a))));
     if (exactos.length) c = exactos;
   }
   return c.length === 1 ? { kind: "one", contacto: c[0]! } : { kind: "many", contactos: c };
