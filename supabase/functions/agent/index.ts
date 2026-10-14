@@ -6,6 +6,7 @@ import { prepararVoz, VOZ_MAX } from "../_shared/voz.ts";
 import { PERSONA } from "./prompt.ts";
 import { MODULES } from "./registry.ts";
 import { bearer, jwtSub } from "../_shared/jwt.ts";
+import { type FilaTraza, guardarTraza } from "../_shared/traza.ts";
 import { argumentos, loQueSeDice, respuestaInservible } from "./respuesta.ts";
 import { Tiempos } from "./tiempos.ts";
 import type { AgentContext, ToolResult } from "./types.ts";
@@ -87,6 +88,10 @@ Deno.serve(async (req: Request) => {
     });
   };
 
+  // Traza del pedido (tabla agent_trazas, migración 020): qué dijo David, qué eligió el modelo y qué pasó, para saber dónde se
+  // rompe. Existe desde que hay sesión y texto; se escribe por detrás y nunca retrasa ni rompe la respuesta (_shared/traza.ts).
+  let registrar: ((f: Omit<FilaTraza, "texto">) => void) | null = null;
+
   try {
     // Primero el token: la anon key (pública, va en el bundle) no trae `sub` y se corta antes de
     // leer el cuerpo o revelar configuración. Ese `sub` sin verificar solo arranca las lecturas
@@ -112,6 +117,13 @@ Deno.serve(async (req: Request) => {
       ? history.slice(-8).filter((h: { role?: string }) => h?.role !== "assistant").map((h: { content?: unknown }) => String(h?.content ?? "").slice(0, 500))
       : [];
     const ctx: AgentContext = { supabase, user: { id: sub } as User, text, limaNow: new Date(Date.now() - 5 * 60 * 60 * 1000), anteriores };
+    registrar = (f) => {
+      const guardado = guardarTraza(supabase, sub, { texto: text, voz: quiereVoz, ...f });
+      // Como en _shared/notify.ts: waitUntil mantiene viva la función hasta que termine de escribir; sin él (pruebas) corre igual.
+      // deno-lint-ignore no-explicit-any
+      const runtime = (globalThis as any).EdgeRuntime as { waitUntil?: (p: Promise<unknown>) => void } | undefined;
+      runtime?.waitUntil?.(guardado);
+    };
 
     const [user, contexts] = await Promise.all([
       t.medir("auth", supabase.auth.getUser(token).then((r) => r.data.user)),
@@ -175,6 +187,7 @@ Deno.serve(async (req: Request) => {
       respaldo ||= llm.respaldo;
       if (!llm.ok) {
         console.error("agent modelo:", llm.status, llm.cuerpo.slice(0, 300));
+        registrar({ error: `modelo_${llm.status}`, prov, respaldo, medidas: t.resumen() });
         return json({ error: "El modelo no respondió. Intenta de nuevo." }, 502);
       }
       const data = JSON.parse(llm.cuerpo);
@@ -190,11 +203,18 @@ Deno.serve(async (req: Request) => {
       const fallo: ToolResult = { action: "query", message: "No me salió la respuesta. ¿Me lo repites?" };
       const hablado = hablar(fallo);
       console.log(JSON.stringify({ evt: "agent", fn: "(inservible)", prov, respaldo, msg_chars: fallo.message.length, voz_chars: hablado.length, ...t.resumen() }));
+      registrar({
+        fn: call?.function?.name ?? "(inservible)", args: call?.function?.arguments, resultado: fallo.action, mensaje: fallo.message,
+        error: "inservible", prov, respaldo, voz_chars: hablado.length, medidas: t.resumen(),
+      });
       return responder(fallo, hablado);
     }
 
     const owner = OWNER.get(call.function.name);
-    if (!owner) return responder({ action: "unknown", message: "No entendí. Intenta de nuevo." });
+    if (!owner) {
+      registrar({ fn: call.function.name, args: call.function.arguments, error: `tool_desconocida:${call.function.name}`, prov, respaldo, medidas: t.resumen() });
+      return responder({ action: "unknown", message: "No entendí. Intenta de nuevo." });
+    }
     const args = argumentos(call) ?? {};
     const result = await t.medir("tool", owner.handlers[call.function.name](args, ctx, dataByModule.get(owner.id)));
     // Una línea por pedido, sin contenido de David: sirve para seguir el p50 en los logs.
@@ -204,9 +224,14 @@ Deno.serve(async (req: Request) => {
     console.log(JSON.stringify({
       evt: "agent", fn: call.function.name, prov, respaldo, voz: quiereVoz, msg_chars: result.message.length, voz_chars: hablado.length, ...t.resumen(),
     }));
+    registrar({
+      fn: call.function.name, args, resultado: result.action, mensaje: result.message, prov, respaldo, voz_chars: hablado.length,
+      medidas: t.resumen(),
+    });
     return responder(result, hablado);
   } catch (error) {
     console.error("agent error:", error instanceof Error ? error.message : String(error));
+    registrar?.({ error: `excepcion: ${error instanceof Error ? error.message : String(error)}`, medidas: t.resumen() });
     return json({ error: "Algo falló de mi lado. Intenta de nuevo." }, 500);
   }
 });
