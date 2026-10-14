@@ -35,8 +35,12 @@ const sinContacto = "No pude leer tus contactos ahora. Inténtalo de nuevo.";
 const NO_SEGURA = "No estoy segura del número que entendí. Dímelo otra vez, dígito por dígito.";
 const VARIOS_NUMEROS = "Veo más de un número en lo que dijiste. Dime solo el de quien recibe el mensaje.";
 
-/** Una línea por pedido, sin nombres ni números: sirve para ver cuántas veces no se encuentra o queda ambiguo. */
-const log = (fn: string, resultado: string) => console.log(JSON.stringify({ evt: "contactos", fn, resultado }));
+/**
+ * Una línea por pedido, sin nombres ni números: sirve para ver cuántas veces no se encuentra o queda ambiguo. `extra` solo lleva
+ * conteos (nunca texto): cuántos contactos hay, si el modelo mandó pista de relación y cuántos comparten al menos una palabra.
+ */
+const log = (fn: string, resultado: string, extra: Record<string, number | boolean> = {}) =>
+  console.log(JSON.stringify({ evt: "contactos", fn, resultado, ...extra }));
 
 /**
  * Un teléfono que se coló dentro de `nombre` («999 888 777», «Pedro 999888777», «999/888/777», «999–888–777»): se quita, con sus
@@ -83,10 +87,18 @@ async function resolver(fn: string, para: Gestion, args: Record<string, unknown>
   if (palabrasContacto(nombre).length === 0) nombre = "";
   const candidato = para === "buscar" ? "" : String(args.telefono ?? "").trim() || telefonosEnTexto(nombreDicho)[0] || "";
 
+  let diagnostico: Record<string, number | boolean> = {};
   if (nombre) {
     const lista = await cargar(ctx);
     if (!lista) return { ok: false, res: err(sinContacto) };
     const r = buscarContacto(nombre, lista, args.relacion);
+    const q = palabrasContacto(nombre);
+    diagnostico = {
+      agenda: lista.length,
+      pista: str(args.relacion) !== "",
+      palabras: q.length,
+      parcial: lista.filter((c) => [...palabrasContacto(c.nombre), ...c.alias.flatMap(palabrasContacto)].some((t) => q.includes(t))).length,
+    };
     if (r.kind === "one") {
       log(fn, "uno");
       return { ok: true, nombre: r.contacto.nombre, relacion: r.contacto.relacion, e164: r.contacto.telefono };
@@ -118,8 +130,11 @@ async function resolver(fn: string, para: Gestion, args: Record<string, unknown>
     }
     log(fn, "telefono_no_dictado");
   }
-  if (!nombre) return { ok: false, res: { action: "clarify", message: para === "buscar" ? "¿De quién?" : "¿A quién?" } };
-  log(fn, "ninguno");
+  if (!nombre) {
+    log(fn, "sin_nombre", { nombre_chars: nombreDicho.length });
+    return { ok: false, res: { action: "clarify", message: para === "buscar" ? "¿De quién?" : "¿A quién?" } };
+  }
+  log(fn, "ninguno", diagnostico);
   return { ok: false, res: { action: "clarify", ...frasesNoEsta(nombreDicho, para) } };
 }
 
