@@ -25,7 +25,8 @@ function tabla(inicial: { texto: string; user_id?: string; categoria?: string | 
     return { hecho_id: `h${n}`, user_id, texto, categoria, creado: t, actualizado: t };
   };
   for (const f of inicial) filas.push(nueva(f.texto, f.user_id ?? OWNER, f.categoria ?? null));
-  const estado = { lecturas: 0, escrituras: 0, falla: null as null | { code?: string; message: string }, sinTabla: false };
+  // `pasajeras`: cuántas lecturas seguidas fallan con un error de la plataforma antes de volver a responder bien; `intentos`: lecturas pedidas.
+  const estado = { lecturas: 0, escrituras: 0, falla: null as null | { code?: string; message: string }, sinTabla: false, pasajeras: 0, intentos: 0 };
   const filtrar = (eqs: [string, unknown][]) => filas.filter((f) => eqs.every(([c, v]) => (f as unknown as Record<string, unknown>)[c] === v));
 
   // deno-lint-ignore no-explicit-any
@@ -34,6 +35,13 @@ function tabla(inicial: { texto: string; user_id?: string; categoria?: string | 
     let orden: [string, boolean][] = [];
     let tope = Infinity;
     const ejecutar = () => {
+      if (op === "select") {
+        estado.intentos++;
+        if (estado.pasajeras > 0) {
+          estado.pasajeras--;
+          return { data: null, error: { message: "Project not specified." } };
+        }
+      }
       if (estado.sinTabla) return { data: null, error: { code: "42P01", message: 'relation "wabid_hechos" does not exist' } };
       if (estado.falla) return { data: null, error: estado.falla };
       const sel = filtrar(eqs);
@@ -324,6 +332,35 @@ test("contexto: máximo 40 recuerdos o ~800 tokens, los más recientes primero, 
   const largos = tabla(Array.from({ length: 41 }, (_, i) => ({ texto: `R${i} ` + "palabra ".repeat(25).trim(), user_id: u2 })));
   const c2 = await hechos.loadContext!(ctx(largos.db, "hola", u2));
   assert.ok(c2.prompt.length <= MAX_CHARS_CONTEXTO, `largo ${c2.prompt.length}`);
+});
+
+test("un fallo pasajero de la plataforma («Project not specified.») se reintenta una vez: el pedido no se queda sin recuerdos", async () => {
+  const log = capturarLog();
+  try {
+    // Un fallo y luego bien: el contexto trae los recuerdos (2 lecturas) y no hubo error en el log.
+    const u = nuevoUsuario();
+    const t = tabla([{ texto: BBVA, user_id: u }]);
+    t.estado.pasajeras = 1;
+    assert.match((await hechos.loadContext!(ctx(t.db, "hola", u))).prompt, /BBVA/, "la segunda lectura trajo el recuerdo");
+    assert.equal(t.estado.intentos, 2);
+
+    // Dos fallos seguidos: se rinde con el contexto vacío (no reintenta sin fin) y no cachea el fallo.
+    const u2 = nuevoUsuario();
+    const t2 = tabla([{ texto: BBVA, user_id: u2 }]);
+    t2.estado.pasajeras = 2;
+    assert.equal((await hechos.loadContext!(ctx(t2.db, "hola", u2))).prompt, "");
+    assert.equal(t2.estado.intentos, 2, "un solo reintento");
+    assert.match((await hechos.loadContext!(ctx(t2.db, "hola", u2))).prompt, /BBVA/, "el siguiente pedido lo lee");
+
+    // Un error que no es pasajero (permisos) NO se reintenta.
+    const u3 = nuevoUsuario();
+    const t3 = tabla([{ texto: BBVA, user_id: u3 }]);
+    t3.estado.falla = { code: "42501", message: "permission denied for table wabid_hechos" };
+    assert.equal((await hechos.loadContext!(ctx(t3.db, "hola", u3))).prompt, "");
+    assert.equal(t3.estado.intentos, 1, "sin reintento para errores permanentes");
+  } finally {
+    log.restaurar();
+  }
 });
 
 test("sin recuerdos o sin la tabla (migración 019 sin aplicar): contexto vacío, sin error; los handlers fallan con una frase", async () => {

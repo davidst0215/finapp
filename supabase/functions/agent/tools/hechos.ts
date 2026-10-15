@@ -39,6 +39,21 @@ async function listar(ctx: AgentContext, limite = MAX_HECHOS): Promise<Hecho[]> 
   return (data ?? []) as Hecho[];
 }
 
+// Un fallo pasajero de la plataforma no debe dejar al pedido sin recuerdos: el 14-oct, entre 17 pedidos, uno recibió «Project not
+// specified.» (el enrutador de Supabase) y corrió sin saber nada de David. Una segunda lectura casi siempre sale bien. Solo se
+// reintenta lo que parece pasajero: un error de permisos o de tabla ausente se dice una vez y listo.
+const PASAJERO = /project not specified|fetch failed|network|timed? ?out|econn|socket hang up|\b50[234]\b/i;
+const ESPERA_REINTENTO_MS = 150;
+async function listarConReintento(ctx: AgentContext, limite: number): Promise<Hecho[]> {
+  try {
+    return await listar(ctx, limite);
+  } catch (e) {
+    if (!(e instanceof Error) || !PASAJERO.test(e.message)) throw e;
+    await new Promise((r) => setTimeout(r, ESPERA_REINTENTO_MS));
+    return await listar(ctx, limite);
+  }
+}
+
 /** El instante real: `limaNow` llega corrido −5 h para que sus getters den la hora de Lima (ver agent/index.ts). */
 const ahora = (ctx: AgentContext): string => new Date(ctx.limaNow.getTime() + 5 * 3_600_000).toISOString();
 
@@ -48,7 +63,7 @@ async function loadContext(ctx: AgentContext) {
   if (hit) return { prompt: hit.prompt, data: undefined, estable: true };
   try {
     // Uno más que el tope, para saber si quedaron recuerdos fuera.
-    const bloque = armarBloque(await listar(ctx, MAX_EN_CONTEXTO + 1));
+    const bloque = armarBloque(await listarConReintento(ctx, MAX_EN_CONTEXTO + 1));
     cache.set(ctx.user.id, bloque);
     return { prompt: bloque.prompt, data: undefined, estable: true };
   } catch (e) {
