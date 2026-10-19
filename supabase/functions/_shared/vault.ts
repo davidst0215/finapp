@@ -7,11 +7,14 @@
 //   VAULT_REPO           "dueño/repo"
 //   VAULT_BRANCH         rama (por defecto "main")
 //   VAULT_OWNER_ID       UUID de David en Supabase Auth: el token de GitHub solo se usa a su nombre
-//   VAULT_PROJECTS_JSON  (opcional) el JSON de projects.config.json de Norte; sin él todo cuenta como personal
+//   VAULT_PROJECTS_JSON  (respaldo) el JSON de projects.config.json de Norte. La fuente es el propio vault: 90-meta/norte.config.json
+//                        (lo copia la tarea programada del portátil y la sincronización lo guarda en vault_sync, migración 022).
+//                        Manda el del vault; sin ninguno de los dos todo cuenta como personal
 //   VAULT_SYNC_SECRET    (opcional) secreto para que un cron sincronice sin sesión (cabecera x-vault-secret)
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { llmConfigured, llmFetch } from "./llm.ts";
 import { createGitHub, GitHubError, type GitHubApi } from "./vault/github.ts";
+import { configACargar, configValida, elegirConfig } from "./vault/config.ts";
 import { folderOfPath, planSync, slugOf } from "./vault/docs.ts";
 import { isIsoDate, limaToday, resolveDue } from "./vault/fechas.ts";
 import {
@@ -33,7 +36,7 @@ import {
   classify, INBOX_FOLDER, isFolderSlug, listDestinations, parseConfig, type Config,
 } from "./vault/taxonomy.ts";
 import { isLevel, isStatus, TaskNotFoundError, type Level, type TaskStatus } from "./vault/tasks.ts";
-import type { DocRow, TaskRow } from "./vault/types.ts";
+import type { DocRow, TaskRow, TreeEntry } from "./vault/types.ts";
 import { buildTasksView, toViewTask, type TasksView, type ViewTask } from "./vault/view.ts";
 
 export { VaultError, TaskNotFoundError, PartialMoveError, GitHubError };
@@ -91,6 +94,60 @@ export async function getSyncState(db: SupabaseClient, userId: string): Promise<
   const { data, error } = await db.from("vault_sync").select("tree_sha, synced_at, docs, tasks").eq("user_id", userId).maybeSingle();
   if (error) throw new VaultError(`No pude leer el estado del vault: ${error.message}`, 500);
   return (data as SyncState | null) ?? null;
+}
+
+// --- Configuración de proyectos (viene del vault) -------------------------------------------------
+type ConfigGuardada = { config_sha: string | null; config_json: string | null };
+
+/** La config ya guardada. Nunca lanza: sin la migración 022 (columnas ausentes) o con la base caída simplemente no hay. */
+async function leerConfigGuardada(db: SupabaseClient, userId: string): Promise<ConfigGuardada | null> {
+  try {
+    const { data, error } = await db.from("vault_sync").select("config_sha, config_json").eq("user_id", userId).maybeSingle();
+    return error ? null : (data as ConfigGuardada | null);
+  } catch {
+    return null;
+  }
+}
+
+// Unos segundos de caché por instancia: cada pedido del agente la pide y cambia una vez cada muchos días.
+const CONFIG_TTL_MS = 30_000;
+const configCache = new Map<string, { json: string | null; hasta: number }>();
+
+/** `vaultEnv()` con la configuración de proyectos del vault (la del secreto es el respaldo). Es lo que usan los pedidos reales. */
+export async function vaultEnvConConfig(db: SupabaseClient, userId: string): Promise<VaultEnv> {
+  const env = vaultEnv();
+  let hit = configCache.get(userId);
+  if (!hit || hit.hasta < Date.now()) {
+    hit = { json: (await leerConfigGuardada(db, userId))?.config_json ?? null, hasta: Date.now() + CONFIG_TTL_MS };
+    configCache.set(userId, hit);
+  }
+  return { ...env, config: elegirConfig(hit.json, Deno.env.get("VAULT_PROJECTS_JSON") ?? undefined) };
+}
+
+/**
+ * Guarda la config de proyectos si el vault trae una nueva. Una config inválida no pisa la buena; un fallo aquí NUNCA tumba la
+ * sincronización de tareas (se registra y listo).
+ */
+export async function sincronizarConfig(db: SupabaseClient, userId: string, gh: Pick<GitHubApi, "getBlob">, entries: TreeEntry[]): Promise<void> {
+  try {
+    const guardada = await leerConfigGuardada(db, userId);
+    const entry = configACargar(entries, guardada?.config_sha);
+    if (!entry) return;
+    const valida = configValida(await gh.getBlob(entry.sha));
+    if (!valida) {
+      console.error("vault: 90-meta/norte.config.json no es una configuración válida; se conserva la anterior");
+      return;
+    }
+    const { error } = await db.from("vault_sync").upsert({ user_id: userId, config_sha: entry.sha, config_json: valida }, { onConflict: "user_id" });
+    if (error) {
+      console.error("vault: no pude guardar la configuración:", error.message);
+      return;
+    }
+    configCache.delete(userId);
+    console.log(JSON.stringify({ evt: "vault", action: "config", bytes: valida.length, sha: entry.sha.slice(0, 7) }));
+  } catch (e) {
+    console.error("vault: configuración:", e instanceof Error ? e.message : String(e));
+  }
 }
 
 export const loadTaskRows = (db: SupabaseClient, userId: string): Promise<TaskRow[]> =>
@@ -181,6 +238,9 @@ export async function syncIndex(
   const tree = await gh.getTree();
   // Un árbol incompleto haría "desaparecer" documentos: mejor fallar que borrar de más.
   if (tree.truncated) throw new VaultError("El vault es demasiado grande para listarlo de una vez en GitHub.", 502);
+
+  // Antes del atajo «árbol sin cambios»: solo baja el archivo si su sha cambió, así que en el caso normal no cuesta nada.
+  await sincronizarConfig(db, userId, gh, tree.entries);
 
   if (!opts.force && state?.tree_sha === tree.sha) {
     await applyBatch(db, userId, { docs: [], files: [], treeSha: tree.sha }); // solo renueva la hora

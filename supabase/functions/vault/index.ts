@@ -15,7 +15,7 @@ import { cancelarAvisosDeTarea, moverAvisosDeTarea } from "../_shared/avisosTare
 import { adminClient, json, limaNow, preflight, requireUser } from "../_shared/http.ts";
 import {
   assertOwner, createTask, GitHubError, moveTask, PartialMoveError, searchMemory, setTaskStatus, syncIndex, TaskNotFoundError,
-  tasksView, VaultError, vaultEnv,
+  tasksView, VaultError, vaultEnv, vaultEnvConConfig,
 } from "../_shared/vault.ts";
 import { GitHubConflict } from "../_shared/vault/github.ts";
 
@@ -67,9 +67,10 @@ Deno.serve(async (req: Request) => {
       db = auth.db;
       caller = auth.user.id;
     }
-    const env = vaultEnv();
-    const userId = caller ?? env.ownerId;
-    assertOwner(userId, env);
+    const base = vaultEnv();
+    const userId = caller ?? base.ownerId;
+    assertOwner(userId, base); // primero el dueño; después la config de proyectos, que viene del vault
+    const env = await vaultEnvConConfig(db, userId);
     const hoy = limaNow().toISOString().slice(0, 10);
 
     // 2) Acción. Leer y sincronizar dejan una línea con su duración (sin contenido del vault) para seguir el p50.
