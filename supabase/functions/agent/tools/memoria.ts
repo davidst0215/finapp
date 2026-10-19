@@ -3,7 +3,7 @@
 // "nova fondos" → novafondos); el handler lee esas fichas completas y hace UNA segunda llamada al modelo para redactar
 // una respuesta corta que cita la ficha. Si no eligió ninguna, cae a la búsqueda por palabras (Postgres full-text).
 import { type AgentContext, type AgentModule, type ToolResult, tool } from "../types.ts";
-import { assertOwner, cargarCatalogo, carpetasDePendientes, ensureIndexed, GitHubError, searchMemory, VaultError, vaultEnv } from "../../_shared/vault.ts";
+import { assertOwner, cargarCatalogo, carpetasDePendientes, ensureIndexed, GitHubError, searchMemory, VaultError, vaultEnv, vaultEnvConConfig } from "../../_shared/vault.ts";
 import { type FichaCat, resolverFichas } from "../../_shared/vault/catalogo.ts";
 import { fuenteHablada } from "../../_shared/vault/search.ts";
 import { relojLima } from "../../_shared/vault/fechas.ts";
@@ -27,8 +27,8 @@ async function loadContext(ctx: AgentContext) {
 
 async function searchMemoryTool(args: Record<string, unknown>, ctx: AgentContext, data: DataMemoria): Promise<ToolResult> {
   try {
-    const env = vaultEnv();
-    assertOwner(ctx.user.id, env);
+    assertOwner(ctx.user.id, vaultEnv());
+    const env = await vaultEnvConConfig(ctx.supabase, ctx.user.id); // la config de proyectos viene del vault
     await ensureIndexed(ctx.supabase, ctx.user.id, env); // primera vez: trae el vault antes de buscar
     // Palabras clave, no un párrafo: un `query` desbocado no debe llegar a la búsqueda ni al modelo que redacta.
     const delModelo = str(args.query).replace(/\s+/g, " ").trim().slice(0, 160);

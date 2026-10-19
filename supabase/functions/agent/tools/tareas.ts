@@ -5,7 +5,7 @@ import { comentario, conComentario } from "../prompt.ts";
 import { type AgentContext, type AgentModule, type ToolResult, tool } from "../types.ts";
 import {
   assertOwner, createTask, ensureIndexed, GitHubError, knownFolders, loadTaskRows, PartialMoveError, resolverProyectoDicho, setTaskStatus,
-  syncIndex, TaskNotFoundError, VaultError, vaultEnv,
+  syncIndex, TaskNotFoundError, VaultError, vaultEnv, vaultEnvConConfig,
 } from "../../_shared/vault.ts";
 import { fechaHablada, relojLima } from "../../_shared/vault/fechas.ts";
 import { findTask } from "../../_shared/vault/match.ts";
@@ -55,9 +55,9 @@ const guard = (fn: Handler): Handler => async (args, ctx) => {
   }
 };
 
-export function acceso(ctx: AgentContext) {
-  const env = vaultEnv();
-  assertOwner(ctx.user.id, env);
+export async function acceso(ctx: AgentContext) {
+  assertOwner(ctx.user.id, vaultEnv()); // primero el dueño: a quien no lo es no se le consulta la base
+  const env = await vaultEnvConConfig(ctx.supabase, ctx.user.id); // la config de proyectos viene del vault
   return { env, db: ctx.supabase, userId: ctx.user.id, hoy: hoyDe(ctx) };
 }
 
@@ -65,7 +65,7 @@ const compact = (t: ViewTask) => ({ text: t.text, project: t.label, due: t.due, 
 
 // --- list_tasks ------------------------------------------------------------------------------------
 const listTasks: Handler = async (args, ctx) => {
-  const { env, db, userId, hoy } = acceso(ctx);
+  const { env, db, userId, hoy } = await acceso(ctx);
   await ensureIndexed(db, userId, env);
   const [rows, folders] = await Promise.all([loadTaskRows(db, userId), knownFolders(db, userId)]);
   const view = buildTasksView(rows, env.config, folders, hoy, null);
@@ -114,7 +114,7 @@ const listTasks: Handler = async (args, ctx) => {
 
 // --- create_task -----------------------------------------------------------------------------------
 const createTaskTool: Handler = async (args, ctx) => {
-  const { env, db, userId, hoy } = acceso(ctx);
+  const { env, db, userId, hoy } = await acceso(ctx);
   // El proyecto solo se busca si David nombró uno: sin proyecto la tarea va al cajón. (Con el índice ligero; el completo, si hace falta.)
   const dicho = str(args.project).trim();
   const resuelto = dicho ? (await resolverProyectoDicho(db, userId, env.config, dicho)).r : null;
@@ -167,7 +167,7 @@ const VERBO: Record<TaskStatus, (t: string, cambio: boolean) => string> = {
 };
 
 const updateTask: Handler = async (args, ctx) => {
-  const { env, db, userId, hoy } = acceso(ctx);
+  const { env, db, userId, hoy } = await acceso(ctx);
   const search = str(args.search).trim();
   if (!search) return err("No entendí cuál tarea.");
   const status: TaskStatus = isStatus(args.status) ? args.status : "completed";

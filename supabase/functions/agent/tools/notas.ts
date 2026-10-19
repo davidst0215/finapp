@@ -23,7 +23,7 @@ function mensajeError(e: unknown): string {
 
 const addNote = async (args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> => {
   try {
-    const { env, db, userId, hoy } = acceso(ctx);
+    const { env, db, userId, hoy } = await acceso(ctx);
     // El proyecto solo se busca si David nombró uno: sin proyecto la nota va al cajón.
     const dicho = str(args.project).trim();
     const resuelto = dicho ? (await resolverProyectoDicho(db, userId, env.config, dicho)).r : null;
