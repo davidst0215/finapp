@@ -271,7 +271,7 @@ test("jamás toca los recuerdos de otro usuario (la consulta filtra por user_id,
   assert.equal(t.textos(otro)[0], BBVA);
 });
 
-test("«¿qué recuerdas de mí?»: pantalla con todos, voz con la cuenta y el más reciente en ≤100 caracteres; con filtro, solo lo de ese tema", async () => {
+test("«¿qué recuerdas de mí?»: pantalla con todos, voz con la cuenta y el más reciente dentro del tope de voz; con filtro, solo lo de ese tema", async () => {
   const u = nuevoUsuario();
   const t = tabla([
     { texto: "Marco es de Saya", user_id: u }, { texto: "El cumpleaños de Marco es el 3 de marzo", user_id: u },

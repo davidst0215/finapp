@@ -27,7 +27,7 @@ const rules = `CONTACTOS Y WHATSAPP (agenda propia de Wabid; no conoces a los co
 - mensaje de WhatsApp: SOLO lo que David dijo, pasado a primera persona ("que llego 10 minutos tarde" = "Llego 10 minutos tarde"). Corrige lo mínimo y NO agregues saludos, frases, emojis ni detalles que no dijo. Sin comillas, sin firma ni "de parte de David": tú no firmas. "Escríbele a Marco" a secas = sin mensaje. Es correo solo si dice correo o email (mail_draft_reply). Una llamada o reunión agendada ("llamada con Marco el jueves") es calendar_create_event.
 - nombre = como David nombró a la persona ("Marco", "mi mamá"), nunca un número; "Marco de Saya" = nombre Marco y relacion "de Saya". Si David solo dictó un número ("llama al 999 888 777"), deja nombre vacío y pon el número en telefono.
 - Si el sistema pregunta cuál ("¿Cuál Marco: de Saya o del gimnasio?") o pide el número, y David responde, repite la MISMA tool con el nombre, el mensaje original (mira el historial) y la relacion o el telefono que dijo. Nunca inventes ni completes un número.
-- Voz: una frase.`;
+- Voz: una frase natural, no telegráfica.`;
 
 const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
 const err = (message: string): ToolResult => ({ action: "error", message });

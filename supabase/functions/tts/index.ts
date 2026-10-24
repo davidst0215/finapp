@@ -35,7 +35,7 @@ Deno.serve(async (req: Request) => {
     const sub = jwtSub(token);
     if (!sub) return jsonError("No autorizado", 401);
 
-    // Se acepta hasta 600 de entrada por los clientes que aún mandan más; lo que se habla nunca pasa de VOZ_MAX (100)
+    // Se acepta hasta 600 de entrada por los clientes que aún mandan más; lo que se habla nunca pasa de VOZ_MAX (250)
     // caracteres ya convertidos: el servidor, no el cliente, pone el tope a lo que cobra ElevenLabs.
     const { text } = await req.json();
     if (!text || typeof text !== "string" || text.length > 600) return jsonError("Texto inválido", 400);

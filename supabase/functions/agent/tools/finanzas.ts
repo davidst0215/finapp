@@ -28,7 +28,7 @@ const rules = `FINANZAS:
 - "no fueron 60" o "cámbialo a 60" = editar el último.
 - Cuentas: "crea / abre una cuenta (tarjeta, ahorros, efectivo…)" = create_account; "qué cuentas tengo", "mis saldos" = list_accounts (dinero de David, no el crédito de IA). Pregunta solo si falta el nombre: tipo, moneda y saldo inicial son opcionales, nunca los preguntes.
 - Si nombra una cuenta al registrar un movimiento ("pagué 30 con la de BCP") pásala en account; en transfer, las palabras de cada cuenta. currency_code solo si David dijo la moneda; vacío si no (con una cuenta nombrada se usa la suya).
-- Voz: una frase. En consultas (analyze_finances) di en answer solo la cifra pedida, redonda y sin céntimos; el desglose va en el campo detalle (pantalla).
+- Voz: en consultas (analyze_finances), answer dice primero la cifra pedida, redonda y sin céntimos, y luego el porqué en 2 o 3 frases cortas; el desglose completo va en el campo detalle (pantalla).
 - Totales y saldos SIEMPRE en soles: el contexto ya convierte los dólares con el tipo de cambio. Si hay dólares en juego, di la cifra en soles y añade corto «incluye US$ 40»; nunca sumes dólares como soles. Una cuenta en dólares se dice en su moneda. Si el contexto avisa que falta el tipo de cambio, dilo en vez de sumar.`;
 
 async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: Data }> {
@@ -267,7 +267,7 @@ export const finanzas: AgentModule<Data> = {
     }, ["filter"]),
     tool("analyze_finances", "Analiza patrones financieros, proyecciones y comparaciones: ¿cómo voy?, ¿me alcanza?, ¿en qué gasto más?, ¿dónde puedo ahorrar?", {
       analysis_type: { type: "string", enum: ["projection", "comparison", "recommendations", "overview", "alert_check"] },
-      answer: { type: "string", description: "Lo que David ESCUCHA: UNA frase de 80 caracteres o menos (60 si lleva montos: cada monto dicho cuenta ~35) con la cifra pedida, real, redonda y sin céntimos: 'S/ 312'. Nunca un marcador ni 'déjame revisar': si no hay datos, dilo." },
+      answer: { type: "string", description: "Lo que David ESCUCHA: 2 o 3 frases cortas, unos 180 caracteres y nunca más de 250. Primero la cifra pedida, real, redonda y sin céntimos ('S/ 312'); luego el porqué o la comparación que importa. Máximo 3 montos: cada monto dicho cuenta ~35. Nunca un marcador ni 'déjame revisar': si no hay datos, dilo." },
       detalle: { type: "string", description: "Opcional. Lo que David VE en pantalla (no se dice): la respuesta completa con el desglose y las cifras exactas del contexto, en 2-4 frases cortas. Vacío si la frase ya lo dice todo." },
     }, ["analysis_type", "answer"]),
   ],

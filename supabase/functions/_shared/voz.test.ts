@@ -17,7 +17,7 @@ function esCorteLimpio(original: string, corte: string) {
 }
 
 describe("VOZ_MAX", () => {
-  it("el tope es 100 caracteres", () => assert.equal(VOZ_MAX, 100));
+  it("el tope es 250 caracteres (2 o 3 frases cortas)", () => assert.equal(VOZ_MAX, 250));
 });
 
 describe("acotarVoz: lo que cabe pasa entero", () => {

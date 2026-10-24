@@ -306,10 +306,10 @@ test("frases: la voz de la lista redondea los totales para no pasar el tope (la 
   const grandes = [cta("1", "BCP", "checking", "PEN", 12345.67), cta("2", "Wise", "savings", "USD", 8765.43)];
   const f = fraseCuentas(grandes);
   assert.match(f.message, /Total: S\/ 12,345\.67 y US\$ 8,765\.43\.$/);
-  // los dos totales no caben enteros (≈ 100 hablados): se dice el primero y que hay más, nunca un monto cortado
-  assert.equal(f.voz, "Tienes 2 cuentas; en total S/ 12,346.00, y más en otra moneda.");
+  // con el tope de 250 los dos totales grandes caben enteros y redondeados (antes, con 100, se decía solo el primero)
+  assert.equal(f.voz, "Tienes 2 cuentas; en total S/ 12,346.00 y US$ 8,765.00.");
   const hablado = prepararVoz(f.voz);
-  assert.equal(hablado, "Tienes 2 cuentas; en total doce mil trescientos cuarenta y seis soles, y más en otra moneda.");
+  assert.equal(hablado, "Tienes 2 cuentas; en total doce mil trescientos cuarenta y seis soles y ocho mil setecientos sesenta y cinco dólares.");
   assert.ok(hablado.length <= VOZ_MAX);
   // con totales cortos caben los dos
   assert.equal(fraseCuentas([cta("1", "BCP", "checking", "PEN", 500), cta("2", "Wise", "savings", "USD", 20)]).voz, "Tienes 2 cuentas; en total S/ 500.00 y US$ 20.00.");

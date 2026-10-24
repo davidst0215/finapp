@@ -29,7 +29,7 @@ const MAX_TEXTO = 2000; // un dictado largo cabe de sobra; más es abuso o error
 // Si el modelo no terminó en este plazo sale un segundo pedido a otro proveedor (ver _shared/respaldo.ts).
 // Io Net, el primero, respondió siempre en ≤3 s en la medición del 5-oct: el respaldo queda para las colas.
 const RESPALDO_MS = 3000;
-// Lo que se dice en voz alta no pasa de VOZ_MAX (100) caracteres ya convertidos (_shared/voz.ts): el texto completo
+// Lo que se dice en voz alta no pasa de VOZ_MAX (250) caracteres ya convertidos (_shared/voz.ts): el texto completo
 // igual llega a la pantalla en `message`, y `voz` (si el handler lo trae) es lo que se dice en su lugar.
 
 // Una tool bien formada ocupa ~40 tokens de salida; más de 250 es sospechoso (varias tools, texto suelto o un argumento
