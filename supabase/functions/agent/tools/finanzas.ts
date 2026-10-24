@@ -1,7 +1,10 @@
 import {
   buscarCuenta, fraseCuentaCreada, fraseCuentas, MONEDA_HABLADA, monto, numeroDictado, opcionesHabladas, TIPO_HABLADO, type TipoCuenta, validarCuentaNueva,
 } from "../../_shared/cuentas.ts";
-import { patrimonio, redondear, textoTc, type Tasa, ultimaTasa } from "../../_shared/fx.ts";
+import {
+  type Bolsa, bolsaDe, type EntradaCaja, estadoBolsas, fraseCuantoPuedo, fraseRestante, type Gasto, periodoDe, type Programado, proyectar, siguienteFecha, soles,
+} from "../../_shared/caja.ts";
+import { aSoles, patrimonio, redondear, textoTc, type Tasa, ultimaTasa } from "../../_shared/fx.ts";
 import { comentario, conComentario } from "../prompt.ts";
 import { conDetalle } from "../respuesta.ts";
 import { type AgentContext, type AgentModule, type ToolResult, tool } from "../types.ts";
@@ -12,14 +15,23 @@ type Account = { account_id: string; account_name: string; current_balance: numb
 type Category = { category_id: string; category_name: string; category_type: string };
 type Goal = { goal_id: string; goal_name: string; target_amount: number; current_amount: number; target_date: string | null };
 // `tc`: tipo de cambio USD→PEN guardado (null si todavía no hay ninguno). Los totales del contexto ya vienen en soles.
-type Data = { accounts: Account[]; categories: Category[]; goals: Goal[]; recurring: Recurrente[]; paidIds: Set<string>; recurrentesOk: boolean; tc: Tasa | null };
+// `recurring`: solo los pagos (egresos) fijos: «¿qué me falta pagar?» no cuenta el sueldo. `caja`: la entrada del cerebro de caja
+// (_shared/caja.ts); null si no se pudo leer (sin la migración 023, por ejemplo): entonces el agente sigue, sin plan.
+type Data = {
+  accounts: Account[]; categories: Category[]; goals: Goal[]; recurring: Recurrente[]; paidIds: Set<string>; recurrentesOk: boolean; tc: Tasa | null;
+  caja?: EntradaCaja | null;
+};
 
 const simbolo = (moneda: string | null | undefined) => (moneda === "USD" ? "US$" : "S/");
 /** Un total de la base impreso en el contexto: a céntimos, sin restos de coma flotante (el modelo dice las cifras tal cual vienen). */
 const c2 = (n: unknown) => redondear(Number(n));
 
 const MESES = ["", "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
-const FRECUENCIA: Record<string, string> = { daily: "diario", weekly: "semanal", biweekly: "quincenal", monthly: "mensual", quarterly: "trimestral", annual: "anual" };
+const FRECUENCIA: Record<string, string> = { once: "una vez", daily: "diario", weekly: "semanal", biweekly: "quincenal", monthly: "mensual", quarterly: "trimestral", annual: "anual" };
+/** Ventana de gastos que lee el contexto para las bolsas: cubre el arrastre de la gasolina de todo el plan de fin de año. */
+const DIAS_DE_GASTOS = 120;
+/** Fecha de Lima (AAAA-MM-DD) de un timestamptz: un gasto a las 21:00 del 30 es del 30, no del 1 (UTC). */
+const fechaLima = (ts: string) => new Date(new Date(ts).getTime() - 5 * 3600 * 1000).toISOString().slice(0, 10);
 
 const rules = `FINANZAS:
 - Moneda soles por defecto, dólares si lo dice. "mil" = 1000.
@@ -29,7 +41,9 @@ const rules = `FINANZAS:
 - Cuentas: "crea / abre una cuenta (tarjeta, ahorros, efectivo…)" = create_account; "qué cuentas tengo", "mis saldos" = list_accounts (dinero de David, no el crédito de IA). Pregunta solo si falta el nombre: tipo, moneda y saldo inicial son opcionales, nunca los preguntes.
 - Si nombra una cuenta al registrar un movimiento ("pagué 30 con la de BCP") pásala en account; en transfer, las palabras de cada cuenta. currency_code solo si David dijo la moneda; vacío si no (con una cuenta nombrada se usa la suya).
 - Voz: en consultas (analyze_finances), answer dice primero la cifra pedida, redonda y sin céntimos, y luego el porqué en 2 o 3 frases cortas; el desglose completo va en el campo detalle (pantalla).
-- Totales y saldos SIEMPRE en soles: el contexto ya convierte los dólares con el tipo de cambio. Si hay dólares en juego, di la cifra en soles y añade corto «incluye US$ 40»; nunca sumes dólares como soles. Una cuenta en dólares se dice en su moneda. Si el contexto avisa que falta el tipo de cambio, dilo en vez de sumar.`;
+- Totales y saldos SIEMPRE en soles: el contexto ya convierte los dólares con el tipo de cambio. Si hay dólares en juego, di la cifra en soles y añade corto «incluye US$ 40»; nunca sumes dólares como soles. Una cuenta en dólares se dice en su moneda. Si el contexto avisa que falta el tipo de cambio, dilo en vez de sumar.
+- «¿Cuánto puedo gastar (hoy / hasta el domingo / esta semana)?», «¿cuánto me queda?», «¿me alcanza para comer esta semana?» = cuanto_puedo_gastar. Ese número nunca lo calculas tú: lo da el PLAN DE CAJA.
+- Pagos o cobros de una sola vez: «el 1 de noviembre le pago 1000 a Melissa» = create_recurring con frequency once y due_date. «Pagué a Hugo», «pagué el teléfono», «me pagaron el sueldo / el bono / la CTS» = pay_recurring.`;
 
 async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: Data }> {
   const { supabase, user, limaNow } = ctx;
@@ -42,7 +56,10 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
   const nextMonthStart = month === 12 ? `${year + 1}-01-01` : `${year}-${String(month + 1).padStart(2, "0")}-01`;
   const semana = rangoSemana(limaNow);
 
-  const [accountsRes, categoriesRes, goalsRes, summaryRes, prevSummaryRes, spendRes, prevSpendRes, budgetsRes, recentRes, recurringRes, paidRes, weekRes, last7Res, tc] = await Promise.all([
+  const hoy = limaNow.toISOString().slice(0, 10);
+  const desdeGastos = new Date(limaNow.getTime() - DIAS_DE_GASTOS * 86_400_000).toISOString().slice(0, 10);
+
+  const [accountsRes, categoriesRes, goalsRes, summaryRes, prevSummaryRes, spendRes, prevSpendRes, budgetsRes, recentRes, recurringRes, paidRes, weekRes, last7Res, tc, planRes, bolsasRes, gastosRes] = await Promise.all([
     // Orden explícito y estable (la más antigua primero): sin `account`, el movimiento va a accounts[0], y ese orden no puede depender de cómo
     // devuelva las filas la base.
     supabase.from("accounts").select("account_id, account_name, current_balance, account_type, currency_code").eq("user_id", user.id).eq("is_active", true)
@@ -59,7 +76,7 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
     supabase.rpc("fn_get_budget_status"),
     supabase.from("transactions").select("description, amount, currency_code, transaction_type, transaction_date, category:categories(category_name)")
       .eq("user_id", user.id).order("transaction_date", { ascending: false }).limit(10),
-    supabase.from("recurring_transactions").select("recurring_id, description, amount, currency_code, frequency, next_due_date")
+    supabase.from("recurring_transactions").select("recurring_id, description, amount, currency_code, frequency, next_due_date, transaction_type, day_of_month, end_date")
       .eq("user_id", user.id).eq("is_active", true).order("next_due_date"),
     // Pagos de este mes en hora de Lima: un pago a las 20:00 del 30 es del 30, no del 1 (UTC).
     supabase.from("transactions").select("recurring_id").eq("user_id", user.id).eq("is_recurring", true)
@@ -67,6 +84,11 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
     supabase.rpc("fn_get_spending_by_category", { p_start_date: semana.lunes, p_end_date: semana.hoy }),
     supabase.rpc("fn_get_spending_by_category", { p_start_date: semana.hace7, p_end_date: semana.hoy }),
     ultimaTasa(supabase), // solo lectura: la tabla la mantiene la función `fx` (y el brief de las 7:00)
+    // Cerebro de caja (migración 023): plan, bolsas y los gastos recientes que descuentan de ellas.
+    supabase.from("plan_caja").select("inicio, meta_monto, meta_fecha, colchon").eq("user_id", user.id).maybeSingle(),
+    supabase.from("bolsas").select("nombre, tope_semanal, categorias, arrastre, orden, tope_nuevo, tope_nuevo_desde").eq("user_id", user.id).order("orden"),
+    supabase.from("transactions").select("amount, currency_code, transaction_date, recurring_id, category:categories(category_name)")
+      .eq("user_id", user.id).eq("transaction_type", "expense").gte("transaction_date", `${desdeGastos}T00:00:00-05:00`),
   ]);
 
   const accounts = (accountsRes.data ?? []) as Account[];
@@ -79,7 +101,11 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
   const budgets = (budgetsRes.data ?? []) as { category_name: string; amount_spent: number; amount_limit: number; percentage_used: number }[];
   const recent = recentRes.data ?? [];
   // Un pago fijo en dólares entra a la lista (y a sus totales) ya en soles; el original queda en `original` para mostrarlo.
-  const recurring = recurrentesEnSoles((recurringRes.data ?? []) as Recurrente[], tc);
+  type FilaRecurrente = Recurrente & { transaction_type?: string; day_of_month?: number | null; end_date?: string | null };
+  const todos = recurrentesEnSoles((recurringRes.data ?? []) as FilaRecurrente[], tc) as FilaRecurrente[];
+  // «¿Qué me falta pagar?» habla de pagos: los cobros programados (sueldo, bono, CTS) van aparte.
+  const recurring = todos.filter((r) => r.transaction_type !== "income");
+  const cobros = todos.filter((r) => r.transaction_type === "income");
   const paidIds = new Set((paidRes.data ?? []).map((t: { recurring_id: string | null }) => t.recurring_id).filter((id): id is string => Boolean(id)));
   // Con un error de lectura, "no tienes pagos fijos" sería falso e invitaría a duplicarlos.
   const recurrentesOk = !recurringRes.error && !paidRes.error;
@@ -171,6 +197,50 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
       ctxLines.push(`- ${r.description}: ${simbolo(r.currency_code)}${r.amount}${r.original ? ` (${r.original})` : ""} (${r.frequency}) ${paidIds.has(r.recurring_id) ? "✓ PAGADO" : "PENDIENTE"} próximo: ${r.next_due_date}`);
     }
   }
+  if (cobros.length > 0) {
+    ctxLines.push("\nCOBROS PROGRAMADOS (ingresos que van a entrar):");
+    for (const r of cobros) ctxLines.push(`- ${r.description}: S/${r.amount} (${FRECUENCIA[r.frequency] ?? r.frequency}) ${fechaHablada(r.next_due_date)}`);
+  }
+
+  // Cerebro de caja: con un error de lectura no hay plan (decir «no tienes topes» sería falso), pero el resto del contexto sigue.
+  const cajaOk = !planRes.error && !bolsasRes.error && !gastosRes.error && recurrentesOk;
+  let caja: EntradaCaja | null = null;
+  if (cajaOk) {
+    type FilaBolsa = { nombre: string; tope_semanal: number; categorias: string[] | null; arrastre: boolean; tope_nuevo: number | null; tope_nuevo_desde: string | null };
+    type FilaGasto = { amount: number; currency_code: string | null; transaction_date: string; recurring_id: string | null; category: { category_name?: string } | null };
+    const bolsas: Bolsa[] = ((bolsasRes.data ?? []) as FilaBolsa[]).map((b) => ({
+      nombre: b.nombre, topeSemanal: Number(b.tope_semanal), categorias: b.categorias, arrastre: b.arrastre,
+      cambio: b.tope_nuevo != null && b.tope_nuevo_desde ? { desde: b.tope_nuevo_desde, tope: Number(b.tope_nuevo) } : null,
+    }));
+    const gastos: Gasto[] = ((gastosRes.data ?? []) as FilaGasto[]).map((g) => ({
+      fecha: fechaLima(g.transaction_date), monto: aSoles(Number(g.amount), g.currency_code, tc) ?? Number(g.amount),
+      categoria: g.category?.category_name ?? null, programado: Boolean(g.recurring_id),
+    }));
+    const programados: Programado[] = todos.filter((r) => r.currency_code !== "USD").map((r) => ({ // un USD sin convertir no es soles
+      id: r.recurring_id, concepto: r.description, tipo: r.transaction_type === "income" ? "income" : "expense", monto: Number(r.amount),
+      frecuencia: r.frequency, proxima: r.next_due_date.slice(0, 10), dia: r.day_of_month ?? null, fin: r.end_date ?? null,
+    }));
+    const p = planRes.data as { inicio: string; meta_monto: number | null; meta_fecha: string | null; colchon: number } | null;
+    // Caja = lo que hay en cuentas que no son tarjeta de crédito (una tarjeta es deuda: su pago va como pago programado).
+    const enCaja = accounts.filter((a) => a.account_type !== "credit_card").reduce((t, a) => t + (aSoles(Number(a.current_balance), a.currency_code, tc) ?? 0), 0);
+    caja = {
+      hoy, caja: redondear(enCaja), programados, bolsas, gastos,
+      plan: p ? { inicio: p.inicio, metaMonto: p.meta_monto != null ? Number(p.meta_monto) : null, metaFecha: p.meta_fecha, colchon: Number(p.colchon) } : null,
+    };
+    if (p || bolsas.length) {
+      const pr = proyectar(caja);
+      const f = (s: string) => fechaHablada(s).replace(/^el /, "");
+      ctxLines.push(`\nPLAN DE CAJA (calculado por el sistema; cifras exactas, úsalas tal cual):`,
+        `- Caja hoy: ${soles(Math.round(enCaja * 100))}. Semana de las bolsas: del ${f(pr.periodo.desde)} al ${f(pr.periodo.hasta)}.`,
+        ...pr.bolsas.map((b) => `- Bolsa ${b.nombre}: tope ${soles(b.tope)}, gastado ${soles(b.gastado)}, ${b.queda >= 0 ? `queda ${soles(b.queda)}` : `en rojo por ${soles(b.queda)}`}.`));
+      if (pr.proximoIngreso) ctxLines.push(`- Próximo ingreso: ${pr.proximoIngreso.concepto} ${fechaHablada(pr.proximoIngreso.efectiva)}; antes de eso hay ${soles(pr.disponibleHastaIngreso ?? 0)} para todo.`);
+      ctxLines.push(`- Punto más bajo (60 días, con las bolsas): ${pr.minimo.saldo < 0 ? "en negativo por " : ""}${soles(pr.minimo.saldo)} ${fechaHablada(pr.minimo.fecha)}. Libre hoy fuera de las bolsas: ${soles(pr.libre)}.`);
+      if (pr.meta) ctxLines.push(`- Meta: ${soles(pr.meta.monto)} ${fechaHablada(pr.meta.fecha)}; con los topes cierras con ${soles(pr.meta.cierre)} (${pr.meta.holgura >= 0 ? `sobran ${soles(pr.meta.holgura)}` : `faltan ${soles(-pr.meta.holgura)}`}).`);
+      const semana = pr.eventos.filter((ev) => ev.efectiva <= periodoDe(hoy, null).hasta || ev.vencido);
+      if (semana.length) ctxLines.push(`- Esta semana: ${semana.map((ev) => `${ev.concepto} ${ev.monto > 0 ? "+" : ""}${soles(ev.monto)}${ev.vencido ? " (vencido)" : ` ${fechaHablada(ev.efectiva)}`}`).join("; ")}.`);
+    }
+  }
+
   if (recent.length > 0) {
     ctxLines.push("\nÚLTIMAS TRANSACCIONES:");
     for (const t of recent) {
@@ -180,22 +250,8 @@ async function loadContext(ctx: AgentContext): Promise<{ prompt: string; data: D
     }
   }
 
-  return { prompt: ctxLines.join("\n"), data: { accounts, categories, goals, recurring, paidIds, recurrentesOk, tc } };
+  return { prompt: ctxLines.join("\n"), data: { accounts, categories, goals, recurring, paidIds, recurrentesOk, tc, caja } };
 }
-
-const nextDueDate = (current: string, frequency: string): string => {
-  const d = new Date(current); // fecha AAAA-MM-DD en UTC; el runtime también es UTC
-  switch (frequency) {
-    case "daily": d.setDate(d.getDate() + 1); break;
-    case "weekly": d.setDate(d.getDate() + 7); break;
-    case "biweekly": d.setDate(d.getDate() + 14); break;
-    case "monthly": d.setMonth(d.getMonth() + 1); break;
-    case "quarterly": d.setMonth(d.getMonth() + 3); break;
-    case "semiannual": d.setMonth(d.getMonth() + 6); break;
-    case "annual": d.setFullYear(d.getFullYear() + 1); break;
-  }
-  return d.toISOString().slice(0, 10);
-};
 
 const err = (message: string): ToolResult => ({ action: "error", message });
 const str = (v: unknown) => (typeof v === "string" ? v : "");
@@ -211,6 +267,21 @@ function cuentaNombrada(nombre: string, accounts: Account[]): { cuenta: Account 
   if (r.kind === "one") return { cuenta: r.cuenta };
   if (r.kind === "many") return { respuesta: { action: "clarify", message: `¿Cuál: ${opcionesHabladas(r.cuentas)}?` } };
   return { respuesta: err(`No encontré una cuenta «${nombre.trim().slice(0, 40)}». Tienes: ${opcionesHabladas(accounts, 5)}.`) };
+}
+
+/**
+ * Tras anotar un gasto: cuánto le queda a su bolsa esta semana («Te quedan S/ 183 de comida hasta el domingo.»). Vacío si no hay
+ * plan, si es un ingreso o si el gasto no cae en ninguna bolsa.
+ */
+function restanteDeBolsa(caja: EntradaCaja | null | undefined, tipo: string, monto: number, moneda: string, categoria: string | null, tc: Tasa | null): string {
+  if (!caja || tipo !== "expense" || !caja.bolsas.length) return "";
+  const enSoles = moneda === "USD" ? aSoles(monto, "USD", tc) : monto;
+  if (enSoles === null) return ""; // dólares sin tipo de cambio: no se descuenta como si fueran soles
+  const entrada = { ...caja, gastos: [...caja.gastos, { fecha: caja.hoy, monto: enSoles, categoria, programado: false }] };
+  const bolsa = bolsaDe(categoria, entrada.bolsas);
+  if (!bolsa) return "";
+  const estado = estadoBolsas(entrada)[entrada.bolsas.indexOf(bolsa)]!;
+  return fraseRestante(estado, periodoDe(caja.hoy, caja.plan?.inicio ?? null), caja.hoy);
 }
 
 export const finanzas: AgentModule<Data> = {
@@ -245,10 +316,12 @@ export const finanzas: AgentModule<Data> = {
     tool("contribute_to_goal", "Aporta a una meta de ahorro existente.", {
       goal_name: { type: "string" }, amount: { type: "number" },
     }, ["goal_name", "amount"]),
-    tool("create_recurring", "Crea un pago recurrente o suscripción.", {
+    tool("create_recurring", "Crea un pago (o cobro) programado: suscripción o pago fijo, o uno de una sola vez con fecha ('el 1 de noviembre le pago 1000 a Melissa').", {
       description: { type: "string" }, amount: { type: "number" },
-      frequency: { type: "string", enum: ["daily", "weekly", "biweekly", "monthly", "quarterly", "annual"] },
+      frequency: { type: "string", enum: ["once", "daily", "weekly", "biweekly", "monthly", "quarterly", "annual"], description: "once = una sola vez, en due_date" },
       category_name: { type: "string" },
+      due_date: { type: "string", description: "AAAA-MM-DD: la fecha del pago (obligatoria con once; en los demás, el primer vencimiento). Vacío = hoy" },
+      transaction_type: { type: "string", enum: ["expense", "income"], description: "income si es un cobro (me van a pagar); expense por defecto" },
     }, ["description", "amount", "frequency"]),
     tool("edit_transaction", "Edita una transacción existente.", {
       search_description: { type: "string" }, new_amount: { type: "number" }, new_description: { type: "string" },
@@ -259,9 +332,10 @@ export const finanzas: AgentModule<Data> = {
       from_account: { type: "string", description: "Cuenta de origen con las palabras de David ('la de BCP')" },
       to_account: { type: "string", description: "Cuenta de destino con las palabras de David ('mi Interbank')" },
     }, ["amount", "from_account", "to_account"]),
-    tool("pay_recurring", "Marca un pago recurrente como pagado: crea la transacción y avanza la próxima fecha. Usa cuando dice 'ya pagué Netflix', 'pagué el alquiler'.", {
-      search_description: { type: "string", description: "Nombre del recurrente a marcar como pagado" },
+    tool("pay_recurring", "Marca un pago programado como pagado (o un cobro como cobrado): crea la transacción y avanza la próxima fecha (uno de una sola vez queda cerrado). Usa cuando dice 'ya pagué Netflix', 'pagué a Hugo', 'me pagaron el sueldo'.", {
+      search_description: { type: "string", description: "Nombre del pago o cobro programado" },
     }, ["search_description"]),
+    tool("cuanto_puedo_gastar", "Cuánto puede gastar David: lo que queda de cada bolsa semanal (comida, compras, gasolina) hasta el domingo, cuidando que la caja no quede corta antes del próximo ingreso ni se pierda la meta. El sistema arma la respuesta.", {}),
     tool("list_recurring", "Lista suscripciones y pagos recurrentes: mis suscripciones, qué pagos tengo, cuáles ya pagué, qué falta pagar. El sistema arma la respuesta con los datos.", {
       filter: { type: "string", enum: ["all", "pending", "paid"], description: "all=todos, pending=lo que falta pagar este mes, paid=ya pagados este mes" },
     }, ["filter"]),
@@ -272,7 +346,7 @@ export const finanzas: AgentModule<Data> = {
     }, ["analysis_type", "answer"]),
   ],
   handlers: {
-    async create_transaction(args, { supabase, user, text }, { accounts, categories }) {
+    async create_transaction(args, { supabase, user, text }, { accounts, categories, caja, tc }) {
       if (!accounts.length) return err("No tienes cuentas todavía. Dime «crea una cuenta» con su nombre y la anoto.");
       const amount = montoValido(args.amount);
       if (amount === null) return err("No entendí el monto: dímelo en números y mayor que cero.");
@@ -313,7 +387,8 @@ export const finanzas: AgentModule<Data> = {
       const label = type === "income" ? "ingreso" : "gasto";
       const sym = currency === "USD" ? "US$" : "S/";
       const enCuenta = nombrada || accounts.length > 1 ? ` (${account.account_name})` : ""; // con varias cuentas se dice a cuál fue
-      return { action: "create_transaction", message: conComentario(`${label[0]!.toUpperCase()}${label.slice(1)} de ${sym} ${amount.toFixed(2)} en ${args.description}${enCuenta}.`, args), data: tx };
+      const base = conComentario(`${label[0]!.toUpperCase()}${label.slice(1)} de ${sym} ${amount.toFixed(2)} en ${args.description}${enCuenta}.`, args);
+      return { action: "create_transaction", message: [base, restanteDeBolsa(caja, type, amount, currency, cat?.category_name ?? null, tc)].filter(Boolean).join(" "), data: tx };
     },
     async create_account(args, { supabase, user }, { accounts }) {
       const v = validarCuentaNueva(args, accounts);
@@ -361,15 +436,26 @@ export const finanzas: AgentModule<Data> = {
       // El monto se dice en soles: va a la primera cuenta en soles (o a la primera, con la moneda de ESA cuenta: pagarlo luego exige que coincidan).
       const account = accounts.find((a) => a.currency_code === "PEN") ?? accounts[0];
       if (!account) return err("No tienes cuentas creadas. Crea una en Finanzas → Cuentas.");
-      const cat = categories.find((c) => c.category_name.toLowerCase() === str(args.category_name).toLowerCase());
+      const tipo = str(args.transaction_type) === "income" ? "income" : "expense";
+      const cat = categories.find((c) => c.category_name.toLowerCase() === str(args.category_name).toLowerCase() && c.category_type === tipo);
       const hoy = limaNow.toISOString().slice(0, 10);
+      const pedida = str(args.due_date).trim();
+      if (pedida && !/^\d{4}-\d{2}-\d{2}$/.test(pedida)) return err("No entendí la fecha del pago: dímela con día y mes.");
+      const fecha = pedida || hoy;
+      if (str(args.frequency) === "once" && !pedida) return { action: "clarify", message: `¿Qué día es el pago de ${args.description}?` };
       const { error } = await supabase.from("recurring_transactions").insert({
         user_id: user.id, account_id: account.account_id, category_id: cat?.category_id ?? null, currency_code: account.currency_code,
-        transaction_type: "expense", amount: args.amount, description: args.description,
-        frequency: args.frequency, start_date: hoy, next_due_date: hoy, is_active: true, auto_register: false,
+        transaction_type: tipo, amount: args.amount, description: args.description,
+        frequency: args.frequency, start_date: fecha, next_due_date: fecha, day_of_month: Number(fecha.slice(8, 10)), is_active: true, auto_register: false,
       });
       if (error) return err(error.message);
-      return { action: "create_recurring", message: `Recurrente "${args.description}" de ${simbolo(account.currency_code)} ${Number(args.amount).toFixed(2)} (${FRECUENCIA[str(args.frequency)] ?? args.frequency}) creado.` };
+      const que = tipo === "income" ? "Cobro" : "Pago";
+      return {
+        action: "create_recurring",
+        message: str(args.frequency) === "once"
+          ? `${que} de ${simbolo(account.currency_code)} ${Number(args.amount).toFixed(2)} a ${args.description} anotado para ${fechaHablada(fecha)}.`
+          : `Recurrente "${args.description}" de ${simbolo(account.currency_code)} ${Number(args.amount).toFixed(2)} (${FRECUENCIA[str(args.frequency)] ?? args.frequency}) creado.`,
+      };
     },
     async edit_transaction(args, { supabase, user }) {
       // Editar el monto mueve el saldo de la cuenta por la diferencia (trigger de la migración 016): aquí no se toca current_balance.
@@ -415,9 +501,10 @@ export const finanzas: AgentModule<Data> = {
       return { action: "transfer", message: `${monto(amount, from.currency_code)} transferidos de ${from.account_name} a ${to.account_name}.` };
     },
     async pay_recurring(args, { supabase, user, text }) {
+      // Con varios que coinciden («Deuda Hugo (1/3)», «(2/3)»…) se paga el que vence primero.
       const { data: recs } = await supabase.from("recurring_transactions")
-        .select("recurring_id, description, amount, currency_code, frequency, account_id, category_id, transaction_type, next_due_date")
-        .eq("user_id", user.id).eq("is_active", true).ilike("description", `%${str(args.search_description)}%`).limit(1);
+        .select("recurring_id, description, amount, currency_code, frequency, account_id, category_id, transaction_type, next_due_date, day_of_month")
+        .eq("user_id", user.id).eq("is_active", true).ilike("description", `%${str(args.search_description)}%`).order("next_due_date", { ascending: true }).limit(1);
       const rec = recs?.[0];
       if (!rec) return err(`No encontré el recurrente "${args.search_description}".`);
       // La moneda del pago es la del recurrente (antes iba siempre PEN: en una cuenta en dólares la base ya lo rechaza).
@@ -429,10 +516,26 @@ export const finanzas: AgentModule<Data> = {
         transfer_to_account_id: null, notes: null, tags: null,
       });
       if (error) return err(error.message);
-      const proximo = nextDueDate(rec.next_due_date, rec.frequency);
+      const hecho = rec.transaction_type === "income" ? "cobrado" : "pagado";
+      const importe = `${simbolo(rec.currency_code)} ${Number(rec.amount).toFixed(2)}`;
+      if (rec.frequency === "once") {
+        // De una sola vez: queda cerrado (no hay «próximo»), y deja de contar en la caja proyectada.
+        await supabase.from("recurring_transactions").update({ is_active: false }).eq("recurring_id", rec.recurring_id);
+        return { action: "pay_recurring", message: `${rec.description} ${hecho}, ${importe}. Queda cerrado.` };
+      }
+      const proximo = siguienteFecha(String(rec.next_due_date).slice(0, 10), rec.frequency, rec.day_of_month ?? null);
       await supabase.from("recurring_transactions").update({ next_due_date: proximo }).eq("recurring_id", rec.recurring_id);
       // La fecha va en palabras ("el 5 de noviembre"): con "2026-11-05" la voz leía los números sueltos.
-      return { action: "pay_recurring", message: `${rec.description} pagado, ${simbolo(rec.currency_code)} ${Number(rec.amount).toFixed(2)}. Próximo: ${fechaHablada(proximo)}.` };
+      return { action: "pay_recurring", message: `${rec.description} ${hecho}, ${importe}. Próximo: ${fechaHablada(proximo)}.` };
+    },
+    cuanto_puedo_gastar: async (_args, _ctx, { caja }) => {
+      if (!caja) return err("No pude leer tu plan de caja ahora. Intenta de nuevo en un momento.");
+      const p = proyectar(caja);
+      const f = fraseCuantoPuedo(p, caja.hoy);
+      return {
+        action: "cuanto_puedo_gastar", message: f.message, voz: f.voz,
+        data: { periodo: p.periodo, bolsas: p.bolsas, libre: p.libre, minimo: p.minimo, meta: p.meta, disponibleHastaIngreso: p.disponibleHastaIngreso },
+      };
     },
     list_recurring: async (args, { limaNow }, { recurring, paidIds, recurrentesOk }) => {
       if (!recurrentesOk) return err("No pude leer tus pagos fijos. Intenta de nuevo en un momento.");
