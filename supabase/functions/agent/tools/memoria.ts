@@ -13,7 +13,7 @@ const rules = `MEMORIA DE PROYECTOS:
 - "Contexto de X", "qué sé de X", "en qué va X", "háblame de X", "trampas de X": mira el CATÁLOGO DE FICHAS del contexto y pasa en fichas el slug (máximo 2) que corresponda por significado, aunque la voz lo escriba distinto ("nova fondos" = novafondos). Con varias fichas del mismo proyecto, elige la que trata el tema preguntado (el hub si preguntan en general).
 - query = solo las palabras clave de la pregunta (2 a 5 palabras), sin relleno ni la pregunta entera. Si nada del catálogo corresponde, deja fichas vacío.
 - El sistema suma solo los pendientes reales del proyecto (tareas abiertas y hechas) al leer la ficha. "Qué pendientes tengo en X" es list_tasks, no esto.
-- Voz: una frase; la fuente y el detalle van a la pantalla.`;
+- Voz: 2 o 3 frases cortas; la fuente y el detalle van a la pantalla.`;
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 

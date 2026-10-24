@@ -89,7 +89,8 @@ const CASOS: { nombre: string; msg: string; voz: string; esperado: string }[] = 
     nombre: "memoria (dos oraciones)",
     msg: mensajeMemoria(respuestaMemoria, "NovaFondos · EAFC"),
     voz: vozMemoria(respuestaMemoria),
-    esperado: "NovaFondos está en producción en Cloud Run con la consola de operaciones al día.",
+    // Con el tope de 250 entran las dos oraciones; la fuente sigue solo en pantalla.
+    esperado: "NovaFondos está en producción en Cloud Run con la consola de operaciones al día. Falta calibrar la matriz con bien junto con Maqui antes del lanzamiento.",
   },
 ];
 
@@ -111,22 +112,25 @@ describe("lo que se dice nunca pasa del tope y es mucho más corto que lo que se
 
   it("la tabla: largos de pantalla, voz y envío", () => {
     const largos = CASOS.map((c) => ({ caso: c.nombre, pantalla: c.msg.length, voz: c.voz.length, enviado: prepararVoz(c.voz).length }));
-    // Referencia (si cambia una plantilla, este cuadro cambia a propósito): la voz es ≤ 100 y casi siempre < 90.
-    assert.deepEqual(largos.map((l) => l.voz <= 90), [true, true, true, true, true]);
+    // Referencia (si cambia una plantilla, este cuadro cambia a propósito): las plantillas de listas siguen < 90 y la
+    // memoria, con sus dos oraciones, queda en el objetivo de ~180.
+    assert.deepEqual(largos.map((l) => l.voz <= 90), [true, true, true, true, false]);
+    assert.ok(largos.every((l) => l.voz <= 180));
     assert.ok(largos.every((l) => l.enviado <= VOZ_MAX));
   });
 });
 
-describe("el prompt pide una sola frase corta y las reglas de cada módulo lo repiten", () => {
-  it("PERSONA: una frase, 80 ideal, 100 máximo, sin relleno y cifras redondas", () => {
-    assert.match(PERSONA, /UNA frase/);
-    assert.match(PERSONA, /80 caracteres o menos, nunca más de 100/);
+describe("el prompt pide respuestas cortas (2 o 3 frases) y las reglas de cada módulo lo repiten", () => {
+  it("PERSONA: 2 o 3 frases (~180, 250 máximo), acciones en una frase natural, sin relleno y cifras redondas", () => {
+    assert.match(PERSONA, /2 o 3 frases cortas, unos 180 caracteres y nunca más de 250/);
+    assert.match(PERSONA, /UNA frase natural/);
+    assert.doesNotMatch(PERSONA, /80 caracteres o menos/); // la regla vieja (una frase de 80) no convive con la nueva
     assert.match(PERSONA, /Claro.*Listo,.*Perfecto.*Por supuesto/s);
     assert.match(PERSONA, /sin repetir la pregunta y sin despedidas/);
     assert.match(PERSONA, /Cifras redondas/);
     assert.doesNotMatch(PERSONA, /¿Te detallo\?/); // el detalle va en `detalle` (pantalla): no se ofrece algo que la voz no puede dar
     assert.match(PERSONA, /unos 35 caracteres/);
-    assert.match(PERSONA, /60 caracteres escritos o menos/);
+    assert.match(PERSONA, /máximo 3 montos/);
     assert.match(PERSONA, /campo detalle/);
     assert.doesNotMatch(PERSONA, /3-4 oraciones/);
     // Siguen: seguridad y formato de dinero.
@@ -140,7 +144,7 @@ describe("el prompt pide una sola frase corta y las reglas de cada módulo lo re
       const src = readFileSync(join(AQUI, `${modulo}.ts`), "utf8");
       const reglas = /const rules = `([\s\S]*?)`;/.exec(src)?.[1] ?? "";
       assert.ok(reglas.length > 0, "no encontré las reglas");
-      assert.match(reglas, /una frase|se dice|titular/i, `${modulo}: falta la pauta de respuesta corta`);
+      assert.match(reglas, /2 o 3 frases|una frase|se dice|titular/i, `${modulo}: falta la pauta de respuesta corta`);
     });
   }
 });

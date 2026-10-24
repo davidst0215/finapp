@@ -11,7 +11,7 @@ import { acceso, err, logProyecto, str } from "./tareas.ts";
 const rules = `NOTAS (el vault de David):
 - Nota = algo que se decidió, pasó o se supo y David quiere dejar escrito en un proyecto: "anota en novafondos que decidimos X", "deja anotado en tdv que Y", "nota para vera: Z" → add_note. Si es algo por hacer ("anota llamar a Ana", "recuérdame …") es una tarea: create_task.
 - text = lo que quiere dejar, casi literal y sin el "anota en …"; project = sus palabras ("nova fondos"); vacío si no dijo proyecto (va al cajón). Si el sistema pregunta cuál o confirma y David responde, repite add_note con el texto original (mira el historial) y el proyecto completo.
-- Voz: una frase.`;
+- Voz: una frase natural, no telegráfica.`;
 
 /** Errores de dominio → frase para decir en voz; lo inesperado se registra sin datos y se dice genérico. */
 function mensajeError(e: unknown): string {

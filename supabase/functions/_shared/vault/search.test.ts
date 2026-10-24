@@ -123,15 +123,15 @@ test("fuenteHablada y mensajeMemoria: lo que se dice en voz", () => {
 test("memoria: la pantalla lleva la fuente y la voz no", () => {
   const respuesta = "NovaFondos está en producción en Cloud Run. Falta cargar la matriz con bien, que depende de la calibración que está haciendo Maqui.";
   assert.equal(mensajeMemoria(respuesta, "NovaFondos · EAFC"), `${respuesta} Fuente: NovaFondos, EAFC.`);
-  // La voz: la(s) oración(es) que caben en 100 caracteres, sin «Fuente».
+  // La voz: la(s) oración(es) que caben en el tope de voz (250), sin «Fuente».
   const voz = vozMemoria(respuesta);
-  assert.equal(voz, "NovaFondos está en producción en Cloud Run.");
+  assert.equal(voz, respuesta);
   assert.ok(!/fuente/i.test(voz));
-  // Una sola oración larga: se corta en la última coma y se cierra con punto, sin partir palabras.
-  const larga = "El despliegue de NovaFondos pasa por Cloud Build con aprobación manual vía API, después corre las migraciones y el job de siembra en producción.";
+  // Una sola oración más larga que el tope (274): se corta en la última coma que cabe y se cierra con punto, sin partir palabras.
+  const larga = "El despliegue de NovaFondos pasa por Cloud Build con aprobación manual vía API, después corre las migraciones aditivas que se revisaron antes, el job de siembra en producción y el alta de usuarios, y al final se verifica la consola de operaciones con datos reales de prueba.";
   const cortada = vozMemoria(larga);
-  assert.ok(cortada.length <= 100, cortada);
-  assert.equal(cortada, "El despliegue de NovaFondos pasa por Cloud Build con aprobación manual vía API.");
+  assert.ok(cortada.length <= 250, cortada);
+  assert.equal(cortada, "El despliegue de NovaFondos pasa por Cloud Build con aprobación manual vía API, después corre las migraciones aditivas que se revisaron antes, el job de siembra en producción y el alta de usuarios.");
 });
 
 test("el prompt de memoria pide una respuesta directa de 100 caracteres y un detalle opcional", () => {

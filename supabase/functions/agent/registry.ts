@@ -19,7 +19,7 @@ const general: AgentModule = {
   id: "general",
   definitions: [
     tool("query", "Responde preguntas generales o saludos. NO para acciones de otros módulos.", {
-      answer: { type: "string", description: "Lo que David ESCUCHA: UNA frase de 80 caracteres o menos (60 si lleva cifras: cada número dicho cuenta ~35), el dato primero, sin relleno ni despedida. Nunca un marcador ni 'déjame revisar'." },
+      answer: { type: "string", description: "Lo que David ESCUCHA: 2 o 3 frases cortas, unos 180 caracteres y nunca más de 250 (máximo 3 cifras: cada número dicho cuenta ~35). El dato primero y luego el porqué o qué sigue, sin relleno ni despedida. Nunca un marcador ni 'déjame revisar'." },
       detalle: { type: "string", description: "Opcional. Lo que David VE en pantalla (no se dice): más contexto en 1-3 frases cortas. Vacío si la frase basta." },
     }, ["answer"]),
   ],

@@ -25,7 +25,7 @@ const rules = `TAREAS (Norte, el vault de David):
 - "pagué / gasté / compré" es finanzas, no tareas.
 - Fechas y horas son de Lima, como las dice David ("hoy", "mañana", "viernes", "+3") o AAAA-MM-DD si dice día y mes; no hagas cuentas de calendario.
 - Proyecto: sus palabras tal cual ("nova fondos", "tdv bolsa", "maqui perú"); el sistema las reconoce. Sin proyecto, vacío: va al cajón. Si el sistema pregunta cuál ("¿app o normativa?") o confirma ("¿En Vera?") y David responde, repite create_task con la tarea original (mira el historial) y el proyecto completo. Si pregunta la hora ("¿A qué hora te aviso?"), repite create_task con la hora en time.
-- Voz: una frase; el detalle va a la pantalla.`;
+- Voz: 2 o 3 frases cortas; el detalle completo va a la pantalla.`;
 
 export const str = (v: unknown) => (typeof v === "string" ? v : "");
 export const err = (message: string): ToolResult => ({ action: "error", message });

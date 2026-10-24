@@ -60,8 +60,12 @@ const SIMBOLOS_DE_TEXTO = new Set(["©", "®", "™"]);
 // ya convertidos (los montos en palabras crecen: "S/ 45.90" son 8 caracteres y "cuarenta y cinco soles con noventa
 // céntimos" son 43), cortado donde una voz humana pararía y nunca a mitad de palabra.
 
-/** Máximo de caracteres que se mandan a la voz en cada respuesta (ya convertidos a palabras). */
-export const VOZ_MAX = 100;
+/**
+ * Máximo de caracteres que se mandan a la voz en cada respuesta (ya convertidos a palabras). 250 = 2 o 3 frases cortas
+ * (24-oct-2026; antes 100, una frase que sonaba a telegrama). Medido antes del cambio: 12 respuestas con voz en 7 días,
+ * 51 caracteres de promedio, ~2.600 al mes contra los 30.000 del plan Starter de ElevenLabs.
+ */
+export const VOZ_MAX = 250;
 
 // Abreviaturas que llevan punto sin cerrar la oración: "Dr. Pérez", "Av. Arequipa", "EE. UU.", "pág. 3".
 const ABREVIATURAS = new Set(["dr", "dra", "sr", "sra", "srta", "ud", "uds", "av", "ing", "lic", "prof", "pág", "págs", "núm", "tel", "vs", "aprox", "ee", "jr"]);
